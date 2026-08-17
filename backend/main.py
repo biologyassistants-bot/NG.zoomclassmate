@@ -98,6 +98,8 @@ def save_recordings(recs):
 
 app = FastAPI(title="ClassMate API")
 app.add_middleware(
+    from diag_openai import register_openai_diag
+register_openai_diag(app)
     CORSMiddleware,
     allow_origins=["*"],
     allow_methods=["*"],

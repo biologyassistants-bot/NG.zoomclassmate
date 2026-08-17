@@ -317,6 +317,148 @@ async def llm(messages, max_tokens=1200, temperature=0.1):
         "The AI features are not configured on this server. "
         "Set the OPENAI_API_KEY environment variable (and redeploy)."
     )
+OPENAI_TRANSCRIBE_MODEL = os.environ.get("OPENAI_TRANSCRIBE_MODEL", "whisper-1").strip()
+
+
+def _fmt_seconds_to_ts(seconds):
+    """Turn a float number of seconds into an 'HH:MM:SS.mmm' timestamp string
+    matching the format used by the existing Zoom .vtt transcripts."""
+    try:
+        seconds = float(seconds)
+    except (TypeError, ValueError):
+        seconds = 0.0
+    if seconds < 0:
+        seconds = 0.0
+    ms = int(round((seconds - int(seconds)) * 1000))
+    total = int(seconds)
+    h = total // 3600
+    m = (total % 3600) // 60
+    s = total % 60
+    return f"{h:02d}:{m:02d}:{s:02d}.{ms:03d}"
+
+
+async def transcribe_audio_bytes(audio_bytes, filename="audio.m4a"):
+    """Send audio to an OpenAI-compatible Whisper endpoint and return
+    [{start, speaker, text}, ...] segments. Whisper does not do speaker
+    diarization, so 'speaker' is left blank (the app handles blank speakers)."""
+    if not OPENAI_API_KEY:
+        raise LLMConfigError(
+            "Transcription needs OPENAI_API_KEY set on this server (and redeploy)."
+        )
+    import httpx
+    timeout = httpx.Timeout(600.0, connect=15.0)
+    files = {"file": (filename, audio_bytes, "application/octet-stream")}
+    data = {
+        "model": OPENAI_TRANSCRIBE_MODEL,
+        "response_format": "verbose_json",
+        "timestamp_granularities[]": "segment",
+    }
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            resp = await client.post(
+                f"{OPENAI_BASE_URL}/audio/transcriptions",
+                headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
+                data=data,
+                files=files,
+            )
+    except httpx.RequestError as e:
+        raise LLMUpstreamError(f"Could not reach the transcription provider: {e}") from e
+
+    if resp.status_code >= 400:
+        detail = ""
+        try:
+            detail = resp.json().get("error", {}).get("message", "")
+        except Exception:
+            detail = resp.text[:300]
+        raise LLMUpstreamError(
+            f"Transcription provider returned {resp.status_code}: {detail or 'unknown error'}"
+        )
+
+    try:
+        payload = resp.json()
+    except Exception as e:
+        raise LLMUpstreamError(f"Unexpected transcription response shape: {e}") from e
+
+    segments = []
+    for seg in payload.get("segments", []) or []:
+        text = (seg.get("text") or "").strip()
+        if not text:
+            continue
+        segments.append({
+            "start": _fmt_seconds_to_ts(seg.get("start", 0)),
+            "speaker": "",
+            "text": text,
+        })
+    # Fallback: no per-segment data but we still got text -> one big segment.
+    if not segments:
+        whole = (payload.get("text") or "").strip()
+        if whole:
+            segments.append({"start": "00:00:00.000", "speaker": "", "text": whole})
+    return segments
+
+
+async def fetch_zoom_recording_files(meeting_id):
+    """Look up a meeting's cloud recording files from Zoom by meeting id/uuid.
+    Returns the list of recording_files (may be empty)."""
+    import httpx
+    from urllib.parse import quote
+    token = await zoom_token()
+    # UUIDs that contain '/' or start with '/' must be double-URL-encoded per Zoom docs.
+    mid = str(meeting_id)
+    needs_double = mid.startswith("/") or "//" in mid or "/" in mid
+    path_id = quote(quote(mid, safe=""), safe="") if needs_double else quote(mid, safe="")
+    async with httpx.AsyncClient(timeout=60) as client:
+        r = await client.get(
+            f"https://api.zoom.us/v2/meetings/{path_id}/recordings",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        if r.status_code != 200:
+            raise LLMUpstreamError(
+                f"Zoom recordings lookup returned {r.status_code}: {r.text[:300]}"
+            )
+        return r.json().get("recording_files", []) or []
+
+
+def _pick_audio_file(files):
+    """From a list of Zoom recording_files pick the best one to transcribe:
+    prefer a dedicated audio-only (M4A) file, else fall back to the video (MP4)."""
+    audio = next((f for f in files if (f.get("file_type") or "").upper() == "M4A"), None)
+    if audio:
+        return audio
+    return next((f for f in files if (f.get("file_type") or "").upper() == "MP4"), None)
+
+
+async def transcribe_recording_by_id(meeting_id):
+    """Full pipeline: find a recording's audio in Zoom, download it, run Whisper,
+    store the segments on the recording, and persist. Returns the segment count."""
+    rec = REC_BY_ID.get(meeting_id)
+    if not rec:
+        raise LLMUpstreamError("Recording not found.")
+    files = await fetch_zoom_recording_files(meeting_id)
+    audio = _pick_audio_file(files)
+    if not audio:
+        raise LLMUpstreamError(
+            "No audio/video file is available for this recording in Zoom's cloud "
+            "(it may have been deleted)."
+        )
+    import httpx
+    token = await zoom_token()
+    url = audio.get("download_url")
+    ext = (audio.get("file_extension") or audio.get("file_type") or "m4a").lower()
+    async with httpx.AsyncClient(timeout=httpx.Timeout(600.0, connect=15.0),
+                                 follow_redirects=True) as client:
+        r = await client.get(url, headers={"Authorization": f"Bearer {token}"})
+        if r.status_code != 200:
+            raise LLMUpstreamError(
+                f"Could not download recording audio from Zoom ({r.status_code})."
+            )
+        audio_bytes = r.content
+    segments = await transcribe_audio_bytes(audio_bytes, filename=f"{meeting_id}.{ext}")
+    rec["segments"] = segments
+    save_recordings(RECORDINGS)
+    return len(segments)
+
+
 # ---------- Zoom integration (server-to-server OAuth + webhook) ----------
 ZOOM_ACCOUNT_ID     = os.environ.get("ZOOM_ACCOUNT_ID", "").strip()
 ZOOM_CLIENT_ID      = os.environ.get("ZOOM_CLIENT_ID", "").strip()
@@ -393,6 +535,32 @@ async def ingest_zoom_meeting(obj):
             r = await client.get(url, headers={"Authorization": f"Bearer {token}"})
             if r.status_code == 200:
                 segments = parse_vtt(r.text)
+
+    # Auto-fallback: no Zoom .vtt transcript, but we have audio/video and an
+    # OpenAI key -> transcribe the audio with Whisper so the recording is usable.
+    if not segments and OPENAI_API_KEY:
+        audio = _pick_audio_file(files)
+        if audio and audio.get("download_url"):
+            try:
+                token = await zoom_token()
+                import httpx
+                async with httpx.AsyncClient(
+                    timeout=httpx.Timeout(600.0, connect=15.0),
+                    follow_redirects=True,
+                ) as client:
+                    ar = await client.get(
+                        audio["download_url"],
+                        headers={"Authorization": f"Bearer {token}"},
+                    )
+                if ar.status_code == 200:
+                    ext = (audio.get("file_extension")
+                           or audio.get("file_type") or "m4a").lower()
+                    segments = await transcribe_audio_bytes(
+                        ar.content, filename=f"{meeting_id}.{ext}"
+                    )
+            except Exception as e:
+                # Never let a transcription failure block ingest; log and move on.
+                print(f"[ingest] whisper fallback failed for {meeting_id}: {e}")
     new_rec = {
         "id": meeting_id,
         "topic": topic,
@@ -807,14 +975,161 @@ async def zoom_webhook(request: Request):
     expected = "v0=" + hmac.new(ZOOM_WEBHOOK_SECRET.encode(), message, hashlib.sha256).hexdigest()
     if not hmac.compare_digest(expected, got):
         return JSONResponse({"error": "bad signature"}, status_code=401)
-    # 3) Handle recording completed
-    if payload.get("event") in ("recording.completed", "recording.transcript_completed"):
+    # 3) Handle recording completed — for BOTH meetings and webinars.
+    #    Zoom sends different event names depending on the source, e.g.:
+    #      meeting: recording.completed / recording.transcript_completed
+    #      webinar: webinar.recording_completed (and some accounts still use
+    #               recording.completed with a webinar-type object)
+    #    We accept any event that ends in a recording-completed variant so a
+    #    webinar recording is never silently dropped.
+    event = payload.get("event", "")
+    print(f"[zoom webhook] received event: {event}")  # visible in Render logs
+    recording_events = {
+        "recording.completed",
+        "recording.transcript_completed",
+        "webinar.recording_completed",
+        "webinar.recording_transcript_completed",
+    }
+    is_recording_event = (
+        event in recording_events
+        or ("recording" in event and ("completed" in event or "transcript" in event))
+    )
+    if is_recording_event:
         obj = payload.get("payload", {}).get("object", {})
         try:
-            await ingest_zoom_meeting(obj)
+            added = await ingest_zoom_meeting(obj)
+            print(f"[zoom webhook] ingest for '{obj.get('topic')}' "
+                  f"(type={obj.get('type')}, source={_detect_source(obj)}) -> added={added}")
         except Exception as e:
             print("Zoom ingest error:", e)
     return {"ok": True}
+# ---------- one-time backfill of EXISTING cloud recordings ----------
+# Pulls recordings already stored in Zoom cloud (meetings AND webinars) via the
+# Zoom REST API and ingests any that aren't in the app yet, reusing the exact
+# same logic as the live webhook. Teacher-authenticated. Safe to run repeatedly
+# (already-ingested recordings are skipped by ingest_zoom_meeting).
+class BackfillBody(BaseModel):
+    passcode: str
+    from_date: str | None = None   # "YYYY-MM-DD"; default = 6 months ago
+    to_date: str | None = None     # "YYYY-MM-DD"; default = today
+
+
+async def _list_cloud_recordings(from_date: str, to_date: str):
+    """Return a list of Zoom recording 'meeting' objects between the dates.
+    Zoom caps each query at ~30 days, so we page month-by-month. This lists the
+    account's own recordings for the S2S app user context ('me')."""
+    import httpx
+    from datetime import datetime, timedelta
+
+    token = await zoom_token()
+    results = []
+    start = datetime.strptime(from_date, "%Y-%m-%d")
+    end = datetime.strptime(to_date, "%Y-%m-%d")
+    async with httpx.AsyncClient(timeout=60) as client:
+        window_start = start
+        while window_start <= end:
+            window_end = min(window_start + timedelta(days=29), end)
+            next_token = ""
+            while True:
+                params = {
+                    "from": window_start.strftime("%Y-%m-%d"),
+                    "to": window_end.strftime("%Y-%m-%d"),
+                    "page_size": 300,
+                }
+                if next_token:
+                    params["next_page_token"] = next_token
+                r = await client.get(
+                    "https://api.zoom.us/v2/users/me/recordings",
+                    headers={"Authorization": f"Bearer {token}"},
+                    params=params,
+                )
+                if r.status_code != 200:
+                    print(f"[backfill] list error {r.status_code}: {r.text[:300]}")
+                    break
+                data = r.json()
+                results.extend(data.get("meetings", []))
+                next_token = data.get("next_page_token") or ""
+                if not next_token:
+                    break
+            window_start = window_end + timedelta(days=1)
+    return results
+
+
+@app.post("/api/teacher/backfill")
+async def teacher_backfill(body: BackfillBody):
+    if not check_passcode(body.passcode):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    from datetime import datetime, timedelta
+    to_date = body.to_date or datetime.utcnow().strftime("%Y-%m-%d")
+    from_date = body.from_date or (datetime.utcnow() - timedelta(days=180)).strftime("%Y-%m-%d")
+    try:
+        meetings = await _list_cloud_recordings(from_date, to_date)
+    except Exception as e:
+        return JSONResponse({"error": f"Could not list cloud recordings: {e}"}, status_code=502)
+    added = 0
+    skipped = 0
+    errors = 0
+    details = []
+    for m in meetings:
+        try:
+            was_added = await ingest_zoom_meeting(m)
+            if was_added:
+                added += 1
+                details.append({
+                    "topic": m.get("topic"),
+                    "date": (m.get("start_time") or "")[:10],
+                    "source": _detect_source(m),
+                })
+            else:
+                skipped += 1
+        except Exception as e:
+            errors += 1
+            print(f"[backfill] ingest error for {m.get('topic')}: {e}")
+    print(f"[backfill] range {from_date}..{to_date}: found={len(meetings)} "
+          f"added={added} skipped={skipped} errors={errors}")
+    return {
+        "ok": True,
+        "range": {"from": from_date, "to": to_date},
+        "found": len(meetings),
+        "added": added,
+        "skipped_already_present": skipped,
+        "errors": errors,
+        "added_recordings": details,
+        "total_recordings_now": len(RECORDINGS),
+    }
+
+
+class TranscribeBody(BaseModel):
+    passcode: str
+    id: str
+
+
+@app.post("/api/teacher/transcribe")
+async def teacher_transcribe(body: TranscribeBody):
+    """Generate a transcript for a recording that has none (or re-generate one)
+    by downloading its Zoom cloud audio and running Whisper speech-to-text."""
+    if not check_passcode(body.passcode):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    rec = REC_BY_ID.get(body.id)
+    if not rec:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    try:
+        count = await transcribe_recording_by_id(body.id)
+    except LLMConfigError as e:
+        return JSONResponse({"error": str(e)}, status_code=503)
+    except LLMUpstreamError as e:
+        return JSONResponse({"error": str(e)}, status_code=502)
+    except Exception as e:
+        return JSONResponse({"error": f"Transcription failed: {e}"}, status_code=500)
+    if count == 0:
+        return JSONResponse(
+            {"error": "Transcription produced no text (the audio may be silent or unusable)."},
+            status_code=422,
+        )
+    return {"ok": True, "id": body.id, "segments": count,
+            "recording": _card(rec, include_hidden=True)}
+
+
 @app.get("/api/health")
 def health():
     return {"status": "ok", "recordings": len(RECORDINGS)}

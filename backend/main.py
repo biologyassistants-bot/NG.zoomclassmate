@@ -15,7 +15,39 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 import secrets
 import bcrypt
-DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
+# Data location.
+#   * Default: the repo's bundled ./data folder.
+#   * On a host with a persistent disk (e.g. Render Starter + a mounted disk),
+#     set DATA_DIR=/var/data so recordings, roster, config, question log and the
+#     uploaded logo survive restarts and redeploys.
+# The bundled ./data folder is always used to SEED an empty persistent disk on
+# first boot, so your existing recordings show up the first time.
+BUNDLED_DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
+DATA_DIR = os.environ.get("DATA_DIR", "").strip() or BUNDLED_DATA_DIR
+
+
+def _seed_data_dir():
+    """If DATA_DIR is a separate (persistent) location, copy any files that are
+    missing there from the bundled data folder. Never overwrites existing files,
+    so teacher edits made on the live disk are preserved across deploys."""
+    try:
+        if os.path.abspath(DATA_DIR) == os.path.abspath(BUNDLED_DATA_DIR):
+            return
+        os.makedirs(DATA_DIR, exist_ok=True)
+        if not os.path.isdir(BUNDLED_DATA_DIR):
+            return
+        import shutil
+        for name in os.listdir(BUNDLED_DATA_DIR):
+            src = os.path.join(BUNDLED_DATA_DIR, name)
+            dst = os.path.join(DATA_DIR, name)
+            if os.path.isfile(src) and not os.path.exists(dst):
+                shutil.copy2(src, dst)
+    except Exception as e:
+        print(f"[data] seed warning: {e}")
+
+
+_seed_data_dir()
+
 FRONTEND_DIR = os.path.join(os.path.dirname(__file__), "..", "frontend")
 DATA_PATH = os.path.join(DATA_DIR, "recordings.json")
 CONFIG_PATH = os.path.join(DATA_DIR, "config.json")
@@ -318,6 +350,42 @@ async def llm(messages, max_tokens=1200, temperature=0.1):
         "Set the OPENAI_API_KEY environment variable (and redeploy)."
     )
 OPENAI_TRANSCRIBE_MODEL = os.environ.get("OPENAI_TRANSCRIBE_MODEL", "whisper-1").strip()
+# OpenAI's audio upload limit is 25 MB. We compress below this and, if still too
+# large, split into time-based chunks that each stay under it.
+WHISPER_MAX_BYTES = 25 * 1000 * 1000  # 25 MB (use decimal MB, matches provider)
+_CHUNK_SAFETY_BYTES = 24 * 1000 * 1000  # aim comfortably under the hard limit
+
+
+def _have_ffmpeg():
+    import shutil
+    return shutil.which("ffmpeg") is not None and shutil.which("ffprobe") is not None
+
+
+def _ffprobe_duration(path):
+    """Return media duration in seconds (float), or 0.0 if it can't be read."""
+    import subprocess
+    try:
+        out = subprocess.run(
+            ["ffprobe", "-v", "quiet", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", path],
+            capture_output=True, text=True, timeout=120,
+        )
+        return float((out.stdout or "0").strip() or 0.0)
+    except Exception:
+        return 0.0
+
+
+def _ffmpeg_to_mp3(src_path, dst_path, start=None, duration=None, bitrate="48k"):
+    """Transcode (a slice of) src to a mono 16 kHz MP3 — small and speech-friendly."""
+    import subprocess
+    cmd = ["ffmpeg", "-y", "-v", "quiet"]
+    if start is not None:
+        cmd += ["-ss", str(start)]
+    cmd += ["-i", src_path]
+    if duration is not None:
+        cmd += ["-t", str(duration)]
+    cmd += ["-ac", "1", "-ar", "16000", "-b:a", bitrate, dst_path]
+    subprocess.run(cmd, check=True, timeout=1800)
 
 
 def _fmt_seconds_to_ts(seconds):
@@ -337,10 +405,12 @@ def _fmt_seconds_to_ts(seconds):
     return f"{h:02d}:{m:02d}:{s:02d}.{ms:03d}"
 
 
-async def transcribe_audio_bytes(audio_bytes, filename="audio.m4a"):
+async def transcribe_audio_bytes(audio_bytes, filename="audio.m4a", time_offset=0.0):
     """Send audio to an OpenAI-compatible Whisper endpoint and return
     [{start, speaker, text}, ...] segments. Whisper does not do speaker
-    diarization, so 'speaker' is left blank (the app handles blank speakers)."""
+    diarization, so 'speaker' is left blank (the app handles blank speakers).
+    time_offset (seconds) is added to every segment start, so callers can
+    transcribe chunks of a longer recording and stitch them together."""
     if not OPENAI_API_KEY:
         raise LLMConfigError(
             "Transcription needs OPENAI_API_KEY set on this server (and redeploy)."
@@ -385,7 +455,7 @@ async def transcribe_audio_bytes(audio_bytes, filename="audio.m4a"):
         if not text:
             continue
         segments.append({
-            "start": _fmt_seconds_to_ts(seg.get("start", 0)),
+            "start": _fmt_seconds_to_ts(float(seg.get("start", 0)) + time_offset),
             "speaker": "",
             "text": text,
         })
@@ -393,7 +463,11 @@ async def transcribe_audio_bytes(audio_bytes, filename="audio.m4a"):
     if not segments:
         whole = (payload.get("text") or "").strip()
         if whole:
-            segments.append({"start": "00:00:00.000", "speaker": "", "text": whole})
+            segments.append({
+                "start": _fmt_seconds_to_ts(time_offset),
+                "speaker": "",
+                "text": whole,
+            })
     return segments
 
 
@@ -428,9 +502,65 @@ def _pick_audio_file(files):
     return next((f for f in files if (f.get("file_type") or "").upper() == "MP4"), None)
 
 
+async def _transcribe_large_audio(src_path):
+    """Compress a downloaded audio/video file to small mono MP3(s) and transcribe.
+    If the compressed file is still over the provider's size limit, split it into
+    time-based chunks and stitch the segment timestamps back together.
+    Requires ffmpeg (provided by the Docker image)."""
+    import os as _os
+    import tempfile
+
+    workdir = _os.path.dirname(src_path)
+    full_mp3 = _os.path.join(workdir, "full.mp3")
+    _ffmpeg_to_mp3(src_path, full_mp3)
+
+    size = _os.path.getsize(full_mp3)
+    if size <= _CHUNK_SAFETY_BYTES:
+        with open(full_mp3, "rb") as f:
+            data = f.read()
+        return await transcribe_audio_bytes(data, filename="full.mp3")
+
+    # Still too big -> split by time. Estimate chunk length from the MP3 bitrate.
+    duration = _ffprobe_duration(full_mp3)
+    if duration <= 0:
+        # Can't determine duration; try the whole thing and let the caller surface errors.
+        with open(full_mp3, "rb") as f:
+            data = f.read()
+        return await transcribe_audio_bytes(data, filename="full.mp3")
+
+    bytes_per_sec = size / duration
+    # target chunk length that stays under the safety limit, with a little headroom
+    chunk_secs = max(60.0, (_CHUNK_SAFETY_BYTES / bytes_per_sec) * 0.9)
+
+    all_segments = []
+    start = 0.0
+    idx = 0
+    while start < duration:
+        this_len = min(chunk_secs, duration - start)
+        chunk_path = _os.path.join(workdir, f"chunk_{idx}.mp3")
+        _ffmpeg_to_mp3(src_path, chunk_path, start=start, duration=this_len)
+        with open(chunk_path, "rb") as f:
+            cdata = f.read()
+        seg = await transcribe_audio_bytes(
+            cdata, filename=f"chunk_{idx}.mp3", time_offset=start
+        )
+        all_segments.extend(seg)
+        try:
+            _os.remove(chunk_path)
+        except OSError:
+            pass
+        start += this_len
+        idx += 1
+    return all_segments
+
+
 async def transcribe_recording_by_id(meeting_id):
     """Full pipeline: find a recording's audio in Zoom, download it, run Whisper,
-    store the segments on the recording, and persist. Returns the segment count."""
+    store the segments on the recording, and persist. Returns the segment count.
+    Handles files larger than the provider's 25 MB limit by compressing with
+    ffmpeg and, if still too large, splitting into chunks."""
+    import os as _os
+    import tempfile
     rec = REC_BY_ID.get(meeting_id)
     if not rec:
         raise LLMUpstreamError("Recording not found.")
@@ -453,7 +583,24 @@ async def transcribe_recording_by_id(meeting_id):
                 f"Could not download recording audio from Zoom ({r.status_code})."
             )
         audio_bytes = r.content
-    segments = await transcribe_audio_bytes(audio_bytes, filename=f"{meeting_id}.{ext}")
+
+    # Small enough to send directly? Then skip ffmpeg entirely.
+    if len(audio_bytes) <= _CHUNK_SAFETY_BYTES:
+        segments = await transcribe_audio_bytes(audio_bytes, filename=f"{meeting_id}.{ext}")
+    elif _have_ffmpeg():
+        # Compress (and if needed split) using a temp working directory.
+        with tempfile.TemporaryDirectory() as tmp:
+            src_path = _os.path.join(tmp, f"src.{ext}")
+            with open(src_path, "wb") as f:
+                f.write(audio_bytes)
+            segments = await _transcribe_large_audio(src_path)
+    else:
+        raise LLMUpstreamError(
+            "This recording's audio is larger than the 25 MB transcription limit and "
+            "ffmpeg is not available on the server to compress it. Deploy the Docker "
+            "image (which installs ffmpeg) to transcribe long recordings."
+        )
+
     rec["segments"] = segments
     save_recordings(RECORDINGS)
     return len(segments)

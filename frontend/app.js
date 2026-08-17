@@ -134,7 +134,8 @@ function renderRecList(list) {
     groups[unit].forEach(r => {
       const item = document.createElement("div");
       item.className = "rec-item" + (state.current && state.current.id === r.id ? " active" : "");
-      item.innerHTML = `<div class="t">${escapeHtml(r.title)}</div><div class="d">${escapeHtml(r.date || "")} · ${r.segments} lines</div>`;
+      const notesBadge = r.has_notes ? ' <span class="notes-dot" title="This class has extra notes">📎</span>' : "";
+      item.innerHTML = `<div class="t">${escapeHtml(r.title)}${notesBadge}</div><div class="d">${escapeHtml(r.date || "")} · ${r.segments} lines</div>`;
       item.addEventListener("click", () => selectRecording(r));
       g.appendChild(item);
     });
@@ -154,9 +155,13 @@ function selectRecording(r) {
   el("emptyState").classList.add("hidden");
   el("workspace").classList.remove("hidden");
   el("wsTitle").textContent = r.title;
-  el("wsMeta").textContent = `${r.unit} · ${r.date || ""} · ${r.segments} transcript lines`;
+  el("wsMeta").innerHTML = `${escapeHtml(r.unit)} · ${escapeHtml(r.date || "")} · ${r.segments} transcript lines` +
+    (r.has_notes ? ` · <span class="notes-flag">📎 includes extra class notes</span>` : "");
   el("chat").innerHTML = "";
-  addBot(`Hi ${state.name}! Ask me anything about **${r.title}**. I'll answer using only what was said in this recording, with timestamps. 😊`);
+  const notesLine = r.has_notes
+    ? " This class also has extra notes from your teacher that I can draw on."
+    : "";
+  addBot(`Hi ${state.name}! Ask me anything about **${r.title}**. I'll answer using only what was said in this recording (with timestamps).${notesLine} 😊`);
 }
 
 function addUser(text) { const d = document.createElement("div"); d.className = "msg user"; d.textContent = text; el("chat").appendChild(d); scrollChat(); }
@@ -555,6 +560,15 @@ function renderTeacherRecordings(list) {
         </div>
         ${summaryHtml}
         ${topicsHtml}
+        <div class="notes-box">
+          <div class="notes-head">📎 Teacher notes <span class="notes-hint">(used by the AI to answer; students can't view or download them)</span></div>
+          <div class="notes-list"></div>
+          <div class="notes-add">
+            <input type="file" class="note-file" accept=".pdf,.docx,.txt,.md" />
+            <button class="note-upload-btn ghost-sm">Upload note</button>
+            <span class="note-status"></span>
+          </div>
+        </div>
       </div>
       <input class="unit-in" value="${escapeHtml(r.unit)}" placeholder="Unit / class" />
       <div>
@@ -612,6 +626,64 @@ function renderTeacherRecordings(list) {
           applyRecFilters(); loadStats();
         } else { toast(data.error || "Delete failed.", "error"); deleteBtn.disabled = false; }
       } catch (e) { toast("Network error during delete.", "error"); deleteBtn.disabled = false; }
+    });
+
+    // ---- teacher notes: render + upload + delete ----
+    const notesList = row.querySelector(".notes-list");
+    const noteFile = row.querySelector(".note-file");
+    const noteUploadBtn = row.querySelector(".note-upload-btn");
+    const noteStatus = row.querySelector(".note-status");
+
+    function renderNotes(notes) {
+      notesList.innerHTML = "";
+      if (!notes || !notes.length) { notesList.innerHTML = '<span class="notes-empty">No notes attached yet.</span>'; return; }
+      notes.forEach(n => {
+        const item = document.createElement("div");
+        item.className = "note-item";
+        item.innerHTML = `<span class="note-name">📄 ${escapeHtml(n.filename)}</span><span class="note-meta">${n.chars.toLocaleString()} chars</span><button class="note-del danger-btn">Remove</button>`;
+        item.querySelector(".note-del").addEventListener("click", async () => {
+          if (!confirm(`Remove note "${n.filename}" from this recording?`)) return;
+          try {
+            const res = await fetch(`${API}/api/teacher/notes/delete`, {
+              method: "POST", headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ passcode: state.passcode, id: r.id, note_id: n.id })
+            });
+            const data = await res.json();
+            if (res.ok) {
+              toast("Note removed.", "success");
+              const cached = teacherRecordings.find(x => x.id === r.id);
+              if (cached) cached.notes = data.recording.notes;
+              renderNotes(data.recording.notes);
+            } else toast(data.error || "Could not remove note.", "error");
+          } catch (e) { toast("Network error.", "error"); }
+        });
+        notesList.appendChild(item);
+      });
+    }
+    renderNotes(r.notes);
+
+    noteUploadBtn.addEventListener("click", async () => {
+      const f = noteFile.files[0];
+      if (!f) { toast("Choose a PDF, DOCX or TXT file first.", "info"); return; }
+      noteUploadBtn.disabled = true;
+      noteStatus.textContent = "Uploading & reading…";
+      const fd = new FormData();
+      fd.append("passcode", state.passcode);
+      fd.append("id", r.id);
+      fd.append("file", f);
+      try {
+        const res = await fetch(`${API}/api/teacher/notes/upload`, { method: "POST", body: fd });
+        const data = await res.json();
+        if (res.ok) {
+          noteStatus.textContent = "";
+          toast(`Note "${data.note.filename}" attached ✓`, "success");
+          const cached = teacherRecordings.find(x => x.id === r.id);
+          if (cached) cached.notes = data.recording.notes;
+          renderNotes(data.recording.notes);
+          noteFile.value = "";
+        } else { noteStatus.textContent = ""; toast(data.error || "Upload failed.", "error"); }
+      } catch (e) { noteStatus.textContent = ""; toast("Network error during upload.", "error"); }
+      finally { noteUploadBtn.disabled = false; }
     });
 
     transBtn.addEventListener("click", async () => {

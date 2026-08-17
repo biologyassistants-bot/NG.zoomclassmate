@@ -365,3 +365,7 @@ button{font-family:inherit;cursor:pointer;border:none}
 @media(max-width:820px){
   .stats-bar{grid-template-columns:repeat(2,1fr)}
 }
+
+
+/* English-only answer note (replaces the language selector) */
+.lang-note{display:inline-flex;align-items:center;gap:6px;font-size:12.5px;font-weight:800;color:var(--brand-d);background:rgba(11,191,191,.10);border:1px solid var(--line);border-radius:20px;padding:6px 12px}

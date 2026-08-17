@@ -418,15 +418,24 @@ async def transcribe_audio_bytes(audio_bytes, filename="audio.m4a", time_offset=
     import httpx
     timeout = httpx.Timeout(600.0, connect=15.0)
     files = {"file": (filename, audio_bytes, "application/octet-stream")}
+    # Force English transcripts. Whisper's /audio/translations endpoint always
+    # outputs English (translating from whatever language is spoken, e.g. Arabic).
+    # Set TRANSCRIBE_ENGLISH_ONLY=0 to fall back to same-language transcription.
+    english_only = os.environ.get("TRANSCRIBE_ENGLISH_ONLY", "1").strip() != "0"
+    endpoint = "/audio/translations" if english_only else "/audio/transcriptions"
     data = {
         "model": OPENAI_TRANSCRIBE_MODEL,
         "response_format": "verbose_json",
         "timestamp_granularities[]": "segment",
     }
+    if not english_only:
+        # only meaningful for the transcriptions endpoint
+        data["language"] = os.environ.get("TRANSCRIBE_LANGUAGE", "").strip() or None
+        data = {k: v for k, v in data.items() if v is not None}
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
             resp = await client.post(
-                f"{OPENAI_BASE_URL}/audio/transcriptions",
+                f"{OPENAI_BASE_URL}{endpoint}",
                 headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
                 data=data,
                 files=files,
@@ -1013,11 +1022,8 @@ async def ask(body: AskBody):
         return JSONResponse({"error": "Recording not found"}, status_code=404)
     idx = retrieve(rec, body.question)
     ctx = context_from_indices(rec, idx)
-    lang_line = ""
-    if body.language and body.language.lower() not in ("auto", "same as question"):
-        lang_line = f"\nRespond in this language: {body.language}."
-    else:
-        lang_line = "\nRespond in the same language the student's question is written in."
+    # Answers are always in English (school policy), regardless of the question's language.
+    lang_line = "\nAlways respond in English, even if the student's question is written in another language."
     system = (
         "You are ClassMate, a study assistant for students. You answer ONLY using the "
         "provided class recording transcript excerpts. Each excerpt is prefixed with a "
@@ -1076,7 +1082,7 @@ async def quiz(body: QuizBody):
     step = max(1, len(segs) // 60)
     idx = list(range(0, len(segs), step))
     ctx = context_from_indices(rec, idx, max_chars=60000)
-    lang_line = f"Write the quiz in this language: {body.language}." if body.language and body.language.lower() not in ("auto", "same as question") else "Write the quiz in English."
+    lang_line = "Write the quiz in English."
     n = max(1, min(10, body.num_questions))
     system = (
         "You are ClassMate, creating a quiz to help students review a class recording. "
@@ -1344,6 +1350,7 @@ async def generate_summary_and_topics(rec):
     context = context_from_indices(rec, idx, max_chars=40000)
     system = (
         "You summarize a class recording for students. Use ONLY the transcript. "
+        "Always write in English. "
         "Return STRICT JSON: {\"summary\": string (2-4 sentences), "
         "\"topics\": string[] (4-8 short topic tags, each 1-4 words)}. No markdown, no extra text."
     )

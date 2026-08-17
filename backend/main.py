@@ -298,6 +298,22 @@ def parse_vtt(text):
     return segments
 
 
+def _detect_source(obj):
+    """Return 'webinar' or 'meeting' based on the Zoom recording object.
+
+    Zoom webinar meeting_type values are 5, 6 and 9; regular meetings are 1/2/3/4/8.
+    We also treat an explicit 'webinar_*' or a 'type' string containing 'webinar' as a webinar.
+    """
+    t = obj.get("type")
+    try:
+        if int(t) in (5, 6, 9):
+            return "webinar"
+    except (TypeError, ValueError):
+        if isinstance(t, str) and "webinar" in t.lower():
+            return "webinar"
+    return "meeting"
+
+
 async def ingest_zoom_meeting(obj):
     """Given a webhook payload's 'object', download its transcript and add a hidden recording."""
     meeting_id = str(obj.get("id") or obj.get("uuid") or secrets.token_hex(6))
@@ -305,6 +321,7 @@ async def ingest_zoom_meeting(obj):
         return False
     topic = obj.get("topic", "Untitled class")
     start_time = (obj.get("start_time") or "")[:10]
+    source = _detect_source(obj)
     files = obj.get("recording_files", [])
     transcript = next((f for f in files if f.get("file_type") == "TRANSCRIPT"), None)
 
@@ -325,6 +342,7 @@ async def ingest_zoom_meeting(obj):
         "original_topic": topic,
         "display_title": topic,
         "date": start_time,
+        "source": source,     # "meeting" or "webinar"
         "unit": "",            # teacher assigns later
         "visible": False,      # hidden until teacher reviews
         "segments": segments,
@@ -342,6 +360,7 @@ def _card(r, include_hidden=False):
         "title": r.get("display_title") or r.get("topic"),
         "original_title": r.get("original_topic") or r.get("topic"),
         "date": r.get("date"),
+        "source": r.get("source") or "meeting",
         "unit": r.get("unit") or "Unassigned",
         "visible": r.get("visible", True),
         "segments": len(r.get("segments", [])),

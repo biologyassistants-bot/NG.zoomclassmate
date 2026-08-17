@@ -807,130 +807,14 @@ async def zoom_webhook(request: Request):
     expected = "v0=" + hmac.new(ZOOM_WEBHOOK_SECRET.encode(), message, hashlib.sha256).hexdigest()
     if not hmac.compare_digest(expected, got):
         return JSONResponse({"error": "bad signature"}, status_code=401)
-    # 3) Handle recording completed — for BOTH meetings and webinars.
-    #    Zoom sends different event names depending on the source, e.g.:
-    #      meeting: recording.completed / recording.transcript_completed
-    #      webinar: webinar.recording_completed (and some accounts still use
-    #               recording.completed with a webinar-type object)
-    #    We accept any event that ends in a recording-completed variant so a
-    #    webinar recording is never silently dropped.
-    event = payload.get("event", "")
-    print(f"[zoom webhook] received event: {event}")  # visible in Render logs
-    recording_events = {
-        "recording.completed",
-        "recording.transcript_completed",
-        "webinar.recording_completed",
-        "webinar.recording_transcript_completed",
-    }
-    is_recording_event = (
-        event in recording_events
-        or ("recording" in event and ("completed" in event or "transcript" in event))
-    )
-    if is_recording_event:
+    # 3) Handle recording completed
+    if payload.get("event") in ("recording.completed", "recording.transcript_completed"):
         obj = payload.get("payload", {}).get("object", {})
         try:
-            added = await ingest_zoom_meeting(obj)
-            print(f"[zoom webhook] ingest for '{obj.get('topic')}' "
-                  f"(type={obj.get('type')}, source={_detect_source(obj)}) -> added={added}")
+            await ingest_zoom_meeting(obj)
         except Exception as e:
             print("Zoom ingest error:", e)
     return {"ok": True}
-# ---------- one-time backfill of EXISTING cloud recordings ----------
-# Pulls recordings already stored in Zoom cloud (meetings AND webinars) via the
-# Zoom REST API and ingests any that aren't in the app yet, reusing the exact
-# same logic as the live webhook. Teacher-authenticated. Safe to run repeatedly
-# (already-ingested recordings are skipped by ingest_zoom_meeting).
-class BackfillBody(BaseModel):
-    passcode: str
-    from_date: str | None = None   # "YYYY-MM-DD"; default = 6 months ago
-    to_date: str | None = None     # "YYYY-MM-DD"; default = today
-
-
-async def _list_cloud_recordings(from_date: str, to_date: str):
-    """Return a list of Zoom recording 'meeting' objects between the dates.
-    Zoom caps each query at ~30 days, so we page month-by-month. This lists the
-    account's own recordings for the S2S app user context ('me')."""
-    import httpx
-    from datetime import datetime, timedelta
-
-    token = await zoom_token()
-    results = []
-    start = datetime.strptime(from_date, "%Y-%m-%d")
-    end = datetime.strptime(to_date, "%Y-%m-%d")
-    async with httpx.AsyncClient(timeout=60) as client:
-        window_start = start
-        while window_start <= end:
-            window_end = min(window_start + timedelta(days=29), end)
-            next_token = ""
-            while True:
-                params = {
-                    "from": window_start.strftime("%Y-%m-%d"),
-                    "to": window_end.strftime("%Y-%m-%d"),
-                    "page_size": 300,
-                }
-                if next_token:
-                    params["next_page_token"] = next_token
-                r = await client.get(
-                    "https://api.zoom.us/v2/users/me/recordings",
-                    headers={"Authorization": f"Bearer {token}"},
-                    params=params,
-                )
-                if r.status_code != 200:
-                    print(f"[backfill] list error {r.status_code}: {r.text[:300]}")
-                    break
-                data = r.json()
-                results.extend(data.get("meetings", []))
-                next_token = data.get("next_page_token") or ""
-                if not next_token:
-                    break
-            window_start = window_end + timedelta(days=1)
-    return results
-
-
-@app.post("/api/teacher/backfill")
-async def teacher_backfill(body: BackfillBody):
-    if not check_passcode(body.passcode):
-        return JSONResponse({"error": "unauthorized"}, status_code=401)
-    from datetime import datetime, timedelta
-    to_date = body.to_date or datetime.utcnow().strftime("%Y-%m-%d")
-    from_date = body.from_date or (datetime.utcnow() - timedelta(days=180)).strftime("%Y-%m-%d")
-    try:
-        meetings = await _list_cloud_recordings(from_date, to_date)
-    except Exception as e:
-        return JSONResponse({"error": f"Could not list cloud recordings: {e}"}, status_code=502)
-    added = 0
-    skipped = 0
-    errors = 0
-    details = []
-    for m in meetings:
-        try:
-            was_added = await ingest_zoom_meeting(m)
-            if was_added:
-                added += 1
-                details.append({
-                    "topic": m.get("topic"),
-                    "date": (m.get("start_time") or "")[:10],
-                    "source": _detect_source(m),
-                })
-            else:
-                skipped += 1
-        except Exception as e:
-            errors += 1
-            print(f"[backfill] ingest error for {m.get('topic')}: {e}")
-    print(f"[backfill] range {from_date}..{to_date}: found={len(meetings)} "
-          f"added={added} skipped={skipped} errors={errors}")
-    return {
-        "ok": True,
-        "range": {"from": from_date, "to": to_date},
-        "found": len(meetings),
-        "added": added,
-        "skipped_already_present": skipped,
-        "errors": errors,
-        "added_recordings": details,
-        "total_recordings_now": len(RECORDINGS),
-    }
-
-
 @app.get("/api/health")
 def health():
     return {"status": "ok", "recordings": len(RECORDINGS)}

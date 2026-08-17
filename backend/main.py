@@ -19,6 +19,7 @@ import secrets
 import bcrypt
 
 DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
+FRONTEND_DIR = os.path.join(os.path.dirname(__file__), "..", "frontend")
 DATA_PATH = os.path.join(DATA_DIR, "recordings.json")
 CONFIG_PATH = os.path.join(DATA_DIR, "config.json")
 QLOG_PATH = os.path.join(DATA_DIR, "question_log.json")
@@ -620,6 +621,46 @@ class PasscodeBody(BaseModel):
     new_passcode: str
 
 
+ALLOWED_LOGO_EXT = {"png": "png", "jpg": "jpg", "jpeg": "jpg", "webp": "webp", "gif": "gif", "svg": "svg"}
+LOGO_MAX_BYTES = 2 * 1024 * 1024  # 2 MB
+
+
+@app.post("/api/teacher/logo")
+async def upload_logo(passcode: str = Form(...), file: UploadFile = File(...)):
+    if not check_passcode(passcode):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    ext = (file.filename or "").rsplit(".", 1)[-1].lower() if "." in (file.filename or "") else ""
+    if ext not in ALLOWED_LOGO_EXT:
+        return JSONResponse({"error": "Please upload a PNG, JPG, WEBP, GIF or SVG image."}, status_code=400)
+    data = await file.read()
+    if len(data) > LOGO_MAX_BYTES:
+        return JSONResponse({"error": "Image is too large (max 2 MB)."}, status_code=400)
+    if not os.path.isdir(FRONTEND_DIR):
+        return JSONResponse({"error": "Frontend directory not found on server."}, status_code=500)
+    save_ext = ALLOWED_LOGO_EXT[ext]
+    # remove any previous logo variants so only one remains
+    for e in set(ALLOWED_LOGO_EXT.values()):
+        old = os.path.join(FRONTEND_DIR, f"logo.{e}")
+        if os.path.exists(old):
+            try:
+                os.remove(old)
+            except OSError:
+                pass
+    with open(os.path.join(FRONTEND_DIR, f"logo.{save_ext}"), "wb") as f:
+        f.write(data)
+    cfg = load_config()
+    cfg["logo"] = f"/logo.{save_ext}"
+    save_config(cfg)
+    return {"ok": True, "logo": cfg["logo"]}
+
+
+@app.get("/api/branding")
+def branding():
+    """Public: lets the frontend know if a custom logo has been uploaded."""
+    cfg = load_config()
+    return {"logo": cfg.get("logo") or ""}
+
+
 @app.post("/api/teacher/passcode")
 def change_passcode(body: PasscodeBody):
     if not check_passcode(body.passcode):
@@ -794,7 +835,6 @@ def health():
 
 
 # ---------- serve frontend ----------
-FRONTEND_DIR = os.path.join(os.path.dirname(__file__), "..", "frontend")
 if os.path.isdir(FRONTEND_DIR):
     @app.get("/")
     def index():

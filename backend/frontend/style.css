@@ -204,6 +204,15 @@ button{font-family:inherit;cursor:pointer;border:none}
 .switch.on::after{transform:translateX(19px)}
 .saved-flash{color:var(--ok);font-size:12px;opacity:0;transition:.2s;font-weight:800}
 .saved-flash.show{opacity:1}
+.transcribe-wrap{display:flex;align-items:center;gap:10px;margin-top:8px;flex-wrap:wrap}
+.transcribe-btn{padding:7px 13px;border-radius:10px;background:var(--panel2);border:1.5px solid var(--line);color:var(--brand-d);font-weight:800;font-size:12.5px;transition:.14s}
+.transcribe-btn:hover{border-color:var(--brand);background:#fff}
+.transcribe-btn:disabled{opacity:.55;cursor:default}
+.transcribe-btn.needs{background:linear-gradient(135deg,var(--brand),var(--brand-d));color:#fff;border-color:transparent;box-shadow:0 4px 12px rgba(11,191,191,.28)}
+.transcribe-status{font-size:12px;font-weight:700;color:var(--muted)}
+.transcribe-status.working{color:var(--brand-d)}
+.transcribe-status.ok{color:var(--ok)}
+.transcribe-status.error{color:var(--bad)}
 
 .add-student{display:flex;gap:10px;margin-bottom:8px;max-width:760px;flex-wrap:wrap}
 .add-student input{flex:1;min-width:160px;padding:12px 14px;border-radius:11px;background:var(--panel2);border:1.5px solid var(--line);color:var(--text);font-size:14px;font-weight:600}

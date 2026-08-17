@@ -497,3 +497,95 @@ async function loadBranding() {
   } catch (e) { /* ignore — keep emoji fallback */ }
 }
 loadBranding();
+// ---------- Import existing Zoom cloud recordings (backfill) ----------
+// Adds a button to the Recordings pane that pulls recordings already stored in
+// Zoom cloud (meetings + webinars) into the app via POST /api/teacher/backfill.
+// Self-contained + CSP-safe (no inline handlers). Injects its own button so it
+// works regardless of small differences in index.html markup.
+(function setupImportRecordings() {
+  function injectImportButton() {
+    const pane = el("teacherRecordings");
+    if (!pane) return;
+
+    // If the button already exists in the HTML markup, just bind the handler
+    // once and stop (don't create a duplicate).
+    let btn = el("importRecBtn");
+    if (btn) {
+      if (!btn._backfillBound) {
+        btn.addEventListener("click", runBackfill);
+        btn._backfillBound = true;
+      }
+      return;
+    }
+
+    // Otherwise create the button + status span dynamically (fallback).
+    const head = pane.querySelector(".pane-head") || pane;
+
+    const bar = document.createElement("div");
+    bar.className = "import-rec-bar";
+    bar.style.cssText = "display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:12px;";
+
+    btn = document.createElement("button");
+    btn.id = "importRecBtn";
+    btn.className = "primary";
+    btn.type = "button";
+    btn.textContent = "⬇️ Import cloud recordings";
+
+    const status = document.createElement("span");
+    status.id = "importRecStatus";
+    status.className = "meta";
+    status.style.cssText = "font-size:0.9em;color:#555;";
+
+    bar.appendChild(btn);
+    bar.appendChild(status);
+    head.appendChild(bar);
+
+    btn.addEventListener("click", runBackfill);
+    btn._backfillBound = true;
+  }
+
+  async function runBackfill() {
+    const btn = el("importRecBtn");
+    const status = el("importRecStatus");
+    if (!btn) return;
+    if (!state.passcode) { if (status) status.textContent = "Please sign in as teacher first."; return; }
+
+    btn.disabled = true;
+    const original = btn.textContent;
+    btn.textContent = "Importing…";
+    if (status) status.textContent = "Contacting Zoom and importing recordings — this can take a minute…";
+
+    try {
+      const res = await fetch(`${API}/api/teacher/backfill`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ passcode: state.passcode }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        if (status) status.textContent = "Import failed: " + (data.error || ("HTTP " + res.status));
+      } else {
+        const added = data.added || 0;
+        const skipped = data.skipped_already_present || 0;
+        const found = data.found || 0;
+        if (status) {
+          status.textContent =
+            `Done — imported ${added} new recording${added === 1 ? "" : "s"} ` +
+            `(${skipped} already present, ${found} found in Zoom). ` +
+            `New ones are hidden until you make them visible.`;
+        }
+        if (typeof loadTeacherRecordings === "function") loadTeacherRecordings();
+      }
+    } catch (e) {
+      if (status) status.textContent = "Import failed: could not reach the server. Try again.";
+    } finally {
+      btn.disabled = false;
+      btn.textContent = original;
+    }
+  }
+
+  const tabRec = el("tabRecordings");
+  if (tabRec) tabRec.addEventListener("click", () => setTimeout(injectImportButton, 0));
+  document.addEventListener("DOMContentLoaded", injectImportButton);
+  injectImportButton();
+})();

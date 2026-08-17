@@ -64,18 +64,46 @@ el("pinInput").addEventListener("keydown", e => { if (e.key === "Enter") enter()
 
 // ---------- teacher gate ----------
 async function teacherLogin() {
+  const btn = el("passBtn");
+  const errEl = el("passErr");
   const p = el("passInput").value.trim();
-  if (!p) return;
-  const res = await fetch(`${API}/api/teacher/login`, {
-    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ passcode: p })
-  });
-  if (res.ok) {
-    state.passcode = p;
-    el("passErr").classList.add("hidden");
-    show("teacher");
-    loadTeacherRecordings();
-  } else {
-    el("passErr").classList.remove("hidden");
+  if (!p) { errEl.textContent = "Please type your passcode."; errEl.classList.remove("hidden"); return; }
+
+  // visible feedback so a slow/asleep server never looks "frozen"
+  const originalLabel = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "Connecting… (server may be waking up)";
+  errEl.classList.add("hidden");
+
+  try {
+    const res = await fetch(`${API}/api/teacher/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ passcode: p })
+    });
+
+    let data = {};
+    try { data = await res.json(); } catch (e) { /* non-JSON response */ }
+
+    if (res.ok && data.ok) {
+      state.passcode = p;
+      errEl.classList.add("hidden");
+      show("teacher");
+      loadTeacherRecordings();
+    } else if (res.status === 401) {
+      errEl.textContent = "Wrong passcode. The default is teach123.";
+      errEl.classList.remove("hidden");
+    } else {
+      errEl.textContent = `Login failed (server responded ${res.status}). Please try again.`;
+      errEl.classList.remove("hidden");
+    }
+  } catch (e) {
+    // network error, CORS, timeout, or server still asleep
+    errEl.textContent = "Couldn't reach the server. It may be waking up — wait ~30s and try again, or check your connection.";
+    errEl.classList.remove("hidden");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = originalLabel;
   }
 }
 el("passBtn").addEventListener("click", teacherLogin);
@@ -298,10 +326,16 @@ function renderTeacherRecordings(list) {
   const box = el("tRecList"); box.innerHTML = "";
   list.forEach(r => {
     const row = document.createElement("div"); row.className = "t-rec";
+    const noTranscript = !r.segments;
+    const btnLabel = noTranscript ? "Generate transcript" : "Re-transcribe";
     row.innerHTML = `
       <div>
         <input class="title-in" value="${escapeHtml(r.title)}" />
-        <div class="orig">Original: ${escapeHtml(r.original_title)} · ${escapeHtml(r.date || "")} · ${r.segments} lines</div>
+        <div class="orig">Original: ${escapeHtml(r.original_title)} · ${escapeHtml(r.date || "")} · <span class="seg-count">${r.segments}</span> lines</div>
+        <div class="transcribe-wrap">
+          <button class="transcribe-btn ${noTranscript ? "needs" : ""}">${btnLabel}</button>
+          <span class="transcribe-status"></span>
+        </div>
       </div>
       <input class="unit-in" value="${escapeHtml(r.unit)}" placeholder="Unit / class" />
       <div>
@@ -313,7 +347,39 @@ function renderTeacherRecordings(list) {
     const sw = row.querySelector(".switch");
     const visLabel = row.querySelector(".vis-label");
     const flash = row.querySelector(".saved-flash");
+    const transBtn = row.querySelector(".transcribe-btn");
+    const transStatus = row.querySelector(".transcribe-status");
+    const segCount = row.querySelector(".seg-count");
     let visible = r.visible;
+
+    transBtn.addEventListener("click", async () => {
+      if (transBtn.disabled) return;
+      transBtn.disabled = true;
+      transStatus.className = "transcribe-status working";
+      transStatus.textContent = "Transcribing… this can take a few minutes.";
+      try {
+        const res = await fetch(`${API}/api/teacher/transcribe`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ passcode: state.passcode, id: r.id })
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          transStatus.className = "transcribe-status error";
+          transStatus.textContent = data.error || "Transcription failed.";
+        } else {
+          segCount.textContent = data.segments;
+          transStatus.className = "transcribe-status ok";
+          transStatus.textContent = `Done — ${data.segments} lines.`;
+          transBtn.textContent = "Re-transcribe";
+          transBtn.classList.remove("needs");
+        }
+      } catch (e) {
+        transStatus.className = "transcribe-status error";
+        transStatus.textContent = "Network error — please try again.";
+      } finally {
+        transBtn.disabled = false;
+      }
+    });
 
     function save() {
       fetch(`${API}/api/teacher/update`, {

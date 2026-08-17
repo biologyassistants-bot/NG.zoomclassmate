@@ -2,15 +2,21 @@ import json
 import os
 import re
 import math
+import io
+import base64
+import time
+import hashlib
+import hmac
 from collections import Counter
 
-from fastapi import FastAPI
+from fastapi import FastAPI, UploadFile, File, Form, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 import secrets
+import bcrypt
 
 DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
 DATA_PATH = os.path.join(DATA_DIR, "recordings.json")
@@ -18,7 +24,7 @@ CONFIG_PATH = os.path.join(DATA_DIR, "config.json")
 QLOG_PATH = os.path.join(DATA_DIR, "question_log.json")
 ROSTER_PATH = os.path.join(DATA_DIR, "roster.json")
 
-# in-memory active student sessions: token -> {student_id, name}
+# in-memory active student sessions: token -> {student_id, name, courses}
 SESSIONS = {}
 
 
@@ -36,6 +42,22 @@ def save_roster(roster):
 
 def gen_pin():
     return f"{secrets.randbelow(10000):04d}"
+
+
+def hash_pw(pw: str) -> str:
+    # bcrypt only accepts up to 72 bytes; truncate defensively.
+    pw_bytes = (pw or "").encode("utf-8")[:72]
+    return bcrypt.hashpw(pw_bytes, bcrypt.gensalt()).decode("utf-8")
+
+
+def verify_pw(pw: str, hashed: str) -> bool:
+    if not hashed:
+        return False
+    try:
+        pw_bytes = (pw or "").encode("utf-8")[:72]
+        return bcrypt.checkpw(pw_bytes, hashed.encode("utf-8"))
+    except Exception:
+        return False
 
 # default teacher passcode; teacher can change it in the dashboard
 DEFAULT_PASSCODE = "teach123"
@@ -226,6 +248,93 @@ async def llm(messages, max_tokens=1200, temperature=0.1):
     )
 
 
+# ---------- Zoom integration (server-to-server OAuth + webhook) ----------
+ZOOM_ACCOUNT_ID     = os.environ.get("ZOOM_ACCOUNT_ID", "").strip()
+ZOOM_CLIENT_ID      = os.environ.get("ZOOM_CLIENT_ID", "").strip()
+ZOOM_CLIENT_SECRET  = os.environ.get("ZOOM_CLIENT_SECRET", "").strip()
+ZOOM_WEBHOOK_SECRET = os.environ.get("ZOOM_WEBHOOK_SECRET", "").strip()
+
+_zoom_tok = {"token": None, "exp": 0}
+
+
+async def zoom_token():
+    if _zoom_tok["token"] and _zoom_tok["exp"] > time.time():
+        return _zoom_tok["token"]
+    creds = base64.b64encode(f"{ZOOM_CLIENT_ID}:{ZOOM_CLIENT_SECRET}".encode()).decode()
+    import httpx
+    async with httpx.AsyncClient(timeout=30) as client:
+        r = await client.post(
+            "https://zoom.us/oauth/token",
+            headers={"Authorization": f"Basic {creds}"},
+            params={"grant_type": "account_credentials", "account_id": ZOOM_ACCOUNT_ID},
+        )
+        r.raise_for_status()
+        d = r.json()
+    _zoom_tok["token"] = d["access_token"]
+    _zoom_tok["exp"] = time.time() + d.get("expires_in", 3600) - 60
+    return _zoom_tok["token"]
+
+
+def parse_vtt(text):
+    """Turn a WEBVTT transcript into [{start, speaker, text}, ...]."""
+    segments = []
+    blocks = re.split(r"\n\s*\n", text.strip())
+    for b in blocks:
+        lines = [l for l in b.splitlines() if l.strip()]
+        if not lines:
+            continue
+        # find the timing line "00:00:01.000 --> 00:00:04.000"
+        tline_i = next((i for i, l in enumerate(lines) if "-->" in l), None)
+        if tline_i is None:
+            continue
+        start = lines[tline_i].split("-->")[0].strip().split(".")[0]  # HH:MM:SS
+        body = " ".join(lines[tline_i + 1:]).strip()
+        speaker = ""
+        m = re.match(r"^([^:]{1,40}):\s*(.*)$", body)
+        if m:
+            speaker, body = m.group(1).strip(), m.group(2).strip()
+        if body:
+            segments.append({"start": start, "speaker": speaker, "text": body})
+    return segments
+
+
+async def ingest_zoom_meeting(obj):
+    """Given a webhook payload's 'object', download its transcript and add a hidden recording."""
+    meeting_id = str(obj.get("id") or obj.get("uuid") or secrets.token_hex(6))
+    if meeting_id in REC_BY_ID:
+        return False
+    topic = obj.get("topic", "Untitled class")
+    start_time = (obj.get("start_time") or "")[:10]
+    files = obj.get("recording_files", [])
+    transcript = next((f for f in files if f.get("file_type") == "TRANSCRIPT"), None)
+
+    segments = []
+    if transcript:
+        token = await zoom_token()
+        url = transcript.get("download_url")
+        import httpx
+        async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
+            # Zoom accepts the OAuth token as a bearer header for downloads
+            r = await client.get(url, headers={"Authorization": f"Bearer {token}"})
+            if r.status_code == 200:
+                segments = parse_vtt(r.text)
+
+    new_rec = {
+        "id": meeting_id,
+        "topic": topic,
+        "original_topic": topic,
+        "display_title": topic,
+        "date": start_time,
+        "unit": "",            # teacher assigns later
+        "visible": False,      # hidden until teacher reviews
+        "segments": segments,
+    }
+    RECORDINGS.append(new_rec)
+    REC_BY_ID[meeting_id] = new_rec
+    save_recordings(RECORDINGS)
+    return True
+
+
 # ---------- API ----------
 def _card(r, include_hidden=False):
     return {
@@ -240,14 +349,30 @@ def _card(r, include_hidden=False):
     }
 
 
-@app.get("/api/recordings")
-def list_recordings():
-    """Student-facing: only visible recordings, grouped info included."""
-    out = [_card(r) for r in RECORDINGS if r.get("visible", True)]
+class RecListBody(BaseModel):
+    token: str | None = None
+
+
+@app.post("/api/recordings")
+def list_recordings(body: RecListBody):
+    """Student-facing: only visible recordings the student's courses allow."""
+    sess = valid_session(body.token)
+    if not sess:
+        return JSONResponse({"error": "Your session has expired. Please log in again."}, status_code=401)
+    my_courses = sess.get("courses", [])
+
+    def allowed(r):
+        if not r.get("visible", True):
+            return False
+        if not my_courses:          # no courses assigned -> see nothing
+            return False
+        return (r.get("unit") or "Unassigned") in my_courses
+
+    out = [_card(r) for r in RECORDINGS if allowed(r)]
     units = []
     seen = set()
     for r in RECORDINGS:
-        if not r.get("visible", True):
+        if not allowed(r):
             continue
         u = r.get("unit") or "Unassigned"
         if u not in seen:
@@ -278,20 +403,24 @@ def _norm(s):
 
 
 class StudentLoginBody(BaseModel):
-    name: str
-    pin: str
+    email: str
+    password: str
 
 
 @app.post("/api/student/login")
 def student_login(body: StudentLoginBody):
     roster = load_roster()
     for st in roster:
-        if _norm(st["name"]) == _norm(body.name) and st["pin"] == body.pin.strip():
+        if _norm(st.get("email")) == _norm(body.email) and verify_pw(body.password, st.get("password_hash")):
             token = secrets.token_urlsafe(24)
-            SESSIONS[token] = {"student_id": st["id"], "name": st["name"]}
-            return {"ok": True, "token": token, "name": st["name"]}
+            SESSIONS[token] = {
+                "student_id": st["id"],
+                "name": st.get("name") or st.get("email"),
+                "courses": st.get("courses", []),
+            }
+            return {"ok": True, "token": token, "name": SESSIONS[token]["name"]}
     return JSONResponse(
-        {"ok": False, "error": "That name and PIN don't match our class roster. Check with your teacher."},
+        {"ok": False, "error": "That email and password don't match our class roster. Check with your teacher."},
         status_code=401,
     )
 
@@ -309,13 +438,22 @@ class RosterAuth(BaseModel):
 def list_students(body: RosterAuth):
     if not check_passcode(body.passcode):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
-    return {"students": load_roster()}
+    safe = [{
+        "id": s["id"],
+        "name": s.get("name", ""),
+        "email": s.get("email", ""),
+        "courses": s.get("courses", []),
+        "has_password": bool(s.get("password_hash")),
+    } for s in load_roster()]
+    return {"students": safe}
 
 
 class AddStudentBody(BaseModel):
     passcode: str
     name: str
     email: str | None = ""
+    password: str | None = ""
+    courses: str | None = ""
 
 
 @app.post("/api/teacher/students/add")
@@ -323,20 +461,26 @@ def add_student(body: AddStudentBody):
     if not check_passcode(body.passcode):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     name = body.name.strip()
-    if not name:
-        return JSONResponse({"error": "Name required"}, status_code=400)
+    email = (body.email or "").strip()
+    if not email:
+        return JSONResponse({"error": "Email required"}, status_code=400)
     roster = load_roster()
-    if any(_norm(s["name"]) == _norm(name) for s in roster):
-        return JSONResponse({"error": "A student with that name already exists"}, status_code=400)
+    if any(_norm(s.get("email")) == _norm(email) for s in roster):
+        return JSONResponse({"error": "A student with that email already exists"}, status_code=400)
+    courses = [c.strip() for c in (body.courses or "").split(";") if c.strip()]
     student = {
         "id": secrets.token_hex(6),
-        "name": name,
-        "email": (body.email or "").strip(),
-        "pin": gen_pin(),
+        "name": name or email.split("@")[0],
+        "email": email,
+        "courses": courses,
+        "password_hash": hash_pw(body.password) if (body.password or "").strip() else "",
     }
     roster.append(student)
     save_roster(roster)
-    return {"ok": True, "student": student}
+    return {"ok": True, "student": {
+        "id": student["id"], "name": student["name"], "email": student["email"],
+        "courses": student["courses"], "has_password": bool(student["password_hash"]),
+    }}
 
 
 class RemoveStudentBody(BaseModel):
@@ -356,22 +500,61 @@ def remove_student(body: RemoveStudentBody):
     return {"ok": True}
 
 
-class ResetPinBody(BaseModel):
-    passcode: str
-    id: str
-
-
-@app.post("/api/teacher/students/reset_pin")
-def reset_pin(body: ResetPinBody):
-    if not check_passcode(body.passcode):
+@app.post("/api/teacher/students/import")
+async def import_students(passcode: str = Form(...), file: UploadFile = File(...)):
+    if not check_passcode(passcode):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
+    try:
+        import openpyxl
+        content = await file.read()
+        wb = openpyxl.load_workbook(io.BytesIO(content))
+        ws = wb.active
+        rows = list(ws.iter_rows(values_only=True))
+    except Exception as e:
+        return JSONResponse({"error": f"Could not read the Excel file: {e}"}, status_code=400)
+    if not rows:
+        return JSONResponse({"error": "The sheet is empty."}, status_code=400)
+
+    header = [str(h).strip().lower() if h is not None else "" for h in rows[0]]
+
+    def col(name):
+        return header.index(name) if name in header else -1
+
+    ei, pi, ni, ci = col("email"), col("password"), col("name"), col("courses")
+    if ei < 0 or pi < 0:
+        return JSONResponse({"error": "The sheet must have 'email' and 'password' columns."}, status_code=400)
+
     roster = load_roster()
-    for s in roster:
-        if s["id"] == body.id:
-            s["pin"] = gen_pin()
-            save_roster(roster)
-            return {"ok": True, "pin": s["pin"]}
-    return JSONResponse({"error": "not found"}, status_code=404)
+    by_email = {_norm(s.get("email")): s for s in roster if s.get("email")}
+    added = updated = 0
+    for row in rows[1:]:
+        if not row or ei >= len(row) or not row[ei]:
+            continue
+        email = str(row[ei]).strip()
+        pw = str(row[pi]).strip() if pi < len(row) and row[pi] else ""
+        name = str(row[ni]).strip() if ni >= 0 and ni < len(row) and row[ni] else email.split("@")[0]
+        courses = []
+        if ci >= 0 and ci < len(row) and row[ci]:
+            courses = [c.strip() for c in str(row[ci]).split(";") if c.strip()]
+        key = _norm(email)
+        if key in by_email:
+            s = by_email[key]
+            s["name"] = name
+            s["courses"] = courses
+            if pw:
+                s["password_hash"] = hash_pw(pw)
+            updated += 1
+        else:
+            roster.append({
+                "id": secrets.token_hex(6),
+                "name": name,
+                "email": email,
+                "courses": courses,
+                "password_hash": hash_pw(pw) if pw else "",
+            })
+            added += 1
+    save_roster(roster)
+    return {"ok": True, "added": added, "updated": updated, "total": len(roster)}
 
 
 # ---------- teacher endpoints ----------
@@ -554,6 +737,36 @@ async def quiz(body: QuizBody):
     if not data or "questions" not in data:
         return JSONResponse({"error": "Could not generate quiz", "raw": raw[:500]}, status_code=500)
     return data
+
+
+# ---------- Zoom webhook ----------
+@app.post("/api/zoom/webhook")
+async def zoom_webhook(request: Request):
+    body = await request.body()
+    payload = await request.json()
+
+    # 1) Zoom URL validation handshake
+    if payload.get("event") == "endpoint.url_validation":
+        plain = payload["payload"]["plainToken"]
+        sig = hmac.new(ZOOM_WEBHOOK_SECRET.encode(), plain.encode(), hashlib.sha256).hexdigest()
+        return {"plainToken": plain, "encryptedToken": sig}
+
+    # 2) Verify the signature of real events
+    ts = request.headers.get("x-zm-request-timestamp", "")
+    got = request.headers.get("x-zm-signature", "")
+    message = f"v0:{ts}:{body.decode('utf-8')}".encode()
+    expected = "v0=" + hmac.new(ZOOM_WEBHOOK_SECRET.encode(), message, hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(expected, got):
+        return JSONResponse({"error": "bad signature"}, status_code=401)
+
+    # 3) Handle recording completed
+    if payload.get("event") in ("recording.completed", "recording.transcript_completed"):
+        obj = payload.get("payload", {}).get("object", {})
+        try:
+            await ingest_zoom_meeting(obj)
+        except Exception as e:
+            print("Zoom ingest error:", e)
+    return {"ok": True}
 
 
 @app.get("/api/health")

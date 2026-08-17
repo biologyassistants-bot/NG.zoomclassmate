@@ -260,6 +260,102 @@ def retrieve(rec, query, k=18, window=1):
         for j in range(max(0, i - window), min(len(segs), i + window + 1)):
             chosen.add(j)
     return sorted(chosen)
+# ---------- teacher notes: extraction + retrieval ----------
+def extract_text_from_upload(data: bytes, filename: str) -> str:
+    """Extract plain text from an uploaded PDF / DOCX / TXT file (server-side only).
+    The original file is never stored or served; only the extracted text is kept."""
+    name = (filename or "").lower()
+    if name.endswith(".txt") or name.endswith(".md"):
+        for enc in ("utf-8", "utf-16", "latin-1"):
+            try:
+                return data.decode(enc)
+            except Exception:
+                continue
+        return data.decode("utf-8", "replace")
+    if name.endswith(".pdf"):
+        from pypdf import PdfReader
+        reader = PdfReader(io.BytesIO(data))
+        return "\n".join((page.extract_text() or "") for page in reader.pages)
+    if name.endswith(".docx"):
+        import docx
+        doc = docx.Document(io.BytesIO(data))
+        return "\n".join(p.text for p in doc.paragraphs)
+    raise ValueError("Unsupported file type. Please upload a PDF, DOCX, TXT or MD file.")
+
+
+def chunk_note_text(text: str, target_chars=700):
+    """Split note text into paragraph-ish chunks for retrieval. Keeps chunks small
+    so the AI can quote precisely and we can rank them against a question."""
+    text = re.sub(r"\r\n?", "\n", text or "")
+    paras = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
+    chunks = []
+    buf = ""
+    for p in paras:
+        if len(buf) + len(p) + 1 <= target_chars:
+            buf = f"{buf}\n{p}".strip()
+        else:
+            if buf:
+                chunks.append(buf)
+            # if a single paragraph is huge, hard-split it
+            while len(p) > target_chars:
+                chunks.append(p[:target_chars])
+                p = p[target_chars:]
+            buf = p
+    if buf:
+        chunks.append(buf)
+    return [c for c in chunks if c.strip()]
+
+
+def retrieve_note_chunks(rec, query, k=4):
+    """Return the top-k most relevant note chunks (across all notes on this
+    recording) for the query, as a list of {note_title, text}. tf-idf ranked."""
+    notes = rec.get("notes") or []
+    entries = []  # (note_title, chunk_text)
+    for note in notes:
+        for ch in note.get("chunks", []):
+            entries.append((note.get("filename") or "notes", ch))
+    if not entries:
+        return []
+    docs = [tokenize(t) for (_, t) in entries]
+    df = Counter()
+    for d in docs:
+        for w in set(d):
+            df[w] += 1
+    N = len(docs) or 1
+    idf = {w: math.log(1 + N / c) for w, c in df.items()}
+    q = Counter(tokenize(query))
+    scores = []
+    for d in docs:
+        if not d:
+            scores.append(0.0); continue
+        tf = Counter(d)
+        s = 0.0
+        for w, qc in q.items():
+            if w in tf:
+                s += idf.get(w, 0.0) * (tf[w] / len(d)) * qc
+        scores.append(s)
+    ranked = sorted(range(len(entries)), key=lambda i: scores[i], reverse=True)
+    chosen = [i for i in ranked if scores[i] > 0][:k]
+    if not chosen:  # no lexical overlap → give the first couple of chunks as fallback
+        chosen = list(range(min(2, len(entries))))
+    return [{"note_title": entries[i][0], "text": entries[i][1]} for i in chosen]
+
+
+def notes_context(rec, query, max_chars=8000):
+    """Build a labeled notes context block for the LLM prompt (teacher-only source)."""
+    chunks = retrieve_note_chunks(rec, query)
+    if not chunks:
+        return ""
+    out, total = [], 0
+    for c in chunks:
+        block = f'[NOTE: {c["note_title"]}] {c["text"].strip()}'
+        if total + len(block) > max_chars:
+            break
+        out.append(block)
+        total += len(block)
+    return "\n\n".join(out)
+
+
 def context_from_indices(rec, indices, max_chars=45000):
     segs = rec["segments"]
     lines = []
@@ -751,6 +847,16 @@ def _card(r, include_hidden=False):
         "has_summary": bool(r.get("summary")),
         "summary": r.get("summary") or "",
         "topics": r.get("topics") or [],
+        # student-safe: only whether notes exist + how many, never their content
+        "has_notes": bool(r.get("notes")),
+        "notes_count": len(r.get("notes") or []),
+        # teacher-only: filenames + sizes for management (no full text)
+        "notes": ([
+            {"id": n.get("id"), "filename": n.get("filename"),
+             "chars": sum(len(c) for c in n.get("chunks", [])),
+             "chunks": len(n.get("chunks", []))}
+            for n in (r.get("notes") or [])
+        ] if include_hidden else None),
     }
 class RecListBody(BaseModel):
     token: str | None = None
@@ -1022,22 +1128,36 @@ async def ask(body: AskBody):
         return JSONResponse({"error": "Recording not found"}, status_code=404)
     idx = retrieve(rec, body.question)
     ctx = context_from_indices(rec, idx)
+    notes_ctx = notes_context(rec, body.question)
     # Answers are always in English (school policy), regardless of the question's language.
     lang_line = "\nAlways respond in English, even if the student's question is written in another language."
+    notes_rules = ""
+    if notes_ctx:
+        notes_rules = (
+            "\n5. You also have TEACHER NOTES, shown as blocks prefixed with [NOTE: filename]. "
+            "These are extra study material for this class. You MAY use them to answer.\n"
+            "6. When you use information from the notes, quote the relevant part in \"quotation marks\" "
+            "and attribute it, e.g. According to the class notes: \"...\".\n"
+            "7. NEVER reproduce a note in full or dump large portions verbatim — quote only the parts "
+            "directly relevant to the question. The notes are not downloadable by students."
+        )
     system = (
         "You are ClassMate, a study assistant for students. You answer ONLY using the "
-        "provided class recording transcript excerpts. Each excerpt is prefixed with a "
-        "timestamp like [12:34] and sometimes a speaker name.\n"
+        "provided class recording transcript excerpts and any teacher notes provided. "
+        "Each transcript excerpt is prefixed with a timestamp like [12:34] and sometimes a speaker name.\n"
         "RULES:\n"
-        "1. Base every claim strictly on the transcript. Do NOT use outside knowledge.\n"
+        "1. Base every claim strictly on the transcript and the teacher notes. Do NOT use outside knowledge.\n"
         "2. When you state something from the recording, cite the timestamp in parentheses, e.g. (at 12:34).\n"
-        "3. If the answer is not covered in the excerpts, say clearly that it wasn't covered in this recording, and do not invent an answer.\n"
+        "3. If the answer is in neither the transcript nor the notes, say clearly that it wasn't covered, and do not invent an answer.\n"
         "4. Be clear, friendly and concise, like a helpful tutor."
+        + notes_rules
         + lang_line
     )
+    notes_block = f"\n\nTeacher notes for this class:\n{notes_ctx}" if notes_ctx else ""
     user = (
         f"Class recording: {rec.get('display_title') or rec.get('topic')}\n\n"
-        f"Transcript excerpts:\n{ctx}\n\n"
+        f"Transcript excerpts:\n{ctx}"
+        f"{notes_block}\n\n"
         f"Student question: {body.question}"
     )
     try:
@@ -1260,6 +1380,64 @@ async def teacher_backfill(body: BackfillBody):
         "added_recordings": details,
         "total_recordings_now": len(RECORDINGS),
     }
+
+
+# ---------- teacher notes endpoints ----------
+NOTE_MAX_BYTES = 10 * 1024 * 1024  # 10 MB per file
+
+
+@app.post("/api/teacher/notes/upload")
+async def upload_note(passcode: str = Form(...), id: str = Form(...), file: UploadFile = File(...)):
+    """Attach a note file to a recording. The file is parsed to text server-side;
+    the original file is NOT stored and is never served to students."""
+    if not check_passcode(passcode):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    rec = REC_BY_ID.get(id)
+    if not rec:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    data = await file.read()
+    if len(data) > NOTE_MAX_BYTES:
+        return JSONResponse({"error": "File is too large (max 10 MB)."}, status_code=400)
+    try:
+        text = extract_text_from_upload(data, file.filename or "")
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+    except Exception as e:
+        return JSONResponse({"error": f"Could not read that file: {e}"}, status_code=422)
+    chunks = chunk_note_text(text)
+    if not chunks:
+        return JSONResponse({"error": "No readable text found in that file."}, status_code=422)
+    note = {
+        "id": secrets.token_hex(6),
+        "filename": (file.filename or "notes"),
+        "chunks": chunks,
+    }
+    rec.setdefault("notes", []).append(note)
+    save_recordings(RECORDINGS)
+    return {"ok": True, "id": id, "note": {"id": note["id"], "filename": note["filename"],
+            "chars": sum(len(c) for c in chunks), "chunks": len(chunks)},
+            "recording": _card(rec, include_hidden=True)}
+
+
+class DeleteNoteBody(BaseModel):
+    passcode: str
+    id: str          # recording id
+    note_id: str
+
+
+@app.post("/api/teacher/notes/delete")
+def delete_note(body: DeleteNoteBody):
+    if not check_passcode(body.passcode):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    rec = REC_BY_ID.get(body.id)
+    if not rec:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    before = len(rec.get("notes") or [])
+    rec["notes"] = [n for n in (rec.get("notes") or []) if n.get("id") != body.note_id]
+    if len(rec["notes"]) == before:
+        return JSONResponse({"error": "note not found"}, status_code=404)
+    save_recordings(RECORDINGS)
+    return {"ok": True, "recording": _card(rec, include_hidden=True)}
 
 
 class TranscribeBody(BaseModel):

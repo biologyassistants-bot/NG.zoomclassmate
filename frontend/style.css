@@ -303,7 +303,6 @@ button{font-family:inherit;cursor:pointer;border:none}
   .rec-filters .rec-count{margin-left:0}
 }
 
-
 /* =========================================================
    Professional upgrades: stats, toasts, analytics, bulk ops
    ========================================================= */
@@ -366,6 +365,23 @@ button{font-family:inherit;cursor:pointer;border:none}
   .stats-bar{grid-template-columns:repeat(2,1fr)}
 }
 
-
 /* English-only answer note (replaces the language selector) */
 .lang-note{display:inline-flex;align-items:center;gap:6px;font-size:12.5px;font-weight:800;color:var(--brand-d);background:rgba(11,191,191,.10);border:1px solid var(--line);border-radius:20px;padding:6px 12px}
+
+/* ---- teacher notes on recording rows ---- */
+.notes-box{margin-top:12px;border:1px dashed var(--line);border-radius:12px;padding:12px 14px;background:var(--panel2)}
+.notes-head{font-size:13px;font-weight:800;color:var(--text)}
+.notes-hint{font-weight:600;color:var(--muted);font-size:11.5px}
+.notes-list{display:flex;flex-direction:column;gap:6px;margin:8px 0}
+.notes-empty{font-size:12.5px;color:var(--muted);font-weight:600}
+.note-item{display:flex;align-items:center;gap:10px;background:#fff;border:1px solid var(--line);border-radius:9px;padding:7px 11px}
+.note-name{font-weight:700;font-size:13px;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.note-meta{font-size:11.5px;color:var(--muted);font-weight:600}
+.note-del{padding:4px 9px;font-size:11.5px}
+.notes-add{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:6px}
+.note-file{font-size:12px;max-width:230px}
+.note-status{font-size:12px;color:var(--muted);font-weight:700}
+
+/* ---- student-side notes indicator (no access) ---- */
+.notes-dot{font-size:12px;opacity:.85}
+.notes-flag{color:var(--brand-d);font-weight:800}

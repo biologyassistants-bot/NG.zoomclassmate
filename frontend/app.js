@@ -175,7 +175,7 @@ el("askForm").addEventListener("submit", async e => {
   try {
     const res = await fetch(`${API}/api/ask`, {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ recording_id: state.current.id, question: q, language: el("langSelect").value, token: state.token })
+      body: JSON.stringify({ recording_id: state.current.id, question: q, language: "English", token: state.token })
     });
     const data = await res.json();
     removeTyping();
@@ -199,7 +199,7 @@ async function generateQuiz() {
   try {
     const res = await fetch(`${API}/api/quiz`, {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ recording_id: state.current.id, num_questions: 5, language: el("langSelect").value, token: state.token })
+      body: JSON.stringify({ recording_id: state.current.id, num_questions: 5, language: "English", token: state.token })
     });
     const data = await res.json();
     if (data.error || !data.questions) { el("quizBody").innerHTML = '<p>Sorry, I could not build a quiz for this recording. Try another one.</p>'; return; }

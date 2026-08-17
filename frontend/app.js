@@ -337,15 +337,17 @@ function populateCourseFilter(list) {
 function applyRecFilters() {
   const q = (el("recSearch").value || "").toLowerCase();
   const course = el("recCourseFilter").value;
+  const type = el("recTypeFilter").value;
   const sort = el("recSort").value;
 
   let list = teacherRecordings.filter(r => {
     const matchesCourse = !course || (r.unit || "Unassigned") === course;
+    const matchesType = !type || (r.source || "meeting") === type;
     const matchesText = !q ||
       (r.title || "").toLowerCase().includes(q) ||
       (r.original_title || "").toLowerCase().includes(q) ||
       (r.unit || "").toLowerCase().includes(q);
-    return matchesCourse && matchesText;
+    return matchesCourse && matchesType && matchesText;
   });
 
   const byDate = (a, b) => String(a.date || "").localeCompare(String(b.date || ""));
@@ -367,6 +369,7 @@ function applyRecFilters() {
 
 el("recSearch").addEventListener("input", applyRecFilters);
 el("recCourseFilter").addEventListener("change", applyRecFilters);
+el("recTypeFilter").addEventListener("change", applyRecFilters);
 el("recSort").addEventListener("change", applyRecFilters);
 
 function renderTeacherRecordings(list) {
@@ -374,10 +377,12 @@ function renderTeacherRecordings(list) {
   if (!list.length) { box.innerHTML = '<div class="roster-empty">No recordings match your filter.</div>'; return; }
   list.forEach(r => {
     const row = document.createElement("div"); row.className = "t-rec";
+    const isWebinar = (r.source || "meeting") === "webinar";
+    const badge = `<span class="type-badge" style="display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;border-radius:10px;margin-left:6px;${isWebinar ? "background:#efe0ff;color:#6b21a8;" : "background:#e0edff;color:#1d4ed8;"}">${isWebinar ? "📢 Webinar" : "🎥 Meeting"}</span>`;
     row.innerHTML = `
       <div>
         <input class="title-in" value="${escapeHtml(r.title)}" />
-        <div class="orig">Original: ${escapeHtml(r.original_title)} · ${escapeHtml(r.date || "")} · ${r.segments} lines</div>
+        <div class="orig">${badge} Original: ${escapeHtml(r.original_title)} · ${escapeHtml(r.date || "")} · ${r.segments} lines</div>
       </div>
       <input class="unit-in" value="${escapeHtml(r.unit)}" placeholder="Unit / class" />
       <div>

@@ -132,6 +132,10 @@
       <div class="pane-head">
         <h2>Manage recordings</h2>
         <p class="meta">New Zoom recordings arrive here automatically and start hidden. Rename them, assign a unit/course, then toggle Visible so the right students can see them. Changes save instantly.</p>
+        <div class="import-rec-bar" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:12px;">
+          <button id="importRecBtn" type="button" class="primary">⬇️ Import cloud recordings</button>
+          <span id="importRecStatus" class="meta" style="font-size:0.9em;"></span>
+        </div>
       </div>
       <div class="rec-filters">
         <input id="recSearch" type="text" class="filter-input" placeholder="Search recordings…" />

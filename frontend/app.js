@@ -30,27 +30,27 @@ function renderBotText(text) {
 }
 
 // ---------- landing / role nav ----------
-el("roleStudent").addEventListener("click", () => { show("gate"); el("nameInput").focus(); });
+el("roleStudent").addEventListener("click", () => { show("gate"); el("emailInput").focus(); });
 el("roleTeacher").addEventListener("click", () => { show("teacherGate"); el("passInput").focus(); });
 document.querySelectorAll("[data-back]").forEach(b => b.addEventListener("click", () => show(b.dataset.back)));
 
-// ---------- student gate (name + PIN against roster) ----------
+// ---------- student gate (email + password against roster) ----------
 async function enter() {
-  const n = el("nameInput").value.trim();
-  const pin = el("pinInput").value.trim();
+  const email = el("emailInput").value.trim();
+  const password = el("passwordInput").value;
   const errEl = el("studentErr");
   errEl.classList.add("hidden");
-  if (!n || !pin) { errEl.textContent = "Please enter your name and PIN."; errEl.classList.remove("hidden"); return; }
+  if (!email || !password) { errEl.textContent = "Please enter your email and password."; errEl.classList.remove("hidden"); return; }
   try {
     const res = await fetch(`${API}/api/student/login`, {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: n, pin })
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email, password })
     });
     const data = await res.json();
     if (!res.ok || !data.ok) { errEl.textContent = data.error || "Login failed."; errEl.classList.remove("hidden"); return; }
     state.name = data.name;
     state.token = data.token;
     el("whoName").textContent = data.name;
-    el("pinInput").value = "";
+    el("passwordInput").value = "";
     show("main");
     loadRecordings();
   } catch (e) {
@@ -59,8 +59,8 @@ async function enter() {
   }
 }
 el("enterBtn").addEventListener("click", enter);
-el("nameInput").addEventListener("keydown", e => { if (e.key === "Enter") el("pinInput").focus(); });
-el("pinInput").addEventListener("keydown", e => { if (e.key === "Enter") enter(); });
+el("emailInput").addEventListener("keydown", e => { if (e.key === "Enter") el("passwordInput").focus(); });
+el("passwordInput").addEventListener("keydown", e => { if (e.key === "Enter") enter(); });
 
 // ---------- teacher gate ----------
 async function teacherLogin() {
@@ -83,7 +83,10 @@ el("passInput").addEventListener("keydown", e => { if (e.key === "Enter") teache
 
 // ================= STUDENT VIEW =================
 async function loadRecordings() {
-  const res = await fetch(`${API}/api/recordings`);
+  const res = await fetch(`${API}/api/recordings`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ token: state.token })
+  });
   const data = await res.json();
   state.recordings = data.recordings || [];
   renderRecList(state.recordings);
@@ -247,21 +250,18 @@ async function loadStudents() {
 
 function renderStudents(list) {
   const box = el("studentList"); box.innerHTML = "";
-  if (!list.length) { box.innerHTML = '<div class="roster-empty">No students yet. Add your first student above.</div>'; return; }
+  if (!list.length) { box.innerHTML = '<div class="roster-empty">No students yet. Import a sheet or add one above.</div>'; return; }
   list.forEach(s => {
     const row = document.createElement("div"); row.className = "student-row";
+    const courses = (s.courses && s.courses.length) ? s.courses.join(", ") : "— no course —";
     row.innerHTML = `
-      <div><div class="s-name">${escapeHtml(s.name)}</div>${s.email ? `<div class="s-email">${escapeHtml(s.email)}</div>` : ""}</div>
-      <div class="pin-badge">${escapeHtml(s.pin)}</div>
-      <button class="s-btn reset">New PIN</button>
+      <div>
+        <div class="s-name">${escapeHtml(s.name)}</div>
+        ${s.email ? `<div class="s-email">${escapeHtml(s.email)}</div>` : ""}
+        <div class="s-email">Courses: ${escapeHtml(courses)}</div>
+      </div>
+      <div class="pin-badge">${s.has_password ? "🔑 set" : "no pw"}</div>
       <button class="s-btn danger remove">Remove</button>`;
-    row.querySelector(".reset").addEventListener("click", async () => {
-      const r = await fetch(`${API}/api/teacher/students/reset_pin`, {
-        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ passcode: state.passcode, id: s.id })
-      });
-      const d = await r.json();
-      if (d.ok) { row.querySelector(".pin-badge").textContent = d.pin; }
-    });
     row.querySelector(".remove").addEventListener("click", async () => {
       await fetch(`${API}/api/teacher/students/remove`, {
         method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ passcode: state.passcode, id: s.id })
@@ -275,15 +275,40 @@ function renderStudents(list) {
 el("addStudentBtn").addEventListener("click", async () => {
   const name = el("newStudentName").value.trim();
   const email = el("newStudentEmail").value.trim();
+  const password = el("newStudentPassword").value;
+  const courses = el("newStudentCourses").value.trim();
   const err = el("addStudentErr"); err.classList.add("hidden");
-  if (!name) { err.textContent = "Enter a student name."; err.classList.remove("hidden"); return; }
+  if (!email) { err.textContent = "Enter a student email."; err.classList.remove("hidden"); return; }
   const res = await fetch(`${API}/api/teacher/students/add`, {
-    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ passcode: state.passcode, name, email })
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ passcode: state.passcode, name, email, password, courses })
   });
   const data = await res.json();
   if (!res.ok || data.error) { err.textContent = data.error || "Could not add student."; err.classList.remove("hidden"); return; }
-  el("newStudentName").value = ""; el("newStudentEmail").value = "";
+  el("newStudentName").value = ""; el("newStudentEmail").value = ""; el("newStudentPassword").value = ""; el("newStudentCourses").value = "";
   loadStudents();
+});
+
+// ---------- Excel import ----------
+el("importBtn").addEventListener("click", async () => {
+  const fileInput = el("excelFile");
+  const msg = el("importMsg"); const err = el("importErr");
+  msg.classList.add("hidden"); err.classList.add("hidden");
+  if (!fileInput.files.length) { err.textContent = "Choose an .xlsx file first."; err.classList.remove("hidden"); return; }
+  const fd = new FormData();
+  fd.append("file", fileInput.files[0]);
+  fd.append("passcode", state.passcode);
+  try {
+    const res = await fetch(`${API}/api/teacher/students/import`, { method: "POST", body: fd });
+    const data = await res.json();
+    if (!res.ok || data.error) { err.textContent = data.error || "Import failed."; err.classList.remove("hidden"); return; }
+    msg.textContent = `Imported ✓  ${data.added} added, ${data.updated} updated.`;
+    msg.classList.remove("hidden");
+    fileInput.value = "";
+    loadStudents();
+  } catch (e) {
+    err.textContent = "Couldn't reach the server. Try again.";
+    err.classList.remove("hidden");
+  }
 });
 
 async function loadTeacherRecordings() {

@@ -807,11 +807,31 @@ async def zoom_webhook(request: Request):
     expected = "v0=" + hmac.new(ZOOM_WEBHOOK_SECRET.encode(), message, hashlib.sha256).hexdigest()
     if not hmac.compare_digest(expected, got):
         return JSONResponse({"error": "bad signature"}, status_code=401)
-    # 3) Handle recording completed
-    if payload.get("event") in ("recording.completed", "recording.transcript_completed"):
+    # 3) Handle recording completed — for BOTH meetings and webinars.
+    #    Zoom sends different event names depending on the source, e.g.:
+    #      meeting: recording.completed / recording.transcript_completed
+    #      webinar: webinar.recording_completed (and some accounts still use
+    #               recording.completed with a webinar-type object)
+    #    We accept any event that ends in a recording-completed variant so a
+    #    webinar recording is never silently dropped.
+    event = payload.get("event", "")
+    print(f"[zoom webhook] received event: {event}")  # visible in Render logs
+    recording_events = {
+        "recording.completed",
+        "recording.transcript_completed",
+        "webinar.recording_completed",
+        "webinar.recording_transcript_completed",
+    }
+    is_recording_event = (
+        event in recording_events
+        or ("recording" in event and ("completed" in event or "transcript" in event))
+    )
+    if is_recording_event:
         obj = payload.get("payload", {}).get("object", {})
         try:
-            await ingest_zoom_meeting(obj)
+            added = await ingest_zoom_meeting(obj)
+            print(f"[zoom webhook] ingest for '{obj.get('topic')}' "
+                  f"(type={obj.get('type')}, source={_detect_source(obj)}) -> added={added}")
         except Exception as e:
             print("Zoom ingest error:", e)
     return {"ok": True}

@@ -133,6 +133,21 @@
         <h2>Manage recordings</h2>
         <p class="meta">New Zoom recordings arrive here automatically and start hidden. Rename them, assign a unit/course, then toggle Visible so the right students can see them. Changes save instantly.</p>
       </div>
+      <div class="rec-filters" style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:14px;">
+        <input id="recSearch" type="text" placeholder="Search recordings…" style="flex:1;min-width:160px;" />
+        <select id="recCourseFilter" title="Filter by course">
+          <option value="">All courses</option>
+        </select>
+        <select id="recSort" title="Sort recordings">
+          <option value="added_desc">Date added (newest first)</option>
+          <option value="added_asc">Date added (oldest first)</option>
+          <option value="date_desc">Class date (newest first)</option>
+          <option value="date_asc">Class date (oldest first)</option>
+          <option value="course_az">Course (A–Z)</option>
+          <option value="title_az">Title (A–Z)</option>
+        </select>
+        <span id="recCount" class="meta"></span>
+      </div>
       <div id="tRecList" class="t-rec-list"></div>
     </div>
 

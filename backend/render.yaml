@@ -1,15 +1,26 @@
 services:
   - type: web
     name: classmate
-    runtime: python
-    plan: free
-    buildCommand: pip install -r requirements.txt
-    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
-    rootDir: backend
+    runtime: docker
+    plan: starter
+    dockerfilePath: ./Dockerfile
     envVars:
-      - key: PYTHON_VERSION
-        value: "3.12.7"
       - key: OPENAI_API_KEY
         sync: false
       - key: OPENAI_MODEL
         value: gpt-4o-mini
+      # Zoom Server-to-Server OAuth credentials (needed to fetch recording audio)
+      - key: ZOOM_ACCOUNT_ID
+        sync: false
+      - key: ZOOM_CLIENT_ID
+        sync: false
+      - key: ZOOM_CLIENT_SECRET
+        sync: false
+      # Persist all app data (recordings, roster, config, question log, logo)
+      # on the mounted disk so it survives restarts and redeploys.
+      - key: DATA_DIR
+        value: /var/data
+    disk:
+      name: classmate-data
+      mountPath: /var/data
+      sizeGB: 1

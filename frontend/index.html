@@ -3,18 +3,28 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>ClassMate · Ask your class recordings</title>
+<title>NG-ClassMate · Classes made easier</title>
 <link rel="stylesheet" href="/style.css" />
 </head>
 <body>
+<!--
+  ========== ADD YOUR LOGO ==========
+  1. Put your logo image in the "frontend" folder, e.g. frontend/logo.png
+  2. Replace the emoji inside <div class="logo" id="brandLogo">🎓</div> below with:
+        <img src="/logo.png" alt="logo" />
+  3. And in the two top bars, replace <span class="logo-sm">🎓</span> with:
+        <span class="logo-sm"><img src="/logo.png" alt="logo" /></span>
+  The CSS already sizes images inside .logo / .logo-sm automatically.
+  ===================================
+-->
 <div id="app">
 
   <!-- Role landing -->
   <section id="landing" class="gate">
     <div class="gate-card">
-      <div class="logo">🎓</div>
-      <h1>ClassMate</h1>
-      <p class="tagline">Ask questions about your class recordings and get answers straight from the lesson.</p>
+      <div class="logo" id="brandLogo">🎓</div>
+      <h1>NG-ClassMate</h1>
+      <p class="tagline">Classes made easier</p>
       <div class="role-pick">
         <button id="roleStudent" class="role-btn">
           <span class="role-emoji">🎒</span>
@@ -22,7 +32,7 @@
           <span class="role-d">Ask questions & take quizzes</span>
         </button>
         <button id="roleTeacher" class="role-btn">
-          <span class="role-emoji">👩‍🏫</span>
+          <span class="role-emoji">👩🏫</span>
           <span class="role-t">I'm the teacher</span>
           <span class="role-d">Manage recordings & see questions</span>
         </button>
@@ -48,7 +58,7 @@
   <section id="teacherGate" class="gate hidden">
     <div class="gate-card">
       <button class="back" data-back="landing">← Back</button>
-      <div class="logo">👩‍🏫</div>
+      <div class="logo">👩🏫</div>
       <h1>Teacher access</h1>
       <p class="tagline">Enter your passcode.</p>
       <input id="passInput" type="password" placeholder="Passcode" autocomplete="off" />
@@ -61,7 +71,7 @@
   <!-- Student app -->
   <section id="main" class="main hidden">
     <header class="topbar">
-      <div class="brand"><span class="logo-sm">🎓</span> ClassMate</div>
+      <div class="brand"><span class="logo-sm">🎓</span> NG-ClassMate</div>
       <div class="who">Hi, <strong id="whoName">student</strong> 👋 <button class="link" data-back="landing">Exit</button></div>
     </header>
     <div class="layout">
@@ -108,7 +118,7 @@
   <!-- Teacher dashboard -->
   <section id="teacher" class="main hidden">
     <header class="topbar">
-      <div class="brand"><span class="logo-sm">👩‍🏫</span> ClassMate · Teacher</div>
+      <div class="brand"><span class="logo-sm">👩🏫</span> NG-ClassMate · Teacher</div>
       <div class="who">
         <button id="tabRecordings" class="tab active">Recordings</button>
         <button id="tabStudents" class="tab">Students</button>

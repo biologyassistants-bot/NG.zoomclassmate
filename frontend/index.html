@@ -40,15 +40,15 @@
     </div>
   </section>
 
-  <!-- Student name gate -->
+  <!-- Student email + password gate -->
   <section id="gate" class="gate hidden">
     <div class="gate-card">
       <button class="back" data-back="landing">← Back</button>
       <div class="logo">🎒</div>
       <h1>Welcome!</h1>
-      <p class="tagline">Sign in with your name and the PIN your teacher gave you.</p>
-      <input id="nameInput" type="text" placeholder="Your name (e.g. Mariam)" autocomplete="off" />
-      <input id="pinInput" type="text" inputmode="numeric" maxlength="4" placeholder="4-digit PIN" autocomplete="off" />
+      <p class="tagline">Sign in with the email and password your teacher gave you.</p>
+      <input id="emailInput" type="email" placeholder="Your email" autocomplete="username" />
+      <input id="passwordInput" type="password" placeholder="Password" autocomplete="current-password" />
       <button id="enterBtn" class="primary">Let's go →</button>
       <p id="studentErr" class="err hidden"></p>
     </div>
@@ -131,7 +131,7 @@
     <div id="teacherRecordings" class="teacher-pane">
       <div class="pane-head">
         <h2>Manage recordings</h2>
-        <p class="meta">Rename recordings, assign them to a unit, and toggle whether students can see them. Changes save instantly.</p>
+        <p class="meta">New Zoom recordings arrive here automatically and start hidden. Rename them, assign a unit/course, then toggle Visible so the right students can see them. Changes save instantly.</p>
       </div>
       <div id="tRecList" class="t-rec-list"></div>
     </div>
@@ -139,14 +139,24 @@
     <div id="teacherStudents" class="teacher-pane hidden">
       <div class="pane-head">
         <h2>Class roster</h2>
-        <p class="meta">Only students on this list can sign in. Add a student and share the name + PIN with them. Remove anyone who should lose access.</p>
+        <p class="meta">Only students on this list can sign in. Import a sheet of students, or add one manually. Each student sees only the recordings for their assigned course(s).</p>
       </div>
       <div class="add-student">
         <input id="newStudentName" type="text" placeholder="Student name" />
-        <input id="newStudentEmail" type="text" placeholder="Email (optional)" />
+        <input id="newStudentEmail" type="text" placeholder="Email" />
+        <input id="newStudentPassword" type="text" placeholder="Password" />
+        <input id="newStudentCourses" type="text" placeholder="Courses (separate with ;)" />
         <button id="addStudentBtn" class="primary">+ Add student</button>
       </div>
       <p id="addStudentErr" class="err hidden"></p>
+      <div class="import-box" style="margin-top:14px;padding:12px;border:1px dashed #bbb;border-radius:10px;">
+        <strong>📥 Import students from Excel</strong>
+        <p class="meta">Columns: <code>email</code>, <code>password</code>, <code>name</code> (optional), <code>courses</code> (separate multiple with <code>;</code>). Course names must match the unit you assign to recordings.</p>
+        <input type="file" id="excelFile" accept=".xlsx" />
+        <button id="importBtn" class="primary">Upload &amp; import</button>
+        <p id="importMsg" class="ok-msg hidden"></p>
+        <p id="importErr" class="err hidden"></p>
+      </div>
       <div id="studentList" class="student-list"></div>
     </div>
 

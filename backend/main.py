@@ -515,8 +515,12 @@ def _detect_source(obj):
         if isinstance(t, str) and "webinar" in t.lower():
             return "webinar"
     return "meeting"
-async def ingest_zoom_meeting(obj):
-    """Given a webhook payload's 'object', download its transcript and add a hidden recording."""
+async def ingest_zoom_meeting(obj, allow_whisper_fallback=True):
+    """Given a webhook payload's 'object', download its transcript and add a hidden recording.
+    When allow_whisper_fallback is False (e.g. bulk backfill), recordings without a Zoom
+    .vtt transcript are imported with empty segments and can be transcribed later on demand
+    via the 'Generate transcript' button. This keeps bulk imports fast so they don't hit the
+    host's request timeout (which shows up as a 502 / 'could not reach the server')."""
     meeting_id = str(obj.get("id") or obj.get("uuid") or secrets.token_hex(6))
     if meeting_id in REC_BY_ID:
         return False
@@ -538,7 +542,8 @@ async def ingest_zoom_meeting(obj):
 
     # Auto-fallback: no Zoom .vtt transcript, but we have audio/video and an
     # OpenAI key -> transcribe the audio with Whisper so the recording is usable.
-    if not segments and OPENAI_API_KEY:
+    # Skipped during bulk backfill to avoid long-running requests timing out (502).
+    if allow_whisper_fallback and not segments and OPENAI_API_KEY:
         audio = _pick_audio_file(files)
         if audio and audio.get("download_url"):
             try:
@@ -1072,7 +1077,10 @@ async def teacher_backfill(body: BackfillBody):
     details = []
     for m in meetings:
         try:
-            was_added = await ingest_zoom_meeting(m)
+            # Fast import: don't run Whisper here (would time out on many recordings).
+            # Recordings without a Zoom transcript get empty segments and can be
+            # transcribed later via the per-recording "Generate transcript" button.
+            was_added = await ingest_zoom_meeting(m, allow_whisper_fallback=False)
             if was_added:
                 added += 1
                 details.append({

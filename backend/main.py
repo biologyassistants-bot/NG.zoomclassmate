@@ -740,6 +740,8 @@ def _card(r, include_hidden=False):
         "visible": r.get("visible", True),
         "segments": len(r.get("segments", [])),
         "has_summary": bool(r.get("summary")),
+        "summary": r.get("summary") or "",
+        "topics": r.get("topics") or [],
     }
 class RecListBody(BaseModel):
     token: str | None = None
@@ -1283,6 +1285,289 @@ async def teacher_transcribe(body: TranscribeBody):
         )
     return {"ok": True, "id": body.id, "segments": count,
             "recording": _card(rec, include_hidden=True)}
+
+
+# ---------- delete recordings ----------
+def _remove_recording(rid: str) -> bool:
+    """Delete a recording by id from RECORDINGS + index caches. Returns True if removed."""
+    global RECORDINGS
+    rec = REC_BY_ID.get(rid)
+    if not rec:
+        return False
+    RECORDINGS = [r for r in RECORDINGS if r.get("id") != rid]
+    REC_BY_ID.pop(rid, None)
+    _INDEX_CACHE.pop(rid, None)
+    return True
+
+
+class DeleteRecBody(BaseModel):
+    passcode: str
+    id: str
+
+
+@app.post("/api/teacher/recordings/delete")
+def teacher_delete_recording(body: DeleteRecBody):
+    if not check_passcode(body.passcode):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    if not _remove_recording(body.id):
+        return JSONResponse({"error": "not found"}, status_code=404)
+    save_recordings(RECORDINGS)
+    return {"ok": True, "id": body.id, "total_recordings_now": len(RECORDINGS)}
+
+
+class DeleteUnassignedBody(BaseModel):
+    passcode: str
+
+
+@app.post("/api/teacher/recordings/delete-unassigned")
+def teacher_delete_unassigned(body: DeleteUnassignedBody):
+    """Delete every recording whose unit is 'Unassigned' (or empty)."""
+    if not check_passcode(body.passcode):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    targets = [r["id"] for r in RECORDINGS if (r.get("unit") or "Unassigned") == "Unassigned"]
+    for rid in targets:
+        _remove_recording(rid)
+    if targets:
+        save_recordings(RECORDINGS)
+    return {"ok": True, "deleted": len(targets), "total_recordings_now": len(RECORDINGS)}
+
+
+# ---------- summary & key topics ----------
+async def generate_summary_and_topics(rec):
+    """Use the LLM to produce a short summary + key-topic tags grounded in the
+    recording transcript. Stored on the recording so students can browse them."""
+    segs = rec.get("segments") or []
+    if not segs:
+        return None
+    # sample across the whole recording for a representative context
+    idx = retrieve(rec, rec.get("display_title") or rec.get("topic") or "lecture", k=30, window=1)
+    context = context_from_indices(rec, idx, max_chars=40000)
+    system = (
+        "You summarize a class recording for students. Use ONLY the transcript. "
+        "Return STRICT JSON: {\"summary\": string (2-4 sentences), "
+        "\"topics\": string[] (4-8 short topic tags, each 1-4 words)}. No markdown, no extra text."
+    )
+    raw = await llm(
+        [{"role": "system", "content": system},
+         {"role": "user", "content": f"Transcript excerpts:\n{context}"}],
+        max_tokens=500, temperature=0.2,
+    )
+    import json as _json
+    txt = (raw or "").strip()
+    if txt.startswith("```"):
+        txt = txt.strip("`")
+        txt = txt.split("\n", 1)[-1] if "\n" in txt else txt
+    try:
+        data = _json.loads(txt[txt.find("{"): txt.rfind("}") + 1])
+    except Exception:
+        data = {"summary": txt[:400], "topics": []}
+    rec["summary"] = (data.get("summary") or "").strip()
+    rec["topics"] = [t.strip() for t in (data.get("topics") or []) if t.strip()][:8]
+    return rec
+
+
+class SummaryBody(BaseModel):
+    passcode: str
+    id: str
+
+
+@app.post("/api/teacher/summary")
+async def teacher_summary(body: SummaryBody):
+    if not check_passcode(body.passcode):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    rec = REC_BY_ID.get(body.id)
+    if not rec:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    if not rec.get("segments"):
+        return JSONResponse({"error": "This recording has no transcript yet. Generate a transcript first."}, status_code=422)
+    try:
+        await generate_summary_and_topics(rec)
+    except LLMConfigError as e:
+        return JSONResponse({"error": str(e)}, status_code=503)
+    except Exception as e:
+        return JSONResponse({"error": f"Could not generate summary: {e}"}, status_code=500)
+    save_recordings(RECORDINGS)
+    return {"ok": True, "id": body.id, "summary": rec.get("summary", ""), "topics": rec.get("topics", [])}
+
+
+# ---------- dashboard stats ----------
+@app.post("/api/teacher/stats")
+def teacher_stats(body: TeacherAuth):
+    if not check_passcode(body.passcode):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    from datetime import datetime, timedelta
+    roster = load_roster()
+    log = load_qlog()
+    total = len(RECORDINGS)
+    transcribed = sum(1 for r in RECORDINGS if r.get("segments"))
+    visible = sum(1 for r in RECORDINGS if r.get("visible", True))
+    unassigned = sum(1 for r in RECORDINGS if (r.get("unit") or "Unassigned") == "Unassigned")
+    week_ago = datetime.utcnow() - timedelta(days=7)
+    q_week = 0
+    for q in log:
+        try:
+            if datetime.strptime((q.get("time") or "")[:10], "%Y-%m-%d") >= week_ago:
+                q_week += 1
+        except Exception:
+            pass
+    courses = len({(r.get("unit") or "Unassigned") for r in RECORDINGS})
+    return {
+        "recordings_total": total,
+        "recordings_transcribed": transcribed,
+        "recordings_missing": total - transcribed,
+        "recordings_visible": visible,
+        "recordings_unassigned": unassigned,
+        "courses": courses,
+        "students": len(roster),
+        "questions_total": len(log),
+        "questions_this_week": q_week,
+    }
+
+
+# ---------- question analytics ----------
+_STOPWORDS = set("the a an and or of to in is are was were be been what how why when where "
+                 "which who whom this that these those i you he she it we they for on at by "
+                 "with about from as do does did can could would should will shall may might "
+                 "not no yes please tell me my your our their his her its me can't cant explain "
+                 "give show list define describe difference between them then than".split())
+
+
+@app.post("/api/teacher/analytics")
+def teacher_analytics(body: TeacherAuth):
+    if not check_passcode(body.passcode):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    log = load_qlog()
+    # most-asked keywords
+    kw = Counter()
+    per_student = Counter()
+    per_course = Counter()
+    per_day = Counter()
+    for q in log:
+        for w in tokenize(q.get("question", "")):
+            if len(w) > 2 and w not in _STOPWORDS:
+                kw[w] += 1
+        per_student[q.get("student") or "Unknown"] += 1
+        per_course[q.get("unit") or "Unassigned"] += 1
+        d = (q.get("time") or "")[:10]
+        if d:
+            per_day[d] += 1
+    return {
+        "total": len(log),
+        "top_keywords": kw.most_common(15),
+        "top_students": per_student.most_common(10),
+        "by_course": per_course.most_common(20),
+        "by_day": sorted(per_day.items()),
+    }
+
+
+# ---------- exports ----------
+@app.get("/api/teacher/export/questions.csv")
+def export_questions_csv(passcode: str = Query(...)):
+    if not check_passcode(passcode):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import csv
+    log = load_qlog()
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(["Time", "Student", "Recording", "Unit", "Question"])
+    for q in reversed(log):
+        w.writerow([q.get("time", ""), q.get("student", ""), q.get("recording_title", ""),
+                    q.get("unit", ""), q.get("question", "")])
+    data = buf.getvalue().encode("utf-8-sig")
+    from fastapi.responses import Response
+    return Response(content=data, media_type="text/csv",
+                    headers={"Content-Disposition": "attachment; filename=questions.csv"})
+
+
+@app.get("/api/teacher/export/roster.csv")
+def export_roster_csv(passcode: str = Query(...)):
+    if not check_passcode(passcode):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import csv
+    roster = load_roster()
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(["Name", "Email", "Courses"])
+    for s in roster:
+        w.writerow([s.get("name", ""), s.get("email", ""), ", ".join(s.get("courses", []) or [])])
+    data = buf.getvalue().encode("utf-8-sig")
+    from fastapi.responses import Response
+    return Response(content=data, media_type="text/csv",
+                    headers={"Content-Disposition": "attachment; filename=roster.csv"})
+
+
+@app.get("/api/teacher/export/questions.pdf")
+def export_questions_pdf(passcode: str = Query(...)):
+    if not check_passcode(passcode):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    from fastapi.responses import Response
+    from datetime import datetime
+    log = load_qlog()
+    # Minimal dependency-free PDF: render a simple text-based report.
+    lines = [f"NG-ClassMate — Student Questions Report",
+             f"Generated {datetime.utcnow().strftime('%Y-%m-%d %H:%M')} UTC",
+             f"Total questions: {len(log)}", ""]
+    for q in reversed(log):
+        lines.append(f"{q.get('time','')}  |  {q.get('student','')}  |  {q.get('unit','')}")
+        lines.append(f"  Q: {q.get('question','')}")
+        lines.append(f"  Recording: {q.get('recording_title','')}")
+        lines.append("")
+    pdf_bytes = _simple_text_pdf(lines)
+    return Response(content=pdf_bytes, media_type="application/pdf",
+                    headers={"Content-Disposition": "attachment; filename=questions.pdf"})
+
+
+def _simple_text_pdf(lines):
+    """Build a minimal multi-page PDF from plain text lines with no external deps."""
+    def esc(s):
+        return (s or "").replace("\\", r"\\").replace("(", r"\(").replace(")", r"\)")
+    # paginate
+    per_page = 48
+    pages = [lines[i:i + per_page] for i in range(0, max(1, len(lines)), per_page)] or [[""]]
+    objs = []
+    # 1: catalog, 2: pages tree; page objs + content objs follow
+    n_pages = len(pages)
+    font_obj = 3 + n_pages * 2  # after pages+contents
+    kids = []
+    body_objs = {}
+    obj_num = 3
+    content_nums = []
+    page_nums = []
+    for pi, pg in enumerate(pages):
+        page_no = obj_num; obj_num += 1
+        content_no = obj_num; obj_num += 1
+        page_nums.append(page_no); content_nums.append(content_no)
+    font_no = obj_num
+    # content streams
+    for pi, pg in enumerate(pages):
+        text_cmds = ["BT", "/F1 10 Tf", "12 TL", "40 800 Td"]
+        for ln in pg:
+            text_cmds.append(f"({esc(ln)[:180]}) Tj")
+            text_cmds.append("T*")
+        text_cmds.append("ET")
+        stream = "\n".join(text_cmds)
+        body_objs[content_nums[pi]] = f"<< /Length {len(stream)} >>\nstream\n{stream}\nendstream"
+        body_objs[page_nums[pi]] = (
+            f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
+            f"/Resources << /Font << /F1 {font_no} 0 R >> >> /Contents {content_nums[pi]} 0 R >>"
+        )
+    body_objs[font_no] = "<< /Type /Font /Subtype /Type1 /BaseFont /Courier >>"
+    kids_str = " ".join(f"{pn} 0 R" for pn in page_nums)
+    body_objs[1] = "<< /Type /Catalog /Pages 2 0 R >>"
+    body_objs[2] = f"<< /Type /Pages /Kids [{kids_str}] /Count {n_pages} >>"
+    # assemble
+    out = "%PDF-1.4\n"
+    offsets = {}
+    for num in sorted(body_objs):
+        offsets[num] = len(out.encode("latin-1", "replace"))
+        out += f"{num} 0 obj\n{body_objs[num]}\nendobj\n"
+    xref_pos = len(out.encode("latin-1", "replace"))
+    max_num = max(body_objs)
+    out += f"xref\n0 {max_num + 1}\n0000000000 65535 f \n"
+    for num in range(1, max_num + 1):
+        out += f"{offsets.get(num, 0):010d} 00000 n \n"
+    out += f"trailer\n<< /Size {max_num + 1} /Root 1 0 R >>\nstartxref\n{xref_pos}\n%%EOF"
+    return out.encode("latin-1", "replace")
 
 
 @app.get("/api/health")

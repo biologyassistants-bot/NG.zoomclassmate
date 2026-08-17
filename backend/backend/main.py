@@ -78,15 +78,82 @@ app.add_middleware(
 )
 
 # ---------------------------------------------------------------------------
-# OpenAI key diagnostic endpoint (safe: never returns the key itself).
-# Open  /api/diag/openai  to confirm the key is set & working.
-# Remove these two lines (and diag_openai.py) once you're done debugging.
+# OpenAI key diagnostic endpoint (INLINE — no separate file needed).
+# Open  /api/diag/openai  to confirm the key is set & working. It never
+# returns the key itself, only its length + a masked preview.
+# Delete this whole block once you're done debugging.
 # ---------------------------------------------------------------------------
-try:
-    from diag_openai import register_openai_diag
-    register_openai_diag(app)   # or: register_openai_diag(app, passcode="teach123")
-except Exception as _diag_err:  # never let the diagnostic break the app
-    print("openai diag not registered:", _diag_err)
+def _diag_mask(key: str) -> str:
+    if not key:
+        return ""
+    if len(key) <= 10:
+        return key[:2] + "*" * (len(key) - 2)
+    return key[:5] + "..." + key[-4:]
+
+
+@app.get("/api/diag/openai")
+async def diag_openai():
+    key = os.environ.get("OPENAI_API_KEY", "").strip()
+    model = os.environ.get("OPENAI_MODEL", "gpt-4o-mini").strip()
+    base = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1").strip()
+    report = {
+        "env_var_present": bool(key),
+        "key_length": len(key),
+        "key_masked_preview": _diag_mask(key),
+        "model": model,
+        "base_url": base,
+    }
+    if not key:
+        report["ok"] = False
+        report["message"] = (
+            "OPENAI_API_KEY is NOT set (or empty) on this server. Add it under "
+            "Render -> Environment and redeploy."
+        )
+        return JSONResponse(status_code=200, content=report)
+
+    import httpx
+    try:
+        timeout = httpx.Timeout(30.0, connect=10.0)
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            resp = await client.post(
+                f"{base}/chat/completions",
+                headers={"Authorization": f"Bearer {key}"},
+                json={"model": model,
+                      "messages": [{"role": "user", "content": "ping"}],
+                      "max_tokens": 1},
+            )
+    except httpx.RequestError as e:
+        report["ok"] = False
+        report["message"] = (f"Network error reaching {base}: {e}. On Render free "
+                             "tier this can be a cold-start timeout; retry once warm.")
+        return JSONResponse(status_code=200, content=report)
+
+    if resp.status_code >= 400:
+        detail = ""
+        try:
+            detail = resp.json().get("error", {}).get("message", "")
+        except Exception:
+            detail = resp.text[:200]
+        report["ok"] = False
+        report["provider_status"] = resp.status_code
+        low = (detail or "").lower()
+        if resp.status_code == 401 or "incorrect api key" in low or "invalid" in low:
+            report["message"] = ("Key REJECTED (invalid/incorrect). Re-copy from "
+                                 "platform.openai.com and update OPENAI_API_KEY, then redeploy.")
+        elif resp.status_code == 429 or "quota" in low or "billing" in low:
+            report["message"] = ("Key valid but NO CREDIT / rate-limited. Add "
+                                 "billing/credits to the OpenAI account.")
+        elif resp.status_code == 404 or ("model" in low and "not" in low):
+            report["message"] = ("Key works but the model isn't available to this "
+                                 "account. Set OPENAI_MODEL to one you can use.")
+        else:
+            report["message"] = f"Provider returned {resp.status_code}: {detail[:200]}"
+        return JSONResponse(status_code=200, content=report)
+
+    report["ok"] = True
+    report["provider_status"] = resp.status_code
+    report["message"] = "OPENAI_API_KEY is set AND the API call succeeded. The key is working."
+    return JSONResponse(status_code=200, content=report)
 
 def load_recordings():
     with open(DATA_PATH) as f:

@@ -378,11 +378,11 @@ function renderTeacherRecordings(list) {
   list.forEach(r => {
     const row = document.createElement("div"); row.className = "t-rec";
     const isWebinar = (r.source || "meeting") === "webinar";
-    const badge = `<span class="type-badge" style="display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;border-radius:10px;margin-left:6px;${isWebinar ? "background:#efe0ff;color:#6b21a8;" : "background:#e0edff;color:#1d4ed8;"}">${isWebinar ? "📢 Webinar" : "🎥 Meeting"}</span>`;
+    const badge = `<span class="type-badge ${isWebinar ? "webinar" : "meeting"}">${isWebinar ? "📢 Webinar" : "🎥 Meeting"}</span>`;
     row.innerHTML = `
       <div>
         <input class="title-in" value="${escapeHtml(r.title)}" />
-        <div class="orig">${badge} Original: ${escapeHtml(r.original_title)} · ${escapeHtml(r.date || "")} · ${r.segments} lines</div>
+        <div class="orig">${badge}Original: ${escapeHtml(r.original_title)} · ${escapeHtml(r.date || "")} · ${r.segments} lines</div>
       </div>
       <input class="unit-in" value="${escapeHtml(r.unit)}" placeholder="Unit / class" />
       <div>

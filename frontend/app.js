@@ -445,3 +445,55 @@ el("savePass").addEventListener("click", async () => {
   });
   if (res.ok) { state.passcode = np; el("newPass").value = ""; el("passSaved").classList.remove("hidden"); setTimeout(() => el("passSaved").classList.add("hidden"), 2000); }
 });
+
+// ---------- sign out ----------
+function signOut() {
+  state.name = ""; state.token = ""; state.passcode = ""; state.current = null; state.recordings = [];
+  const p = el("passInput"); if (p) p.value = "";
+  const em = el("emailInput"); if (em) em.value = "";
+  const pw = el("passwordInput"); if (pw) pw.value = "";
+  show("landing");
+}
+el("studentSignOut").addEventListener("click", signOut);
+el("teacherSignOut").addEventListener("click", signOut);
+
+// ---------- logo upload ----------
+el("saveLogo").addEventListener("click", async () => {
+  const fileInput = el("logoFile");
+  const ok = el("logoSaved"); const err = el("logoErr");
+  ok.classList.add("hidden"); err.classList.add("hidden");
+  if (!fileInput.files.length) { err.textContent = "Choose an image file first."; err.classList.remove("hidden"); return; }
+  const fd = new FormData();
+  fd.append("file", fileInput.files[0]);
+  fd.append("passcode", state.passcode);
+  try {
+    const res = await fetch(`${API}/api/teacher/logo`, { method: "POST", body: fd });
+    const data = await res.json();
+    if (!res.ok || data.error) { err.textContent = data.error || "Upload failed."; err.classList.remove("hidden"); return; }
+    ok.classList.remove("hidden"); setTimeout(() => ok.classList.add("hidden"), 2500);
+    fileInput.value = "";
+    // cache-bust so the new logo shows immediately everywhere
+    applyLogo(data.logo + "?t=" + Date.now());
+  } catch (e) {
+    err.textContent = "Couldn't reach the server. Try again.";
+    err.classList.remove("hidden");
+  }
+});
+
+// ---------- branding (apply custom logo if one was uploaded) ----------
+function applyLogo(url) {
+  if (!url) return;
+  const imgTag = `<img src="${url}" alt="logo" />`;
+  document.querySelectorAll(".logo, .logo-sm").forEach(node => { node.innerHTML = imgTag; });
+  const preview = el("logoPreview");
+  if (preview) { preview.src = url; preview.classList.remove("hidden"); }
+}
+
+async function loadBranding() {
+  try {
+    const res = await fetch(`${API}/api/branding`);
+    const data = await res.json();
+    if (data.logo) applyLogo(data.logo);
+  } catch (e) { /* ignore — keep emoji fallback */ }
+}
+loadBranding();

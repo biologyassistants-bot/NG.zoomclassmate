@@ -72,7 +72,7 @@
   <section id="main" class="main hidden">
     <header class="topbar">
       <div class="brand"><span class="logo-sm">🎓</span> NG-ClassMate</div>
-      <div class="who">Hi, <strong id="whoName">student</strong> 👋 <button class="link" data-back="landing">Exit</button></div>
+      <div class="who">Hi, <strong id="whoName">student</strong> 👋 <button class="link" id="studentSignOut">Sign out</button></div>
     </header>
     <div class="layout">
       <aside class="sidebar">
@@ -124,7 +124,7 @@
         <button id="tabStudents" class="tab">Students</button>
         <button id="tabQuestions" class="tab">Student questions</button>
         <button id="tabSettings" class="tab">Settings</button>
-        <button class="link" data-back="landing">Exit</button>
+        <button class="link" id="teacherSignOut">Sign out</button>
       </div>
     </header>
 
@@ -195,6 +195,15 @@
         <input id="newPass" type="text" placeholder="New passcode" />
         <button id="savePass" class="primary">Save passcode</button>
         <p id="passSaved" class="ok-msg hidden">Passcode updated ✓</p>
+      </div>
+      <div class="setting-card" style="margin-top:16px;">
+        <h3>Website logo</h3>
+        <p class="meta" style="margin-bottom:12px;">Upload a PNG, JPG, WEBP, GIF or SVG (max 2 MB). It replaces the 🎓 emoji across the site.</p>
+        <img id="logoPreview" alt="Current logo" class="hidden" style="max-height:64px;max-width:180px;border-radius:12px;border:1px solid var(--line);padding:6px;background:var(--panel2);margin-bottom:12px;display:block;" />
+        <input type="file" id="logoFile" accept="image/png,image/jpeg,image/webp,image/gif,image/svg+xml" style="margin-bottom:12px;" />
+        <button id="saveLogo" class="primary">Upload logo</button>
+        <p id="logoSaved" class="ok-msg hidden">Logo updated ✓</p>
+        <p id="logoErr" class="err hidden"></p>
       </div>
     </div>
   </section>

@@ -123,18 +123,28 @@
         <button id="tabRecordings" class="tab active">Recordings</button>
         <button id="tabStudents" class="tab">Students</button>
         <button id="tabQuestions" class="tab">Student questions</button>
+        <button id="tabAnalytics" class="tab">Analytics</button>
         <button id="tabSettings" class="tab">Settings</button>
         <button class="link" id="teacherSignOut">Sign out</button>
       </div>
     </header>
 
     <div id="teacherRecordings" class="teacher-pane">
+      <!-- dashboard stats -->
+      <div id="statsBar" class="stats-bar"></div>
+
       <div class="pane-head">
         <h2>Manage recordings</h2>
         <p class="meta">New Zoom recordings arrive here automatically and start hidden. Rename them, assign a unit/course, then toggle Visible so the right students can see them. Changes save instantly.</p>
         <div class="import-rec-bar" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:12px;">
           <button id="importRecBtn" type="button" class="primary">⬇️ Import cloud recordings</button>
+          <button id="transcribeAllBtn" type="button" class="ghost">🎙️ Transcribe all missing</button>
+          <button id="deleteUnassignedBtn" type="button" class="ghost danger-btn">🗑️ Delete unassigned</button>
           <span id="importRecStatus" class="meta" style="font-size:0.9em;"></span>
+        </div>
+        <div id="bulkProgress" class="bulk-progress hidden">
+          <div class="bulk-bar"><div id="bulkBarFill" class="bulk-bar-fill"></div></div>
+          <span id="bulkProgressText" class="meta"></span>
         </div>
       </div>
       <div class="rec-filters">
@@ -173,6 +183,7 @@
         <button id="addStudentBtn" class="primary">+ Add student</button>
       </div>
       <p id="addStudentErr" class="err hidden"></p>
+      <div class="export-bar" style="margin-top:6px;"><button id="exportRosterCsv" type="button" class="ghost">⬇️ Export roster (CSV)</button></div>
       <div class="import-box" style="margin-top:14px;padding:12px;border:1px dashed #bbb;border-radius:10px;">
         <strong>📥 Import students from Excel</strong>
         <p class="meta">Columns: <code>email</code>, <code>password</code>, <code>name</code> (optional), <code>courses</code> (separate multiple with <code>;</code>). Course names must match the unit you assign to recordings.</p>
@@ -188,8 +199,20 @@
       <div class="pane-head">
         <h2>Student questions</h2>
         <p class="meta">Everything your students have asked, newest first.</p>
+        <div class="export-bar">
+          <button id="exportQCsv" type="button" class="ghost">⬇️ Export CSV</button>
+          <button id="exportQPdf" type="button" class="ghost">⬇️ Export PDF</button>
+        </div>
       </div>
       <div id="qLog" class="q-log"></div>
+    </div>
+
+    <div id="teacherAnalytics" class="teacher-pane hidden">
+      <div class="pane-head">
+        <h2>Question analytics</h2>
+        <p class="meta">What your students are asking most — spot the topics they struggle with.</p>
+      </div>
+      <div id="analyticsBody" class="analytics-body"></div>
     </div>
 
     <div id="teacherSettings" class="teacher-pane hidden">
@@ -228,6 +251,7 @@
   </div>
 
 </div>
+<div id="toastHost" class="toast-host"></div>
 <script src="/app.js"></script>
 </body>
 </html>

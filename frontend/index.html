@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>ClassMate · Ask your class recordings</title>
+<link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+<div id="app">
+
+  <!-- Role landing -->
+  <section id="landing" class="gate">
+    <div class="gate-card">
+      <div class="logo">🎓</div>
+      <h1>ClassMate</h1>
+      <p class="tagline">Ask questions about your class recordings and get answers straight from the lesson.</p>
+      <div class="role-pick">
+        <button id="roleStudent" class="role-btn">
+          <span class="role-emoji">🎒</span>
+          <span class="role-t">I'm a student</span>
+          <span class="role-d">Ask questions & take quizzes</span>
+        </button>
+        <button id="roleTeacher" class="role-btn">
+          <span class="role-emoji">👩‍🏫</span>
+          <span class="role-t">I'm the teacher</span>
+          <span class="role-d">Manage recordings & see questions</span>
+        </button>
+      </div>
+    </div>
+  </section>
+
+  <!-- Student name gate -->
+  <section id="gate" class="gate hidden">
+    <div class="gate-card">
+      <button class="back" data-back="landing">← Back</button>
+      <div class="logo">🎒</div>
+      <h1>Welcome!</h1>
+      <p class="tagline">Sign in with your name and the PIN your teacher gave you.</p>
+      <input id="nameInput" type="text" placeholder="Your name (e.g. Mariam)" autocomplete="off" />
+      <input id="pinInput" type="text" inputmode="numeric" maxlength="4" placeholder="4-digit PIN" autocomplete="off" />
+      <button id="enterBtn" class="primary">Let's go →</button>
+      <p id="studentErr" class="err hidden"></p>
+    </div>
+  </section>
+
+  <!-- Teacher passcode gate -->
+  <section id="teacherGate" class="gate hidden">
+    <div class="gate-card">
+      <button class="back" data-back="landing">← Back</button>
+      <div class="logo">👩‍🏫</div>
+      <h1>Teacher access</h1>
+      <p class="tagline">Enter your passcode.</p>
+      <input id="passInput" type="password" placeholder="Passcode" autocomplete="off" />
+      <button id="passBtn" class="primary">Unlock →</button>
+      <p id="passErr" class="err hidden">Wrong passcode. Try again.</p>
+      <p class="hint">Default passcode is <code>teach123</code> — change it inside the dashboard.</p>
+    </div>
+  </section>
+
+  <!-- Student app -->
+  <section id="main" class="main hidden">
+    <header class="topbar">
+      <div class="brand"><span class="logo-sm">🎓</span> ClassMate</div>
+      <div class="who">Hi, <strong id="whoName">student</strong> 👋 <button class="link" data-back="landing">Exit</button></div>
+    </header>
+    <div class="layout">
+      <aside class="sidebar">
+        <div class="sidebar-head">
+          <h2>Class recordings</h2>
+          <input id="search" type="text" placeholder="Search classes…" />
+        </div>
+        <div id="recList" class="rec-list"></div>
+      </aside>
+      <main class="content">
+        <div id="emptyState" class="empty">
+          <div class="empty-emoji">📚</div>
+          <p>Pick a class recording on the left to start asking questions.</p>
+        </div>
+        <div id="workspace" class="workspace hidden">
+          <div class="ws-head">
+            <div>
+              <h2 id="wsTitle">Recording</h2>
+              <p id="wsMeta" class="meta"></p>
+            </div>
+            <div class="ws-actions">
+              <select id="langSelect" title="Answer language">
+                <option value="auto">Same as my question</option>
+                <option value="English">English</option>
+                <option value="Arabic">العربية</option>
+                <option value="French">Français</option>
+                <option value="Spanish">Español</option>
+                <option value="German">Deutsch</option>
+              </select>
+              <button id="quizBtn" class="ghost">📝 Generate quiz</button>
+            </div>
+          </div>
+          <div id="chat" class="chat"></div>
+          <form id="askForm" class="ask-bar">
+            <input id="questionInput" type="text" placeholder="Ask about this class… e.g. What is BMI?" autocomplete="off" />
+            <button type="submit" class="primary" id="askBtn">Ask</button>
+          </form>
+        </div>
+      </main>
+    </div>
+  </section>
+
+  <!-- Teacher dashboard -->
+  <section id="teacher" class="main hidden">
+    <header class="topbar">
+      <div class="brand"><span class="logo-sm">👩‍🏫</span> ClassMate · Teacher</div>
+      <div class="who">
+        <button id="tabRecordings" class="tab active">Recordings</button>
+        <button id="tabStudents" class="tab">Students</button>
+        <button id="tabQuestions" class="tab">Student questions</button>
+        <button id="tabSettings" class="tab">Settings</button>
+        <button class="link" data-back="landing">Exit</button>
+      </div>
+    </header>
+
+    <div id="teacherRecordings" class="teacher-pane">
+      <div class="pane-head">
+        <h2>Manage recordings</h2>
+        <p class="meta">Rename recordings, assign them to a unit, and toggle whether students can see them. Changes save instantly.</p>
+      </div>
+      <div id="tRecList" class="t-rec-list"></div>
+    </div>
+
+    <div id="teacherStudents" class="teacher-pane hidden">
+      <div class="pane-head">
+        <h2>Class roster</h2>
+        <p class="meta">Only students on this list can sign in. Add a student and share the name + PIN with them. Remove anyone who should lose access.</p>
+      </div>
+      <div class="add-student">
+        <input id="newStudentName" type="text" placeholder="Student name" />
+        <input id="newStudentEmail" type="text" placeholder="Email (optional)" />
+        <button id="addStudentBtn" class="primary">+ Add student</button>
+      </div>
+      <p id="addStudentErr" class="err hidden"></p>
+      <div id="studentList" class="student-list"></div>
+    </div>
+
+    <div id="teacherQuestions" class="teacher-pane hidden">
+      <div class="pane-head">
+        <h2>Student questions</h2>
+        <p class="meta">Everything your students have asked, newest first.</p>
+      </div>
+      <div id="qLog" class="q-log"></div>
+    </div>
+
+    <div id="teacherSettings" class="teacher-pane hidden">
+      <div class="pane-head"><h2>Settings</h2></div>
+      <div class="setting-card">
+        <h3>Change teacher passcode</h3>
+        <input id="newPass" type="text" placeholder="New passcode" />
+        <button id="savePass" class="primary">Save passcode</button>
+        <p id="passSaved" class="ok-msg hidden">Passcode updated ✓</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- Quiz modal -->
+  <div id="quizModal" class="modal hidden">
+    <div class="modal-card">
+      <div class="modal-head">
+        <h2>📝 Quiz</h2>
+        <button id="closeQuiz" class="close">✕</button>
+      </div>
+      <div id="quizBody" class="quiz-body"></div>
+      <div class="modal-foot">
+        <button id="submitQuiz" class="primary hidden">Check my answers</button>
+        <button id="retryQuiz" class="ghost hidden">Try another quiz</button>
+      </div>
+    </div>
+  </div>
+
+</div>
+<script src="/app.js"></script>
+</body>
+</html>

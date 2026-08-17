@@ -311,16 +311,67 @@ el("importBtn").addEventListener("click", async () => {
   }
 });
 
+let teacherRecordings = [];
+
 async function loadTeacherRecordings() {
   const res = await fetch(`${API}/api/teacher/recordings`, {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ passcode: state.passcode })
   });
   const data = await res.json();
-  renderTeacherRecordings(data.recordings || []);
+  // remember original array order as "date added" (Zoom ingest appends newest last)
+  teacherRecordings = (data.recordings || []).map((r, i) => ({ ...r, _order: i }));
+  populateCourseFilter(teacherRecordings);
+  applyRecFilters();
 }
+
+function populateCourseFilter(list) {
+  const sel = el("recCourseFilter");
+  const current = sel.value;
+  const units = Array.from(new Set(list.map(r => r.unit || "Unassigned"))).sort();
+  sel.innerHTML = '<option value="">All courses</option>' +
+    units.map(u => `<option value="${escapeHtml(u)}">${escapeHtml(u)}</option>`).join("");
+  // keep the previous selection if it still exists
+  if (current && units.includes(current)) sel.value = current;
+}
+
+function applyRecFilters() {
+  const q = (el("recSearch").value || "").toLowerCase();
+  const course = el("recCourseFilter").value;
+  const sort = el("recSort").value;
+
+  let list = teacherRecordings.filter(r => {
+    const matchesCourse = !course || (r.unit || "Unassigned") === course;
+    const matchesText = !q ||
+      (r.title || "").toLowerCase().includes(q) ||
+      (r.original_title || "").toLowerCase().includes(q) ||
+      (r.unit || "").toLowerCase().includes(q);
+    return matchesCourse && matchesText;
+  });
+
+  const byDate = (a, b) => String(a.date || "").localeCompare(String(b.date || ""));
+  const byCourse = (a, b) => (a.unit || "Unassigned").localeCompare(b.unit || "Unassigned");
+  const byTitle = (a, b) => (a.title || "").localeCompare(b.title || "");
+  const sorters = {
+    added_desc: (a, b) => b._order - a._order,
+    added_asc: (a, b) => a._order - b._order,
+    date_desc: (a, b) => byDate(b, a),
+    date_asc: (a, b) => byDate(a, b),
+    course_az: (a, b) => byCourse(a, b) || byTitle(a, b),
+    title_az: (a, b) => byTitle(a, b),
+  };
+  list.sort(sorters[sort] || sorters.added_desc);
+
+  el("recCount").textContent = `${list.length} of ${teacherRecordings.length} recording${teacherRecordings.length === 1 ? "" : "s"}`;
+  renderTeacherRecordings(list);
+}
+
+el("recSearch").addEventListener("input", applyRecFilters);
+el("recCourseFilter").addEventListener("change", applyRecFilters);
+el("recSort").addEventListener("change", applyRecFilters);
 
 function renderTeacherRecordings(list) {
   const box = el("tRecList"); box.innerHTML = "";
+  if (!list.length) { box.innerHTML = '<div class="roster-empty">No recordings match your filter.</div>'; return; }
   list.forEach(r => {
     const row = document.createElement("div"); row.className = "t-rec";
     row.innerHTML = `
@@ -344,7 +395,13 @@ function renderTeacherRecordings(list) {
       fetch(`${API}/api/teacher/update`, {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ passcode: state.passcode, id: r.id, display_title: titleIn.value, unit: unitIn.value, visible })
-      }).then(() => { flash.classList.add("show"); setTimeout(() => flash.classList.remove("show"), 1200); });
+      }).then(() => {
+        flash.classList.add("show"); setTimeout(() => flash.classList.remove("show"), 1200);
+        // keep local state in sync so filters/sort stay accurate
+        const cached = teacherRecordings.find(x => x.id === r.id);
+        if (cached) { cached.title = titleIn.value; cached.unit = unitIn.value; cached.visible = visible; }
+        populateCourseFilter(teacherRecordings);
+      });
     }
     titleIn.addEventListener("change", save);
     unitIn.addEventListener("change", save);

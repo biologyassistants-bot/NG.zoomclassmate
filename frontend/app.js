@@ -251,21 +251,151 @@ el("submitQuiz").addEventListener("click", () => {
 el("tabRecordings").addEventListener("click", () => switchTab("Recordings"));
 el("tabStudents").addEventListener("click", () => switchTab("Students"));
 el("tabQuestions").addEventListener("click", () => switchTab("Questions"));
+el("tabAnalytics").addEventListener("click", () => switchTab("Analytics"));
 el("tabSettings").addEventListener("click", () => switchTab("Settings"));
 
 function switchTab(name) {
   el("tabRecordings").classList.toggle("active", name === "Recordings");
   el("tabStudents").classList.toggle("active", name === "Students");
   el("tabQuestions").classList.toggle("active", name === "Questions");
+  el("tabAnalytics").classList.toggle("active", name === "Analytics");
   el("tabSettings").classList.toggle("active", name === "Settings");
   el("teacherRecordings").classList.toggle("hidden", name !== "Recordings");
   el("teacherStudents").classList.toggle("hidden", name !== "Students");
   el("teacherQuestions").classList.toggle("hidden", name !== "Questions");
+  el("teacherAnalytics").classList.toggle("hidden", name !== "Analytics");
   el("teacherSettings").classList.toggle("hidden", name !== "Settings");
   if (name === "Questions") loadQuestions();
-  if (name === "Recordings") loadTeacherRecordings();
+  if (name === "Recordings") { loadTeacherRecordings(); loadStats(); }
   if (name === "Students") loadStudents();
+  if (name === "Analytics") loadAnalytics();
 }
+
+// ---------- toast notifications ----------
+function toast(msg, kind = "info", ms = 3200) {
+  const host = el("toastHost");
+  if (!host) return;
+  const t = document.createElement("div");
+  t.className = `toast toast-${kind}`;
+  t.textContent = msg;
+  host.appendChild(t);
+  requestAnimationFrame(() => t.classList.add("show"));
+  setTimeout(() => { t.classList.remove("show"); setTimeout(() => t.remove(), 300); }, ms);
+}
+
+// ---------- dashboard stats ----------
+async function loadStats() {
+  const bar = el("statsBar");
+  if (bar && !bar.dataset.loaded) bar.innerHTML = '<div class="stat-skeleton"></div>'.repeat(5);
+  try {
+    const res = await fetch(`${API}/api/teacher/stats`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ passcode: state.passcode })
+    });
+    const s = await res.json();
+    if (!res.ok) return;
+    const cards = [
+      { label: "Recordings", value: s.recordings_total, sub: `${s.recordings_visible} visible` },
+      { label: "Transcribed", value: `${s.recordings_transcribed}/${s.recordings_total}`, sub: s.recordings_missing ? `${s.recordings_missing} missing` : "all done ✓" },
+      { label: "Courses", value: s.courses, sub: s.recordings_unassigned ? `${s.recordings_unassigned} unassigned` : "all assigned" },
+      { label: "Students", value: s.students, sub: "on roster" },
+      { label: "Questions", value: s.questions_total, sub: `${s.questions_this_week} this week` },
+    ];
+    bar.innerHTML = cards.map(c =>
+      `<div class="stat-card"><div class="stat-value">${escapeHtml(String(c.value))}</div><div class="stat-label">${escapeHtml(c.label)}</div><div class="stat-sub">${escapeHtml(c.sub)}</div></div>`
+    ).join("");
+    bar.dataset.loaded = "1";
+  } catch (e) { /* non-blocking */ }
+}
+
+// ---------- question analytics ----------
+async function loadAnalytics() {
+  const box = el("analyticsBody");
+  box.innerHTML = '<div class="stat-skeleton" style="height:120px;"></div>';
+  try {
+    const res = await fetch(`${API}/api/teacher/analytics`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ passcode: state.passcode })
+    });
+    const a = await res.json();
+    if (!res.ok) { box.innerHTML = `<div class="q-empty">${escapeHtml(a.error || "Could not load analytics.")}</div>`; return; }
+    if (!a.total) { box.innerHTML = '<div class="q-empty">No questions yet — analytics will appear once students start asking.</div>'; return; }
+    const maxKw = Math.max(...a.top_keywords.map(k => k[1]), 1);
+    const kwHtml = a.top_keywords.map(([w, c]) =>
+      `<div class="bar-row"><span class="bar-label">${escapeHtml(w)}</span><span class="bar-track"><span class="bar-fill" style="width:${Math.round(c / maxKw * 100)}%"></span></span><span class="bar-num">${c}</span></div>`
+    ).join("");
+    const studentsHtml = a.top_students.map(([n, c]) => `<li>${escapeHtml(n)} <span class="pill">${c}</span></li>`).join("");
+    const courseHtml = a.by_course.map(([n, c]) => `<li>${escapeHtml(n)} <span class="pill">${c}</span></li>`).join("");
+    box.innerHTML = `
+      <div class="analytics-grid">
+        <div class="analytics-card">
+          <h3>Most-asked keywords</h3>
+          <div class="bars">${kwHtml || '<p class="meta">Not enough data yet.</p>'}</div>
+        </div>
+        <div class="analytics-card">
+          <h3>Most active students</h3>
+          <ul class="rank-list">${studentsHtml || '<li class="meta">No data</li>'}</ul>
+        </div>
+        <div class="analytics-card">
+          <h3>Questions by course</h3>
+          <ul class="rank-list">${courseHtml || '<li class="meta">No data</li>'}</ul>
+        </div>
+      </div>`;
+  } catch (e) { box.innerHTML = '<div class="q-empty">Network error loading analytics.</div>'; }
+}
+
+// ---------- exports ----------
+function downloadUrl(path) {
+  const url = `${API}${path}${path.includes("?") ? "&" : "?"}passcode=${encodeURIComponent(state.passcode)}`;
+  const a = document.createElement("a");
+  a.href = url; a.download = ""; document.body.appendChild(a); a.click(); a.remove();
+}
+el("exportQCsv").addEventListener("click", () => { downloadUrl("/api/teacher/export/questions.csv"); toast("Downloading questions CSV…", "info"); });
+el("exportQPdf").addEventListener("click", () => { downloadUrl("/api/teacher/export/questions.pdf"); toast("Downloading questions PDF…", "info"); });
+el("exportRosterCsv").addEventListener("click", () => { downloadUrl("/api/teacher/export/roster.csv"); toast("Downloading roster CSV…", "info"); });
+
+// ---------- bulk: transcribe all missing ----------
+el("transcribeAllBtn").addEventListener("click", async () => {
+  const missing = teacherRecordings.filter(r => !r.segments);
+  if (!missing.length) { toast("All recordings already have transcripts 🎉", "success"); return; }
+  if (!confirm(`Generate transcripts for ${missing.length} recording(s) with none? This runs one at a time and can take several minutes.`)) return;
+  const btn = el("transcribeAllBtn");
+  btn.disabled = true;
+  const prog = el("bulkProgress"), fill = el("bulkBarFill"), txt = el("bulkProgressText");
+  prog.classList.remove("hidden");
+  let done = 0, ok = 0, failed = 0;
+  for (const r of missing) {
+    txt.textContent = `Transcribing ${done + 1} of ${missing.length}: ${r.title}…`;
+    try {
+      const res = await fetch(`${API}/api/teacher/transcribe`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ passcode: state.passcode, id: r.id })
+      });
+      const data = await res.json();
+      if (res.ok) ok++; else failed++;
+    } catch (e) { failed++; }
+    done++;
+    fill.style.width = `${Math.round(done / missing.length * 100)}%`;
+  }
+  txt.textContent = `Finished: ${ok} transcribed, ${failed} failed.`;
+  toast(`Transcribe-all done: ${ok} succeeded${failed ? `, ${failed} failed` : ""}.`, failed ? "error" : "success", 5000);
+  btn.disabled = false;
+  setTimeout(() => prog.classList.add("hidden"), 4000);
+  await loadTeacherRecordings(); loadStats();
+});
+
+// ---------- bulk: delete unassigned ----------
+el("deleteUnassignedBtn").addEventListener("click", async () => {
+  const unassigned = teacherRecordings.filter(r => (r.unit || "Unassigned") === "Unassigned");
+  if (!unassigned.length) { toast("There are no unassigned recordings.", "info"); return; }
+  if (!confirm(`Permanently delete ${unassigned.length} unassigned recording(s)? This cannot be undone.`)) return;
+  try {
+    const res = await fetch(`${API}/api/teacher/recordings/delete-unassigned`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ passcode: state.passcode })
+    });
+    const data = await res.json();
+    if (res.ok) { toast(`Deleted ${data.deleted} unassigned recording(s).`, "success"); await loadTeacherRecordings(); loadStats(); }
+    else toast(data.error || "Delete failed.", "error");
+  } catch (e) { toast("Network error during delete.", "error"); }
+});
 
 // ---------- roster management ----------
 async function loadStudents() {
@@ -409,14 +539,22 @@ function renderTeacherRecordings(list) {
     const badge = `<span class="type-badge ${isWebinar ? "webinar" : "meeting"}">${isWebinar ? "📢 Webinar" : "🎥 Meeting"}</span>`;
     const noTranscript = !r.segments;
     const btnLabel = noTranscript ? "Generate transcript" : "Re-transcribe";
+    const topicsHtml = (r.topics && r.topics.length)
+      ? `<div class="rec-topics">${r.topics.map(t => `<span class="topic-tag">${escapeHtml(t)}</span>`).join("")}</div>` : "";
+    const summaryHtml = r.summary ? `<div class="rec-summary">${escapeHtml(r.summary)}</div>` : "";
+    const summaryLabel = r.summary ? "Regenerate summary" : "Generate summary";
     row.innerHTML = `
       <div>
         <input class="title-in" value="${escapeHtml(r.title)}" />
         <div class="orig">${badge}Original: ${escapeHtml(r.original_title)} · ${escapeHtml(r.date || "")} · <span class="seg-count">${r.segments}</span> lines</div>
         <div class="transcribe-wrap">
           <button class="transcribe-btn ${noTranscript ? "needs" : ""}">${btnLabel}</button>
+          <button class="summary-btn ghost-sm" ${noTranscript ? "disabled title='Transcribe first'" : ""}>${summaryLabel}</button>
+          <button class="delete-btn danger-btn">🗑️ Delete</button>
           <span class="transcribe-status"></span>
         </div>
+        ${summaryHtml}
+        ${topicsHtml}
       </div>
       <input class="unit-in" value="${escapeHtml(r.unit)}" placeholder="Unit / class" />
       <div>
@@ -431,7 +569,50 @@ function renderTeacherRecordings(list) {
     const transBtn = row.querySelector(".transcribe-btn");
     const transStatus = row.querySelector(".transcribe-status");
     const segCount = row.querySelector(".seg-count");
+    const summaryBtn = row.querySelector(".summary-btn");
+    const deleteBtn = row.querySelector(".delete-btn");
     let visible = r.visible;
+
+    // generate / regenerate summary + topics
+    summaryBtn.addEventListener("click", async () => {
+      if (summaryBtn.disabled) return;
+      summaryBtn.disabled = true;
+      const prev = summaryBtn.textContent;
+      summaryBtn.textContent = "Summarizing…";
+      try {
+        const res = await fetch(`${API}/api/teacher/summary`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ passcode: state.passcode, id: r.id })
+        });
+        const data = await res.json();
+        if (!res.ok) { toast(data.error || "Summary failed.", "error"); summaryBtn.textContent = prev; }
+        else {
+          toast("Summary generated ✓", "success");
+          const cached = teacherRecordings.find(x => x.id === r.id);
+          if (cached) { cached.summary = data.summary; cached.topics = data.topics; }
+          applyRecFilters();
+        }
+      } catch (e) { toast("Network error.", "error"); summaryBtn.textContent = prev; }
+      finally { summaryBtn.disabled = false; }
+    });
+
+    // delete single recording
+    deleteBtn.addEventListener("click", async () => {
+      if (!confirm(`Permanently delete "${r.title}"? This cannot be undone.`)) return;
+      deleteBtn.disabled = true;
+      try {
+        const res = await fetch(`${API}/api/teacher/recordings/delete`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ passcode: state.passcode, id: r.id })
+        });
+        const data = await res.json();
+        if (res.ok) {
+          toast(`Deleted "${r.title}".`, "success");
+          teacherRecordings = teacherRecordings.filter(x => x.id !== r.id);
+          applyRecFilters(); loadStats();
+        } else { toast(data.error || "Delete failed.", "error"); deleteBtn.disabled = false; }
+      } catch (e) { toast("Network error during delete.", "error"); deleteBtn.disabled = false; }
+    });
 
     transBtn.addEventListener("click", async () => {
       if (transBtn.disabled) return;

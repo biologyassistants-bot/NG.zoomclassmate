@@ -233,6 +233,43 @@
     </div>
   </section>
 
+  <!-- Edit student modal -->
+  <div id="studentModal" class="modal hidden">
+    <div class="modal-card">
+      <div class="modal-head">
+        <h2>Edit student</h2>
+        <button id="closeStudentModal" class="close">✕</button>
+      </div>
+      <div class="modal-body student-edit">
+        <label class="fld"><span>Name</span><input id="edName" type="text" /></label>
+        <label class="fld"><span>Email</span><input id="edEmail" type="email" /></label>
+
+        <div class="fld">
+          <span>Courses</span>
+          <div id="edCourseList" class="ed-course-list"></div>
+          <div class="ed-course-add">
+            <input id="edCourseInput" type="text" placeholder="Add a course (must match a recording's course name)" />
+            <button id="edCourseAddBtn" type="button" class="ghost-sm">+ Add</button>
+          </div>
+        </div>
+
+        <label class="fld"><span>New password <em>(leave blank to keep current)</em></span>
+          <div class="ed-pw-row">
+            <input id="edPassword" type="text" placeholder="Type a new password, or generate one" />
+            <button id="edGenPw" type="button" class="ghost-sm">🎲 Generate</button>
+          </div>
+        </label>
+        <p id="edStatus" class="ed-status"></p>
+      </div>
+      <div class="modal-foot student-edit-foot">
+        <button id="edDelete" class="ghost danger-btn">🗑️ Delete student</button>
+        <div style="flex:1"></div>
+        <button id="edCancel" class="ghost">Cancel</button>
+        <button id="edSave" class="primary">Save changes</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Quiz modal -->
   <div id="quizModal" class="modal hidden">
     <div class="modal-card">

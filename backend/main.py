@@ -1111,6 +1111,64 @@ def reset_student_password(body: ResetPasswordBody):
     return {"ok": True, "email": student.get("email"), "new_password": new_pw}
 
 
+class UpdateStudentBody(BaseModel):
+    passcode: str
+    id: str
+    name: str | None = None
+    email: str | None = None
+    courses: list[str] | None = None      # full replacement list when provided
+    new_password: str | None = None        # set only if a non-empty value is given
+
+
+@app.post("/api/teacher/students/update")
+def update_student(body: UpdateStudentBody):
+    """Edit any field of a student in one call: name, email, full course list,
+    and/or password. Only fields that are provided (non-None) are changed."""
+    if not check_passcode(body.passcode):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    roster = load_roster()
+    student = next((s for s in roster if s["id"] == body.id), None)
+    if not student:
+        return JSONResponse({"error": "Student not found"}, status_code=404)
+
+    # email change -> validate uniqueness (case-insensitive), ignoring self
+    if body.email is not None:
+        new_email = body.email.strip()
+        if not new_email:
+            return JSONResponse({"error": "Email can't be empty."}, status_code=400)
+        clash = any(_norm(s.get("email")) == _norm(new_email) and s["id"] != body.id for s in roster)
+        if clash:
+            return JSONResponse({"error": "Another student already uses that email."}, status_code=400)
+        student["email"] = new_email
+
+    if body.name is not None:
+        student["name"] = body.name.strip() or (student.get("email") or "").split("@")[0]
+
+    if body.courses is not None:
+        # de-dupe case-insensitively, preserve order
+        seen, cleaned = set(), []
+        for c in body.courses:
+            c = (c or "").strip()
+            if c and _norm(c) not in seen:
+                cleaned.append(c); seen.add(_norm(c))
+        student["courses"] = cleaned
+
+    pw_changed = False
+    if body.new_password is not None and body.new_password.strip():
+        student["password_hash"] = hash_pw(body.new_password.strip())
+        pw_changed = True
+
+    save_roster(roster)
+    # if email or password changed, drop active sessions so the student re-logs in
+    if pw_changed or body.email is not None:
+        for tok in [t for t, v in SESSIONS.items() if v.get("student_id") == body.id]:
+            SESSIONS.pop(tok, None)
+    return {"ok": True, "student": {
+        "id": student["id"], "name": student.get("name", ""), "email": student.get("email", ""),
+        "courses": student.get("courses", []), "has_password": bool(student.get("password_hash")),
+    }}
+
+
 @app.post("/api/teacher/students/import")
 async def import_students(passcode: str = Form(...), file: UploadFile = File(...)):
     if not check_passcode(passcode):

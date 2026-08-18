@@ -1022,10 +1022,20 @@ el("saveLogo").addEventListener("click", async () => {
 });
 
 // ---------- branding (apply custom logo if one was uploaded) ----------
+// Remember the original emoji in each logo slot so we can restore it if the
+// custom logo image fails to load (e.g. not yet uploaded on a fresh deploy).
 function applyLogo(url) {
   if (!url) return;
-  const imgTag = `<img src="${url}" alt="logo" />`;
-  document.querySelectorAll(".logo, .logo-sm").forEach(node => { node.innerHTML = imgTag; });
+  document.querySelectorAll(".logo, .logo-sm").forEach(node => {
+    if (node.dataset.emoji === undefined) node.dataset.emoji = node.innerHTML;
+    const img = document.createElement("img");
+    img.alt = "logo";
+    // if the image can't load, fall back to the original emoji instead of a broken icon
+    img.addEventListener("error", () => { node.innerHTML = node.dataset.emoji; });
+    img.src = url;
+    node.innerHTML = "";
+    node.appendChild(img);
+  });
   const preview = el("logoPreview");
   if (preview) { preview.src = url; preview.classList.remove("hidden"); }
 }
@@ -1034,7 +1044,8 @@ async function loadBranding() {
   try {
     const res = await fetch(`${API}/api/branding`);
     const data = await res.json();
-    if (data.logo) applyLogo(data.logo);
+    // cache-bust so a re-uploaded logo refreshes, and so a stale broken URL isn't reused
+    if (data.logo) applyLogo(data.logo + "?t=" + Date.now());
   } catch (e) { /* ignore — keep emoji fallback */ }
 }
 loadBranding();

@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>NG-ClassMate · Classes made easier</title>
+<link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+<!--
+  ========== ADD YOUR LOGO ==========
+  1. Put your logo image in the "frontend" folder, e.g. frontend/logo.png
+  2. Replace the emoji inside <div class="logo" id="brandLogo">🎓</div> below with:
+        <img src="/logo.png" alt="logo" />
+  3. And in the two top bars, replace <span class="logo-sm">🎓</span> with:
+        <span class="logo-sm"><img src="/logo.png" alt="logo" /></span>
+  The CSS already sizes images inside .logo / .logo-sm automatically.
+  ===================================
+-->
+<div id="app">
+
+  <!-- Role landing -->
+  <section id="landing" class="gate">
+    <div class="gate-card">
+      <div class="logo" id="brandLogo">🎓</div>
+      <h1>NG-ClassMate</h1>
+      <p class="tagline">Classes made easier</p>
+      <div class="role-pick">
+        <button id="roleStudent" class="role-btn">
+          <span class="role-emoji">🎒</span>
+          <span class="role-t">I'm a student</span>
+          <span class="role-d">Ask questions & take quizzes</span>
+        </button>
+        <button id="roleTeacher" class="role-btn">
+          <span class="role-emoji">👩🏫</span>
+          <span class="role-t">I'm the teacher</span>
+          <span class="role-d">Manage recordings & see questions</span>
+        </button>
+      </div>
+    </div>
+  </section>
+
+  <!-- Student email + password gate -->
+  <section id="gate" class="gate hidden">
+    <div class="gate-card">
+      <button class="back" data-back="landing">← Back</button>
+      <div class="logo">🎒</div>
+      <h1>Welcome!</h1>
+      <p class="tagline">Sign in with the email and password your teacher gave you.</p>
+      <input id="emailInput" type="email" placeholder="Your email" autocomplete="username" />
+      <input id="passwordInput" type="password" placeholder="Password" autocomplete="current-password" />
+      <button id="enterBtn" class="primary">Let's go →</button>
+      <p id="studentErr" class="err hidden"></p>
+    </div>
+  </section>
+
+  <!-- Teacher passcode gate -->
+  <section id="teacherGate" class="gate hidden">
+    <div class="gate-card">
+      <button class="back" data-back="landing">← Back</button>
+      <div class="logo">👩🏫</div>
+      <h1>Teacher access</h1>
+      <p class="tagline">Enter your passcode.</p>
+      <input id="passInput" type="password" placeholder="Passcode" autocomplete="off" />
+      <button id="passBtn" class="primary">Unlock →</button>
+      <p id="passErr" class="err hidden">Wrong passcode. Try again.</p>
+      <p class="hint">Default passcode is <code>teach123</code> — change it inside the dashboard.</p>
+    </div>
+  </section>
+
+  <!-- Student app -->
+  <section id="main" class="main hidden">
+    <header class="topbar">
+      <div class="brand"><span class="logo-sm">🎓</span> NG-ClassMate</div>
+      <div class="who">Hi, <strong id="whoName">student</strong> 👋 <button class="link" id="studentSignOut">Sign out</button></div>
+    </header>
+    <div class="layout">
+      <aside class="sidebar">
+        <div class="sidebar-head">
+          <h2>Class recordings</h2>
+          <input id="search" type="text" placeholder="Search classes…" />
+        </div>
+        <div id="recList" class="rec-list"></div>
+      </aside>
+      <main class="content">
+        <div id="emptyState" class="empty">
+          <div class="empty-emoji">📚</div>
+          <p>Pick a class recording on the left to start asking questions.</p>
+        </div>
+        <div id="workspace" class="workspace hidden">
+          <div class="ws-head">
+            <div>
+              <h2 id="wsTitle">Recording</h2>
+              <p id="wsMeta" class="meta"></p>
+            </div>
+            <div class="ws-actions">
+              <span class="lang-note">🇬🇧 Answers in English</span>
+              <button id="quizBtn" class="ghost">📝 Generate quiz</button>
+            </div>
+          </div>
+          <div id="chat" class="chat"></div>
+          <form id="askForm" class="ask-bar">
+            <input id="questionInput" type="text" placeholder="Ask about this class… e.g. What is BMI?" autocomplete="off" />
+            <button type="submit" class="primary" id="askBtn">Ask</button>
+          </form>
+        </div>
+      </main>
+    </div>
+  </section>
+
+  <!-- Teacher dashboard -->
+  <section id="teacher" class="main hidden">
+    <header class="topbar">
+      <div class="brand"><span class="logo-sm">👩🏫</span> NG-ClassMate · Teacher</div>
+      <div class="who">
+        <button id="tabRecordings" class="tab active">Recordings</button>
+        <button id="tabStudents" class="tab">Students</button>
+        <button id="tabQuestions" class="tab">Student questions</button>
+        <button id="tabAnalytics" class="tab">Analytics</button>
+        <button id="tabSettings" class="tab">Settings</button>
+        <button class="link" id="teacherSignOut">Sign out</button>
+      </div>
+    </header>
+
+    <div id="teacherRecordings" class="teacher-pane">
+      <!-- dashboard stats -->
+      <div id="statsBar" class="stats-bar"></div>
+
+      <div class="pane-head">
+        <h2>Manage recordings</h2>
+        <p class="meta">New Zoom recordings arrive here automatically and start hidden. Rename them, assign a unit/course, then toggle Visible so the right students can see them. Changes save instantly.</p>
+        <div class="import-rec-bar" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:12px;">
+          <button id="importRecBtn" type="button" class="primary">⬇️ Import cloud recordings</button>
+          <button id="transcribeAllBtn" type="button" class="ghost">🎙️ Transcribe all missing</button>
+          <button id="deleteUnassignedBtn" type="button" class="ghost danger-btn">🗑️ Delete unassigned</button>
+          <span id="importRecStatus" class="meta" style="font-size:0.9em;"></span>
+        </div>
+        <div class="import-one-bar">
+          <input id="importOneInput" type="text" class="filter-input" placeholder="Import one recording — paste a Zoom Meeting ID / UUID or recording link" />
+          <button id="importOneBtn" type="button" class="ghost">➕ Import this recording</button>
+          <span id="importOneStatus" class="meta"></span>
+        </div>
+        <div id="bulkProgress" class="bulk-progress hidden">
+          <div class="bulk-bar"><div id="bulkBarFill" class="bulk-bar-fill"></div></div>
+          <span id="bulkProgressText" class="meta"></span>
+        </div>
+      </div>
+      <div class="rec-filters">
+        <input id="recSearch" type="text" class="filter-input" placeholder="Search recordings…" />
+        <select id="recCourseFilter" class="filter-select" title="Filter by course">
+          <option value="">All courses</option>
+        </select>
+        <select id="recTypeFilter" class="filter-select" title="Filter by type">
+          <option value="">All types</option>
+          <option value="meeting">Meetings only</option>
+          <option value="webinar">Webinars only</option>
+        </select>
+        <select id="recSort" class="filter-select" title="Sort recordings">
+          <option value="added_desc">Date added (newest first)</option>
+          <option value="added_asc">Date added (oldest first)</option>
+          <option value="date_desc">Class date (newest first)</option>
+          <option value="date_asc">Class date (oldest first)</option>
+          <option value="course_az">Course (A–Z)</option>
+          <option value="title_az">Title (A–Z)</option>
+        </select>
+        <span id="recCount" class="rec-count"></span>
+      </div>
+      <div id="tRecList" class="t-rec-list"></div>
+    </div>
+
+    <div id="teacherStudents" class="teacher-pane hidden">
+      <div class="pane-head">
+        <h2>Class roster</h2>
+        <p class="meta">Only students on this list can sign in. Import a sheet of students, or add one manually. Each student sees only the recordings for their assigned course(s).</p>
+      </div>
+      <div class="add-student">
+        <input id="newStudentName" type="text" placeholder="Student name" />
+        <input id="newStudentEmail" type="text" placeholder="Email" />
+        <input id="newStudentPassword" type="text" placeholder="Password" />
+        <input id="newStudentCourses" type="text" placeholder="Courses (separate with ;)" />
+        <button id="addStudentBtn" class="primary">+ Add student</button>
+      </div>
+      <p id="addStudentErr" class="err hidden"></p>
+      <div class="export-bar" style="margin-top:6px;gap:10px;">
+        <button id="exportRosterCsv" type="button" class="ghost">⬇️ Export roster (CSV)</button>
+        <button id="dedupeBtn" type="button" class="ghost">🔎 Merge duplicate accounts</button>
+      </div>
+      <div class="import-box" style="margin-top:14px;padding:12px;border:1px dashed #bbb;border-radius:10px;">
+        <strong>📥 Import students from Excel</strong>
+        <p class="meta">Columns: <code>email</code>, <code>password</code>, <code>name</code> (optional), <code>courses</code> (separate multiple with <code>;</code>). Course names must match the unit you assign to recordings.</p>
+        <input type="file" id="excelFile" accept=".xlsx" />
+        <button id="importBtn" class="primary">Upload &amp; import</button>
+        <p id="importMsg" class="ok-msg hidden"></p>
+        <p id="importErr" class="err hidden"></p>
+      </div>
+      <div id="studentList" class="student-list"></div>
+    </div>
+
+    <div id="teacherQuestions" class="teacher-pane hidden">
+      <div class="pane-head">
+        <h2>Student questions</h2>
+        <p class="meta">Everything your students have asked, newest first.</p>
+        <div class="export-bar">
+          <button id="exportQCsv" type="button" class="ghost">⬇️ Export CSV</button>
+          <button id="exportQPdf" type="button" class="ghost">⬇️ Export PDF</button>
+        </div>
+      </div>
+      <div id="qLog" class="q-log"></div>
+    </div>
+
+    <div id="teacherAnalytics" class="teacher-pane hidden">
+      <div class="pane-head">
+        <h2>Question analytics</h2>
+        <p class="meta">What your students are asking most — spot the topics they struggle with.</p>
+      </div>
+      <div id="analyticsBody" class="analytics-body"></div>
+    </div>
+
+    <div id="teacherSettings" class="teacher-pane hidden">
+      <div class="pane-head"><h2>Settings</h2></div>
+      <div class="setting-card">
+        <h3>Change teacher passcode</h3>
+        <input id="newPass" type="text" placeholder="New passcode" />
+        <button id="savePass" class="primary">Save passcode</button>
+        <p id="passSaved" class="ok-msg hidden">Passcode updated ✓</p>
+      </div>
+      <div class="setting-card" style="margin-top:16px;">
+        <h3>Website logo</h3>
+        <p class="meta" style="margin-bottom:12px;">Upload a PNG, JPG, WEBP, GIF or SVG (max 2 MB). It replaces the 🎓 emoji across the site.</p>
+        <img id="logoPreview" alt="Current logo" class="hidden" style="max-height:64px;max-width:180px;border-radius:12px;border:1px solid var(--line);padding:6px;background:var(--panel2);margin-bottom:12px;display:block;" />
+        <input type="file" id="logoFile" accept="image/png,image/jpeg,image/webp,image/gif,image/svg+xml" style="margin-bottom:12px;" />
+        <button id="saveLogo" class="primary">Upload logo</button>
+        <p id="logoSaved" class="ok-msg hidden">Logo updated ✓</p>
+        <p id="logoErr" class="err hidden"></p>
+      </div>
+    </div>
+  </section>
+
+  <!-- Edit student modal -->
+  <div id="studentModal" class="modal hidden">
+    <div class="modal-card">
+      <div class="modal-head">
+        <h2>Edit student</h2>
+        <button id="closeStudentModal" class="close">✕</button>
+      </div>
+      <div class="modal-body student-edit">
+        <label class="fld"><span>Name</span><input id="edName" type="text" /></label>
+        <label class="fld"><span>Email</span><input id="edEmail" type="email" /></label>
+
+        <div class="fld">
+          <span>Courses</span>
+          <div id="edCourseList" class="ed-course-list"></div>
+          <div class="ed-course-add">
+            <input id="edCourseInput" type="text" placeholder="Add a course (must match a recording's course name)" />
+            <button id="edCourseAddBtn" type="button" class="ghost-sm">+ Add</button>
+          </div>
+        </div>
+
+        <label class="fld"><span>New password <em>(leave blank to keep current)</em></span>
+          <div class="ed-pw-row">
+            <input id="edPassword" type="text" placeholder="Type a new password, or generate one" />
+            <button id="edGenPw" type="button" class="ghost-sm">🎲 Generate</button>
+          </div>
+        </label>
+        <p id="edStatus" class="ed-status"></p>
+      </div>
+      <div class="modal-foot student-edit-foot">
+        <button id="edDelete" class="ghost danger-btn">🗑️ Delete student</button>
+        <div style="flex:1"></div>
+        <button id="edCancel" class="ghost">Cancel</button>
+        <button id="edSave" class="primary">Save changes</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Dedupe (merge duplicates) modal -->
+  <div id="dedupeModal" class="modal hidden">
+    <div class="modal-card">
+      <div class="modal-head">
+        <h2>Merge duplicate accounts</h2>
+        <button id="closeDedupe" class="close">✕</button>
+      </div>
+      <div id="dedupeBody" class="modal-body dedupe-body"></div>
+      <div class="modal-foot">
+        <div style="flex:1"></div>
+        <button id="dedupeCancel" class="ghost">Cancel</button>
+        <button id="dedupeApply" class="primary hidden">Merge & delete duplicates</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Quiz modal -->
+  <div id="quizModal" class="modal hidden">
+    <div class="modal-card">
+      <div class="modal-head">
+        <h2>📝 Quiz</h2>
+        <button id="closeQuiz" class="close">✕</button>
+      </div>
+      <div id="quizBody" class="quiz-body"></div>
+      <div class="modal-foot">
+        <button id="submitQuiz" class="primary hidden">Check my answers</button>
+        <button id="retryQuiz" class="ghost hidden">Try another quiz</button>
+      </div>
+    </div>
+  </div>
+
+</div>
+<div id="toastHost" class="toast-host"></div>
+<script src="/app.js"></script>
+</body>
+</html>

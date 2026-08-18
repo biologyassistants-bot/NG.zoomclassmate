@@ -387,6 +387,34 @@ el("transcribeAllBtn").addEventListener("click", async () => {
   await loadTeacherRecordings(); loadStats();
 });
 
+// ---------- import one specific recording ----------
+el("importOneBtn").addEventListener("click", async () => {
+  const ref = el("importOneInput").value.trim();
+  const status = el("importOneStatus");
+  if (!ref) { status.textContent = "Paste a Zoom Meeting ID/UUID or a recording link first."; return; }
+  const btn = el("importOneBtn");
+  btn.disabled = true;
+  status.textContent = "Contacting Zoom and importing…";
+  try {
+    const res = await fetch(`${API}/api/teacher/import-one`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ passcode: state.passcode, ref })
+    });
+    const data = await res.json();
+    if (!res.ok) { status.textContent = ""; toast(data.error || "Import failed.", "error", 5000); }
+    else {
+      status.textContent = "";
+      const t = data.recording ? data.recording.title : "recording";
+      const note = data.has_transcript ? "with its Zoom transcript" : "— no Zoom transcript, use “Generate transcript”";
+      toast(`Imported “${t}” ${note}. It starts hidden until you assign a course & make it visible.`, "success", 6000);
+      el("importOneInput").value = "";
+      await loadTeacherRecordings(); loadStats();
+    }
+  } catch (e) { status.textContent = ""; toast("Network error during import.", "error"); }
+  finally { btn.disabled = false; }
+});
+el("importOneInput").addEventListener("keydown", e => { if (e.key === "Enter") el("importOneBtn").click(); });
+
 // ---------- bulk: delete unassigned ----------
 el("deleteUnassignedBtn").addEventListener("click", async () => {
   const unassigned = teacherRecordings.filter(r => (r.unit || "Unassigned") === "Unassigned");

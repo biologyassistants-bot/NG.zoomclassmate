@@ -53,8 +53,29 @@ DATA_PATH = os.path.join(DATA_DIR, "recordings.json")
 CONFIG_PATH = os.path.join(DATA_DIR, "config.json")
 QLOG_PATH = os.path.join(DATA_DIR, "question_log.json")
 ROSTER_PATH = os.path.join(DATA_DIR, "roster.json")
+NOTES_LIB_PATH = os.path.join(DATA_DIR, "notes_library.json")
 # in-memory active student sessions: token -> {student_id, name, courses}
 SESSIONS = {}
+
+
+# ---------- shared notes library ----------
+# Each note's text is stored ONCE here: {id, filename, chunks:[...], chars}.
+# A recording references shared notes by id via rec["note_ids"] = [id, ...].
+def load_notes_library():
+    if os.path.exists(NOTES_LIB_PATH):
+        with open(NOTES_LIB_PATH) as f:
+            return json.load(f)
+    return []
+
+
+def save_notes_library(lib):
+    with open(NOTES_LIB_PATH, "w") as f:
+        json.dump(lib, f, ensure_ascii=False, indent=2)
+
+
+def note_by_id(note_id, lib=None):
+    lib = lib if lib is not None else load_notes_library()
+    return next((n for n in lib if n["id"] == note_id), None)
 def load_roster():
     if os.path.exists(ROSTER_PATH):
         with open(ROSTER_PATH) as f:
@@ -192,6 +213,41 @@ def load_recordings():
         return json.load(f)
 RECORDINGS = load_recordings()
 REC_BY_ID = {r["id"]: r for r in RECORDINGS}
+
+
+def _migrate_inline_notes_to_library():
+    """One-time migration: older data stored notes inline on each recording as
+    rec['notes'] = [{id, filename, chunks}]. Move them into the shared library and
+    replace with rec['note_ids'] = [id,...]. Safe to run every startup (idempotent)."""
+    lib = load_notes_library()
+    lib_ids = {n["id"] for n in lib}
+    changed_lib = False
+    changed_recs = False
+    for r in RECORDINGS:
+        inline = r.get("notes")
+        if inline:
+            ids = list(r.get("note_ids") or [])
+            for n in inline:
+                nid = n.get("id") or secrets.token_hex(6)
+                if nid not in lib_ids:
+                    lib.append({"id": nid, "filename": n.get("filename") or "notes",
+                                "chunks": n.get("chunks", []),
+                                "chars": sum(len(c) for c in n.get("chunks", []))})
+                    lib_ids.add(nid); changed_lib = True
+                if nid not in ids:
+                    ids.append(nid)
+            r["note_ids"] = ids
+            r.pop("notes", None)
+            changed_recs = True
+        elif r.get("note_ids") is None:
+            r["note_ids"] = []
+    if changed_lib:
+        save_notes_library(lib)
+    if changed_recs:
+        save_recordings(RECORDINGS)
+
+
+_migrate_inline_notes_to_library()
 def fmt_ts(t):
     """Format a transcript start_time (which may be 'HH:MM:SS' or seconds) as mm:ss / h:mm:ss."""
     if t is None:
@@ -320,7 +376,9 @@ def chunk_note_text(text: str, target_chars=700):
 def retrieve_note_chunks(rec, query, k=4):
     """Return the top-k most relevant note chunks (across all notes on this
     recording) for the query, as a list of {note_title, text}. tf-idf ranked."""
-    notes = rec.get("notes") or []
+    lib = load_notes_library()
+    notes = [note_by_id(nid, lib) for nid in (rec.get("note_ids") or [])]
+    notes = [n for n in notes if n]
     entries = []  # (note_title, chunk_text)
     for note in notes:
         for ch in note.get("chunks", []):
@@ -926,16 +984,23 @@ def _card(r, include_hidden=False):
         "summary": r.get("summary") or "",
         "topics": r.get("topics") or [],
         # student-safe: only whether notes exist + how many, never their content
-        "has_notes": bool(r.get("notes")),
-        "notes_count": len(r.get("notes") or []),
-        # teacher-only: filenames + sizes for management (no full text)
-        "notes": ([
-            {"id": n.get("id"), "filename": n.get("filename"),
-             "chars": sum(len(c) for c in n.get("chunks", [])),
-             "chunks": len(n.get("chunks", []))}
-            for n in (r.get("notes") or [])
-        ] if include_hidden else None),
+        "has_notes": bool(r.get("note_ids")),
+        "notes_count": len(r.get("note_ids") or []),
+        # teacher-only: attached notes' filenames + sizes for management (no full text)
+        "notes": (_card_notes_meta(r) if include_hidden else None),
     }
+
+
+def _card_notes_meta(r):
+    lib = load_notes_library()
+    out = []
+    for nid in (r.get("note_ids") or []):
+        n = note_by_id(nid, lib)
+        if n:
+            out.append({"id": n["id"], "filename": n.get("filename"),
+                        "chars": n.get("chars", sum(len(c) for c in n.get("chunks", []))),
+                        "chunks": len(n.get("chunks", []))})
+    return out
 class RecListBody(BaseModel):
     token: str | None = None
 @app.post("/api/recordings")
@@ -1729,7 +1794,11 @@ async def teacher_import_one(body: ImportOneBody):
 
 
 # ---------- teacher notes endpoints ----------
-NOTE_MAX_BYTES = 10 * 1024 * 1024  # 10 MB per file
+# We only KEEP the extracted text (tiny), so allow large source files and cap on
+# the extracted TEXT size instead. A big illustrated PDF is large because of
+# images/fonts, not text — we happily read the text out of it and discard the file.
+NOTE_MAX_UPLOAD_BYTES = 60 * 1024 * 1024   # generous hard ceiling to avoid abuse / OOM
+NOTE_MAX_TEXT_CHARS = 2 * 1024 * 1024      # ~2 MB of text (~300+ pages) is plenty for class notes
 
 
 @app.post("/api/teacher/notes/upload")
@@ -1742,29 +1811,150 @@ async def upload_note(passcode: str = Form(...), id: str = Form(...), file: Uplo
     if not rec:
         return JSONResponse({"error": "not found"}, status_code=404)
     data = await file.read()
-    if len(data) > NOTE_MAX_BYTES:
-        return JSONResponse({"error": "File is too large (max 10 MB)."}, status_code=400)
+    # Only reject on an extreme file size (abuse / memory safety). Normal large
+    # files (image-heavy PDFs, etc.) are accepted — we extract just their text.
+    if len(data) > NOTE_MAX_UPLOAD_BYTES:
+        return JSONResponse(
+            {"error": f"File is unusually large (over {NOTE_MAX_UPLOAD_BYTES // (1024*1024)} MB). "
+                      "Please export a lighter version."},
+            status_code=400,
+        )
     try:
         text = extract_text_from_upload(data, file.filename or "")
     except ValueError as e:
         return JSONResponse({"error": str(e)}, status_code=400)
     except Exception as e:
         return JSONResponse({"error": f"Could not read that file: {e}"}, status_code=422)
+    # "Compress" the stored note: we keep only the extracted text, and if that text
+    # itself is enormous (a huge multi-hundred-page doc), trim it to the cap so
+    # storage stays small and retrieval stays fast.
+    original_len = len(text)
+    trimmed = False
+    if original_len > NOTE_MAX_TEXT_CHARS:
+        text = text[:NOTE_MAX_TEXT_CHARS]
+        trimmed = True
     chunks = chunk_note_text(text)
     if not chunks:
         return JSONResponse({"error": "No readable text found in that file."}, status_code=422)
-    note = {
-        "id": secrets.token_hex(6),
-        "filename": (file.filename or "notes"),
-        "chunks": chunks,
-    }
-    rec.setdefault("notes", []).append(note)
+    kept = sum(len(c) for c in chunks)
+    # store the note ONCE in the shared library, then attach it to this recording
+    lib = load_notes_library()
+    note = {"id": secrets.token_hex(6), "filename": (file.filename or "notes"),
+            "chunks": chunks, "chars": kept}
+    lib.append(note)
+    save_notes_library(lib)
+    ids = list(rec.get("note_ids") or [])
+    if note["id"] not in ids:
+        ids.append(note["id"])
+    rec["note_ids"] = ids
     save_recordings(RECORDINGS)
-    return {"ok": True, "id": id, "note": {"id": note["id"], "filename": note["filename"],
-            "chars": sum(len(c) for c in chunks), "chunks": len(chunks)},
+    return {"ok": True, "id": id,
+            "note": {"id": note["id"], "filename": note["filename"], "chars": kept, "chunks": len(chunks)},
+            "file_bytes": len(data),
+            "text_chars": kept,
+            "trimmed": trimmed,
+            "original_text_chars": original_len,
             "recording": _card(rec, include_hidden=True)}
 
 
+class ListLibraryBody(BaseModel):
+    passcode: str
+
+
+@app.post("/api/teacher/notes/library")
+def notes_library(body: ListLibraryBody):
+    """List all shared notes, with how many recordings each is attached to."""
+    if not check_passcode(body.passcode):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    lib = load_notes_library()
+    usage = {}
+    for r in RECORDINGS:
+        for nid in (r.get("note_ids") or []):
+            usage[nid] = usage.get(nid, 0) + 1
+    return {"library": [
+        {"id": n["id"], "filename": n.get("filename"),
+         "chars": n.get("chars", sum(len(c) for c in n.get("chunks", []))),
+         "used_by": usage.get(n["id"], 0)}
+        for n in lib
+    ]}
+
+
+class AttachNoteBody(BaseModel):
+    passcode: str
+    id: str            # recording id
+    note_id: str       # library note id
+
+
+@app.post("/api/teacher/notes/attach")
+def attach_note(body: AttachNoteBody):
+    """Attach an existing shared note to a recording (no re-upload, no duplication)."""
+    if not check_passcode(body.passcode):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    rec = REC_BY_ID.get(body.id)
+    if not rec:
+        return JSONResponse({"error": "recording not found"}, status_code=404)
+    if not note_by_id(body.note_id):
+        return JSONResponse({"error": "note not found in library"}, status_code=404)
+    ids = list(rec.get("note_ids") or [])
+    if body.note_id in ids:
+        return JSONResponse({"error": "That note is already attached to this recording."}, status_code=409)
+    ids.append(body.note_id)
+    rec["note_ids"] = ids
+    save_recordings(RECORDINGS)
+    return {"ok": True, "recording": _card(rec, include_hidden=True)}
+
+
+class DetachNoteBody(BaseModel):
+    passcode: str
+    id: str          # recording id
+    note_id: str
+
+
+@app.post("/api/teacher/notes/detach")
+def detach_note(body: DetachNoteBody):
+    """Remove a note from THIS recording only. The note stays in the library and on
+    any other recordings it's attached to."""
+    if not check_passcode(body.passcode):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    rec = REC_BY_ID.get(body.id)
+    if not rec:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    ids = list(rec.get("note_ids") or [])
+    if body.note_id not in ids:
+        return JSONResponse({"error": "note not attached"}, status_code=404)
+    rec["note_ids"] = [x for x in ids if x != body.note_id]
+    save_recordings(RECORDINGS)
+    return {"ok": True, "recording": _card(rec, include_hidden=True)}
+
+
+class DeleteLibraryNoteBody(BaseModel):
+    passcode: str
+    note_id: str
+
+
+@app.post("/api/teacher/notes/library/delete")
+def delete_library_note(body: DeleteLibraryNoteBody):
+    """Delete a note from the library entirely and detach it from every recording."""
+    if not check_passcode(body.passcode):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    lib = load_notes_library()
+    if not note_by_id(body.note_id, lib):
+        return JSONResponse({"error": "note not found"}, status_code=404)
+    lib = [n for n in lib if n["id"] != body.note_id]
+    save_notes_library(lib)
+    detached_from = 0
+    for r in RECORDINGS:
+        ids = r.get("note_ids") or []
+        if body.note_id in ids:
+            r["note_ids"] = [x for x in ids if x != body.note_id]
+            detached_from += 1
+    if detached_from:
+        save_recordings(RECORDINGS)
+    return {"ok": True, "detached_from": detached_from}
+
+
+# Backward-compat: the old per-recording "delete note" now DETACHES from the
+# recording (keeps the note in the library for any other recordings using it).
 class DeleteNoteBody(BaseModel):
     passcode: str
     id: str          # recording id
@@ -1778,10 +1968,10 @@ def delete_note(body: DeleteNoteBody):
     rec = REC_BY_ID.get(body.id)
     if not rec:
         return JSONResponse({"error": "not found"}, status_code=404)
-    before = len(rec.get("notes") or [])
-    rec["notes"] = [n for n in (rec.get("notes") or []) if n.get("id") != body.note_id]
-    if len(rec["notes"]) == before:
+    ids = list(rec.get("note_ids") or [])
+    if body.note_id not in ids:
         return JSONResponse({"error": "note not found"}, status_code=404)
+    rec["note_ids"] = [x for x in ids if x != body.note_id]
     save_recordings(RECORDINGS)
     return {"ok": True, "recording": _card(rec, include_hidden=True)}
 

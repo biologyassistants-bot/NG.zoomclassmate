@@ -1026,9 +1026,33 @@ def add_student(body: AddStudentBody):
     if not email:
         return JSONResponse({"error": "Email required"}, status_code=400)
     roster = load_roster()
-    if any(_norm(s.get("email")) == _norm(email) for s in roster):
-        return JSONResponse({"error": "A student with that email already exists"}, status_code=400)
     courses = [c.strip() for c in (body.courses or "").split(";") if c.strip()]
+    # If the email already exists, MERGE the new course(s) into that account
+    # instead of rejecting it or creating a duplicate.
+    existing = next((s for s in roster if _norm(s.get("email")) == _norm(email)), None)
+    if existing:
+        prev = existing.get("courses", []) or []
+        seen = {_norm(c) for c in prev}
+        merged = list(prev)
+        added_courses = []
+        for c in courses:
+            if _norm(c) not in seen:
+                merged.append(c); seen.add(_norm(c)); added_courses.append(c)
+        existing["courses"] = merged
+        # only update name/password when a real value was supplied
+        if name and name != email.split("@")[0]:
+            existing["name"] = name
+        if (body.password or "").strip():
+            existing["password_hash"] = hash_pw(body.password)
+        save_roster(roster)
+        if added_courses:
+            msg = f"Added course(s) {', '.join(added_courses)} to existing student {existing.get('email')}."
+        else:
+            msg = f"{existing.get('email')} already had those course(s); nothing to add."
+        return {"ok": True, "merged": True, "message": msg, "student": {
+            "id": existing["id"], "name": existing.get("name"), "email": existing.get("email"),
+            "courses": existing.get("courses", []), "has_password": bool(existing.get("password_hash")),
+        }}
     student = {
         "id": secrets.token_hex(6),
         "name": name or email.split("@")[0],
@@ -1038,7 +1062,7 @@ def add_student(body: AddStudentBody):
     }
     roster.append(student)
     save_roster(roster)
-    return {"ok": True, "student": {
+    return {"ok": True, "merged": False, "student": {
         "id": student["id"], "name": student["name"], "email": student["email"],
         "courses": student["courses"], "has_password": bool(student["password_hash"]),
     }}
@@ -1055,6 +1079,38 @@ def remove_student(body: RemoveStudentBody):
     for tok in [t for t, v in SESSIONS.items() if v["student_id"] == body.id]:
         SESSIONS.pop(tok, None)
     return {"ok": True}
+
+
+class ResetPasswordBody(BaseModel):
+    passcode: str
+    id: str
+    new_password: str | None = None  # if omitted, a random one is generated
+
+
+def _gen_password(n=8):
+    # readable, no ambiguous chars
+    alphabet = "abcdefghijkmnpqrstuvwxyz23456789"
+    return "".join(secrets.choice(alphabet) for _ in range(n))
+
+
+@app.post("/api/teacher/students/reset-password")
+def reset_student_password(body: ResetPasswordBody):
+    if not check_passcode(body.passcode):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    roster = load_roster()
+    student = next((s for s in roster if s["id"] == body.id), None)
+    if not student:
+        return JSONResponse({"error": "Student not found"}, status_code=404)
+    new_pw = (body.new_password or "").strip() or _gen_password()
+    student["password_hash"] = hash_pw(new_pw)
+    save_roster(roster)
+    # force re-login: drop any active sessions for this student
+    for tok in [t for t, v in SESSIONS.items() if v["student_id"] == body.id]:
+        SESSIONS.pop(tok, None)
+    # return the new password ONCE so the teacher can share it
+    return {"ok": True, "email": student.get("email"), "new_password": new_pw}
+
+
 @app.post("/api/teacher/students/import")
 async def import_students(passcode: str = Form(...), file: UploadFile = File(...)):
     if not check_passcode(passcode):

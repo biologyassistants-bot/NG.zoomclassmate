@@ -117,7 +117,32 @@ async function loadRecordings() {
   });
   const data = await res.json();
   state.recordings = data.recordings || [];
-  renderRecList(state.recordings);
+  
+  populateStudentCourseFilter(data.units || []);
+  applyStudentFilters();
+}
+
+function populateStudentCourseFilter(units) {
+  const sel = el("studentCourseFilter");
+  if (!sel) return; 
+  const current = sel.value;
+  sel.innerHTML = '<option value="">All courses</option>' + 
+    units.map(u => `<option value="${escapeHtml(u)}">${escapeHtml(u)}</option>`).join("");
+  if (current && units.includes(current)) sel.value = current;
+}
+
+function applyStudentFilters() {
+  const q = (el("search").value || "").toLowerCase();
+  const sel = el("studentCourseFilter");
+  const selectedCourse = sel ? sel.value : "";
+
+  const filtered = state.recordings.filter(r => {
+    const matchesText = !q || (r.title || "").toLowerCase().includes(q) || (r.unit || "").toLowerCase().includes(q);
+    const matchesCourse = !selectedCourse || (r.unit || "Unassigned") === selectedCourse;
+    return matchesText && matchesCourse;
+  });
+  
+  renderRecList(filtered);
 }
 
 function renderRecList(list) {
@@ -143,15 +168,14 @@ function renderRecList(list) {
   });
 }
 
-el("search").addEventListener("input", e => {
-  const q = e.target.value.toLowerCase();
-  renderRecList(state.recordings.filter(r => (r.title || "").toLowerCase().includes(q) || (r.unit || "").toLowerCase().includes(q)));
+el("search").addEventListener("input", applyStudentFilters);
+document.addEventListener("change", e => {
+  if (e.target.id === "studentCourseFilter") applyStudentFilters();
 });
 
 function selectRecording(r) {
   state.current = r;
-  const q = el("search").value.toLowerCase();
-  renderRecList(state.recordings.filter(x => (x.title || "").toLowerCase().includes(q) || (x.unit || "").toLowerCase().includes(q)));
+  applyStudentFilters();
   el("emptyState").classList.add("hidden");
   el("workspace").classList.remove("hidden");
   el("wsTitle").textContent = r.title;

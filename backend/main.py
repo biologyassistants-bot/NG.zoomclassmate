@@ -1426,6 +1426,40 @@ class PasscodeBody(BaseModel):
     new_passcode: str
 ALLOWED_LOGO_EXT = {"png": "png", "jpg": "jpg", "jpeg": "jpg", "webp": "webp", "gif": "gif", "svg": "svg"}
 LOGO_MAX_BYTES = 2 * 1024 * 1024  # 2 MB
+LOGO_MIME = {"png": "image/png", "jpg": "image/jpeg", "webp": "image/webp",
+             "gif": "image/gif", "svg": "image/svg+xml"}
+# Persist the logo on the DATA_DIR (mounted disk) so it survives restarts/redeploys,
+# NOT in the ephemeral frontend/ folder (which is rebuilt from code every deploy).
+LOGO_PATH_BASE = os.path.join(DATA_DIR, "logo")  # actual file is logo.<ext>
+
+
+def _current_logo_file():
+    for e in set(ALLOWED_LOGO_EXT.values()):
+        p = f"{LOGO_PATH_BASE}.{e}"
+        if os.path.exists(p):
+            return p, e
+    return None, None
+
+
+def _migrate_frontend_logo_to_disk():
+    """If an older build saved the logo into frontend/, move it onto the disk once."""
+    try:
+        existing, _ = _current_logo_file()
+        if existing:
+            return
+        for e in set(ALLOWED_LOGO_EXT.values()):
+            fe = os.path.join(FRONTEND_DIR, f"logo.{e}")
+            if os.path.exists(fe):
+                import shutil
+                shutil.copy2(fe, f"{LOGO_PATH_BASE}.{e}")
+                break
+    except Exception as ex:
+        print(f"[logo] migrate warning: {ex}")
+
+
+_migrate_frontend_logo_to_disk()
+
+
 @app.post("/api/teacher/logo")
 async def upload_logo(passcode: str = Form(...), file: UploadFile = File(...)):
     if not check_passcode(passcode):
@@ -1436,28 +1470,40 @@ async def upload_logo(passcode: str = Form(...), file: UploadFile = File(...)):
     data = await file.read()
     if len(data) > LOGO_MAX_BYTES:
         return JSONResponse({"error": "Image is too large (max 2 MB)."}, status_code=400)
-    if not os.path.isdir(FRONTEND_DIR):
-        return JSONResponse({"error": "Frontend directory not found on server."}, status_code=500)
     save_ext = ALLOWED_LOGO_EXT[ext]
-    # remove any previous logo variants so only one remains
+    os.makedirs(DATA_DIR, exist_ok=True)
+    # remove any previous logo variants on disk so only one remains
     for e in set(ALLOWED_LOGO_EXT.values()):
-        old = os.path.join(FRONTEND_DIR, f"logo.{e}")
+        old = f"{LOGO_PATH_BASE}.{e}"
         if os.path.exists(old):
             try:
                 os.remove(old)
             except OSError:
                 pass
-    with open(os.path.join(FRONTEND_DIR, f"logo.{save_ext}"), "wb") as f:
+    with open(f"{LOGO_PATH_BASE}.{save_ext}", "wb") as f:
         f.write(data)
     cfg = load_config()
-    cfg["logo"] = f"/logo.{save_ext}"
+    # served via the /logo endpoint (reads from disk); store the ext for mime lookup
+    cfg["logo"] = "/logo"
+    cfg["logo_ext"] = save_ext
     save_config(cfg)
-    return {"ok": True, "logo": cfg["logo"]}
+    return {"ok": True, "logo": "/logo"}
+
+
+@app.get("/logo")
+def get_logo():
+    """Serve the persisted logo from the disk. 404 if none uploaded."""
+    path, e = _current_logo_file()
+    if not path:
+        return JSONResponse({"error": "no logo"}, status_code=404)
+    return FileResponse(path, media_type=LOGO_MIME.get(e, "application/octet-stream"))
+
+
 @app.get("/api/branding")
 def branding():
     """Public: lets the frontend know if a custom logo has been uploaded."""
-    cfg = load_config()
-    return {"logo": cfg.get("logo") or ""}
+    path, _ = _current_logo_file()
+    return {"logo": "/logo" if path else ""}
 @app.post("/api/teacher/passcode")
 def change_passcode(body: PasscodeBody):
     if not check_passcode(body.passcode):

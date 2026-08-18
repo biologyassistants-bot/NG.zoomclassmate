@@ -78,7 +78,10 @@
       <aside class="sidebar">
         <div class="sidebar-head">
           <h2>Class recordings</h2>
-          <input id="search" type="text" placeholder="Search classes…" />
+          <input id="search" type="text" placeholder="Search classes…" style="margin-bottom: 8px;" />
+          <select id="studentCourseFilter" class="filter-select" title="Filter by course" style="width: 100%;">
+            <option value="">All courses</option>
+          </select>
         </div>
         <div id="recList" class="rec-list"></div>
       </aside>
@@ -263,7 +266,7 @@
           </div>
         </label>
         <p id="edStatus" class="ed-status"></p>
-      </div>
+        </div>
       <div class="modal-foot student-edit-foot">
         <button id="edDelete" class="ghost danger-btn">🗑️ Delete student</button>
         <div style="flex:1"></div>

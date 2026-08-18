@@ -15,6 +15,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 import secrets
 import bcrypt
+
 # Data location.
 #   * Default: the repo's bundled ./data folder.
 #   * On a host with a persistent disk (e.g. Render Starter + a mounted disk),
@@ -76,20 +77,30 @@ def save_notes_library(lib):
 def note_by_id(note_id, lib=None):
     lib = lib if lib is not None else load_notes_library()
     return next((n for n in lib if n["id"] == note_id), None)
+
+
 def load_roster():
     if os.path.exists(ROSTER_PATH):
         with open(ROSTER_PATH) as f:
             return json.load(f)
     return []
+
+
 def save_roster(roster):
     with open(ROSTER_PATH, "w") as f:
         json.dump(roster, f, ensure_ascii=False, indent=2)
+
+
 def gen_pin():
     return f"{secrets.randbelow(10000):04d}"
+
+
 def hash_pw(pw: str) -> str:
     # bcrypt only accepts up to 72 bytes; truncate defensively.
     pw_bytes = (pw or "").encode("utf-8")[:72]
     return bcrypt.hashpw(pw_bytes, bcrypt.gensalt()).decode("utf-8")
+
+
 def verify_pw(pw: str, hashed: str) -> bool:
     if not hashed:
         return False
@@ -98,8 +109,12 @@ def verify_pw(pw: str, hashed: str) -> bool:
         return bcrypt.checkpw(pw_bytes, hashed.encode("utf-8"))
     except Exception:
         return False
+
+
 # default teacher passcode; teacher can change it in the dashboard
 DEFAULT_PASSCODE = "teach123"
+
+
 def load_config():
     if os.path.exists(CONFIG_PATH):
         with open(CONFIG_PATH) as f:
@@ -108,20 +123,30 @@ def load_config():
     with open(CONFIG_PATH, "w") as f:
         json.dump(cfg, f, ensure_ascii=False, indent=2)
     return cfg
+
+
 def save_config(cfg):
     with open(CONFIG_PATH, "w") as f:
         json.dump(cfg, f, ensure_ascii=False, indent=2)
+
+
 def load_qlog():
     if os.path.exists(QLOG_PATH):
         with open(QLOG_PATH) as f:
             return json.load(f)
     return []
+
+
 def save_qlog(log):
     with open(QLOG_PATH, "w") as f:
         json.dump(log, f, ensure_ascii=False, indent=2)
+
+
 def save_recordings(recs):
     with open(DATA_PATH, "w") as f:
         json.dump(recs, f, ensure_ascii=False, indent=2)
+
+
 app = FastAPI(title="ClassMate API")
 app.add_middleware(
     CORSMiddleware,
@@ -129,6 +154,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
 
 # ---------------------------------------------------------------------------
 # OpenAI key diagnostic endpoint (INLINE — no separate file needed).
@@ -208,9 +234,12 @@ async def diag_openai():
     report["message"] = "OPENAI_API_KEY is set AND the API call succeeded. The key is working."
     return JSONResponse(status_code=200, content=report)
 
+
 def load_recordings():
     with open(DATA_PATH) as f:
         return json.load(f)
+
+
 RECORDINGS = load_recordings()
 REC_BY_ID = {r["id"]: r for r in RECORDINGS}
 
@@ -248,6 +277,8 @@ def _migrate_inline_notes_to_library():
 
 
 _migrate_inline_notes_to_library()
+
+
 def fmt_ts(t):
     """Format a transcript start_time (which may be 'HH:MM:SS' or seconds) as mm:ss / h:mm:ss."""
     if t is None:
@@ -268,65 +299,91 @@ def fmt_ts(t):
     if h:
         return f"{h}:{m:02d}:{ss:02d}"
     return f"{m}:{ss:02d}"
-# ---------- lightweight retrieval (BM25-ish tf-idf over segments) ----------
+
+
 _word_re = re.compile(r"[A-Za-z0-9\u00c0-\u024f\u0400-\u04ff\u0600-\u06ff]+")
+
 def tokenize(text):
     return [w.lower() for w in _word_re.findall(text or "")]
-def build_index(rec):
+
+# ---------- semantic retrieval (OpenAI Embeddings) ----------
+async def get_embedding(text: str) -> list[float]:
+    """Fetch a single embedding vector for the student's query."""
+    import httpx
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(
+            f"{OPENAI_BASE_URL}/embeddings",
+            headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
+            json={"input": text, "model": "text-embedding-3-small"}
+        )
+        resp.raise_for_status()
+        return resp.json()["data"][0]["embedding"]
+
+def cosine_similarity(v1, v2):
+    """Calculate how closely related two pieces of text are."""
+    dot = sum(a * b for a, b in zip(v1, v2))
+    mag = math.sqrt(sum(a * a for a in v1)) * math.sqrt(sum(b * b for b in v2))
+    return dot / mag if mag else 0.0
+
+async def build_index_async(rec):
+    """Fetch embeddings for the entire transcript and cache them on the recording object."""
+    if "embeddings" in rec:
+        return rec["embeddings"]
+        
     segs = rec["segments"]
-    docs = [tokenize(s.get("text", "")) for s in segs]
-    df = Counter()
-    for d in docs:
-        for w in set(d):
-            df[w] += 1
-    N = len(docs) or 1
-    idf = {w: math.log(1 + N / (c)) for w, c in df.items()}
-    return docs, idf
-from collections import OrderedDict
-# Bounded LRU cache: keep only the few most-recently-used recording indexes in
-# RAM instead of letting all 40+ accumulate. Prevents unbounded memory growth
-# as students query many different recordings.
-_INDEX_CACHE = OrderedDict()
-_INDEX_CACHE_MAX = int(os.environ.get("INDEX_CACHE_MAX", "8"))
-def get_index(rec):
-    rid = rec["id"]
-    if rid in _INDEX_CACHE:
-        _INDEX_CACHE.move_to_end(rid)
-        return _INDEX_CACHE[rid]
-    idx = build_index(rec)
-    _INDEX_CACHE[rid] = idx
-    _INDEX_CACHE.move_to_end(rid)
-    while len(_INDEX_CACHE) > _INDEX_CACHE_MAX:
-        _INDEX_CACHE.popitem(last=False)  # evict least-recently-used
-    return idx
-def retrieve(rec, query, k=18, window=1):
+    texts = [s.get("text", "") for s in segs]
+    if not texts:
+        return []
+    
+    import httpx
+    embeddings = []
+    batch_size = 1000  # Batch up to 1000 items to stay safely under OpenAI's 2048 limit
+    
+    async with httpx.AsyncClient(timeout=60) as client:
+        for i in range(0, len(texts), batch_size):
+            batch = texts[i:i + batch_size]
+            resp = await client.post(
+                f"{OPENAI_BASE_URL}/embeddings",
+                headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
+                json={"input": batch, "model": "text-embedding-3-small"}
+            )
+            resp.raise_for_status()
+            data = resp.json().get("data", [])
+            embeddings.extend([d["embedding"] for d in sorted(data, key=lambda x: x["index"])])
+            
+    rec["embeddings"] = embeddings  # Cache it so we only pay for this once per recording
+    save_recordings(RECORDINGS)
+    return embeddings
+
+async def retrieve(rec, query, k=18, window=1):
+    """Find the most relevant transcript segments using semantic similarity."""
     segs = rec["segments"]
-    docs, idf = get_index(rec)
-    q = tokenize(query)
-    qset = Counter(q)
-    scores = []
-    for i, d in enumerate(docs):
-        if not d:
-            scores.append(0.0)
-            continue
-        tf = Counter(d)
-        score = 0.0
-        for w, qc in qset.items():
-            if w in tf:
-                score += idf.get(w, 0.0) * (tf[w] / len(d)) * qc
-        scores.append(score)
+    if not segs: 
+        return []
+    
+    doc_embeddings = await build_index_async(rec)
+    q_embedding = await get_embedding(query)
+    
+    scores = [cosine_similarity(q_embedding, doc_emb) for doc_emb in doc_embeddings]
+    
+    # Rank segments by relevance
     ranked = sorted(range(len(segs)), key=lambda i: scores[i], reverse=True)
-    top = [i for i in ranked if scores[i] > 0][:k]
+    
+    # 0.3 is a good semantic threshold to ignore irrelevant chatter
+    top = [i for i in ranked if scores[i] > 0.3][:k] 
+    
     if not top:
-        # fall back to evenly sampled segments so quiz/summary still works
+        # Fallback to broad sampling if no relevant segments are found
         step = max(1, len(segs) // 40)
         top = list(range(0, len(segs), step))[:40]
-    # expand with neighbor windows for context, keep order
+        
     chosen = set()
     for i in top:
         for j in range(max(0, i - window), min(len(segs), i + window + 1)):
             chosen.add(j)
     return sorted(chosen)
+
+
 # ---------- teacher notes: extraction + retrieval ----------
 def extract_text_from_upload(data: bytes, filename: str) -> str:
     """Extract plain text from an uploaded PDF / DOCX / TXT file (server-side only).
@@ -440,6 +497,8 @@ def context_from_indices(rec, indices, max_chars=45000):
         lines.append(line)
         total += len(line)
     return "\n".join(lines)
+
+
 # ---------- LLM helper ----------
 # Two modes:
 #  * Deployed (cloud host): set env OPENAI_API_KEY (and optionally OPENAI_MODEL,
@@ -514,6 +573,8 @@ async def llm(messages, max_tokens=1200, temperature=0.1):
         "The AI features are not configured on this server. "
         "Set the OPENAI_API_KEY environment variable (and redeploy)."
     )
+
+
 OPENAI_TRANSCRIBE_MODEL = os.environ.get("OPENAI_TRANSCRIBE_MODEL", "whisper-1").strip()
 # OpenAI's audio upload limit is 25 MB. We compress below this and, if still too
 # large, split into time-based chunks that each stay under it.
@@ -841,7 +902,7 @@ async def transcribe_recording_by_id(meeting_id):
         audio_bytes = None
     except Exception:
         pass
-    _INDEX_CACHE.pop(meeting_id, None)
+    rec.pop("embeddings", None)
     import gc as _gc
     _gc.collect()
     return len(segments)
@@ -853,6 +914,8 @@ ZOOM_CLIENT_ID      = os.environ.get("ZOOM_CLIENT_ID", "").strip()
 ZOOM_CLIENT_SECRET  = os.environ.get("ZOOM_CLIENT_SECRET", "").strip()
 ZOOM_WEBHOOK_SECRET = os.environ.get("ZOOM_WEBHOOK_SECRET", "").strip()
 _zoom_tok = {"token": None, "exp": 0}
+
+
 async def zoom_token():
     if _zoom_tok["token"] and _zoom_tok["exp"] > time.time():
         return _zoom_tok["token"]
@@ -869,6 +932,8 @@ async def zoom_token():
     _zoom_tok["token"] = d["access_token"]
     _zoom_tok["exp"] = time.time() + d.get("expires_in", 3600) - 60
     return _zoom_tok["token"]
+
+
 def parse_vtt(text):
     """Turn a WEBVTT transcript into [{start, speaker, text}, ...]."""
     segments = []
@@ -890,6 +955,8 @@ def parse_vtt(text):
         if body:
             segments.append({"start": start, "speaker": speaker, "text": body})
     return segments
+
+
 def _detect_source(obj):
     """Return 'webinar' or 'meeting' based on the Zoom recording object.
     Zoom webinar meeting_type values are 5, 6 and 9; regular meetings are 1/2/3/4/8.
@@ -903,6 +970,8 @@ def _detect_source(obj):
         if isinstance(t, str) and "webinar" in t.lower():
             return "webinar"
     return "meeting"
+
+
 async def ingest_zoom_meeting(obj, allow_whisper_fallback=True):
     """Given a webhook payload's 'object', download its transcript and add a hidden recording.
     When allow_whisper_fallback is False (e.g. bulk backfill), recordings without a Zoom
@@ -960,7 +1029,7 @@ async def ingest_zoom_meeting(obj, allow_whisper_fallback=True):
         "original_topic": topic,
         "display_title": topic,
         "date": start_time,
-        "source": source,     # "meeting" or "webinar"
+        "source": source,      # "meeting" or "webinar"
         "unit": "",            # teacher assigns later
         "visible": False,      # hidden until teacher reviews
         "segments": segments,
@@ -969,6 +1038,8 @@ async def ingest_zoom_meeting(obj, allow_whisper_fallback=True):
     REC_BY_ID[meeting_id] = new_rec
     save_recordings(RECORDINGS)
     return True
+
+
 # ---------- API ----------
 def _card(r, include_hidden=False):
     return {
@@ -1001,8 +1072,12 @@ def _card_notes_meta(r):
                         "chars": n.get("chars", sum(len(c) for c in n.get("chunks", []))),
                         "chunks": len(n.get("chunks", []))})
     return out
+
+
 class RecListBody(BaseModel):
     token: str | None = None
+
+
 @app.post("/api/recordings")
 def list_recordings(body: RecListBody):
     """Student-facing: only visible recordings the student's courses allow."""
@@ -1031,16 +1106,24 @@ def list_recordings(body: RecListBody):
             seen.add(u)
             units.append(u)
     return {"recordings": out, "units": units}
+
+
 # ---------- auth ----------
 class LoginBody(BaseModel):
     passcode: str
+
+
 def check_passcode(passcode: str) -> bool:
     return passcode == load_config().get("passcode")
+
+
 @app.post("/api/teacher/login")
 def teacher_login(body: LoginBody):
     if check_passcode(body.passcode):
         return {"ok": True}
     return JSONResponse({"ok": False, "error": "Wrong passcode"}, status_code=401)
+
+
 # ---------- student roster auth ----------
 def _norm(s):
     return (s or "").strip().lower()
@@ -1099,6 +1182,8 @@ _repair_roster_courses()
 class StudentLoginBody(BaseModel):
     email: str
     password: str
+
+
 @app.post("/api/student/login")
 def student_login(body: StudentLoginBody):
     roster = load_roster()
@@ -1115,11 +1200,17 @@ def student_login(body: StudentLoginBody):
         {"ok": False, "error": "That email and password don't match our class roster. Check with your teacher."},
         status_code=401,
     )
+
+
 def valid_session(token: str):
     return SESSIONS.get(token or "")
+
+
 # ---------- teacher roster management ----------
 class RosterAuth(BaseModel):
     passcode: str
+
+
 @app.post("/api/teacher/students")
 def list_students(body: RosterAuth):
     if not check_passcode(body.passcode):
@@ -1132,12 +1223,16 @@ def list_students(body: RosterAuth):
         "has_password": bool(s.get("password_hash")),
     } for s in load_roster()]
     return {"students": safe}
+
+
 class AddStudentBody(BaseModel):
     passcode: str
     name: str
     email: str | None = ""
     password: str | None = ""
     courses: str | None = ""
+
+
 @app.post("/api/teacher/students/add")
 def add_student(body: AddStudentBody):
     if not check_passcode(body.passcode):
@@ -1187,9 +1282,13 @@ def add_student(body: AddStudentBody):
         "id": student["id"], "name": student["name"], "email": student["email"],
         "courses": student["courses"], "has_password": bool(student["password_hash"]),
     }}
+
+
 class RemoveStudentBody(BaseModel):
     passcode: str
     id: str
+
+
 @app.post("/api/teacher/students/remove")
 def remove_student(body: RemoveStudentBody):
     if not check_passcode(body.passcode):
@@ -1447,9 +1546,13 @@ async def import_students(passcode: str = Form(...), file: UploadFile = File(...
             added += 1
     save_roster(roster)
     return {"ok": True, "added": added, "updated": updated, "total": len(roster)}
+
+
 # ---------- teacher endpoints ----------
 class TeacherAuth(BaseModel):
     passcode: str
+
+
 @app.post("/api/teacher/recordings")
 def teacher_recordings(body: TeacherAuth):
     if not check_passcode(body.passcode):
@@ -1457,12 +1560,16 @@ def teacher_recordings(body: TeacherAuth):
     out = [_card(r, include_hidden=True) for r in RECORDINGS]
     units = sorted({(r.get("unit") or "Unassigned") for r in RECORDINGS})
     return {"recordings": out, "units": units}
+
+
 class UpdateRecBody(BaseModel):
     passcode: str
     id: str
     display_title: str | None = None
     visible: bool | None = None
     unit: str | None = None
+
+
 @app.post("/api/teacher/update")
 def teacher_update(body: UpdateRecBody):
     if not check_passcode(body.passcode):
@@ -1478,9 +1585,13 @@ def teacher_update(body: UpdateRecBody):
         rec["unit"] = body.unit.strip()
     save_recordings(RECORDINGS)
     return {"ok": True, "recording": _card(rec, include_hidden=True)}
+
+
 class PasscodeBody(BaseModel):
     passcode: str
     new_passcode: str
+
+
 ALLOWED_LOGO_EXT = {"png": "png", "jpg": "jpg", "jpeg": "jpg", "webp": "webp", "gif": "gif", "svg": "svg"}
 LOGO_MAX_BYTES = 2 * 1024 * 1024  # 2 MB
 LOGO_MIME = {"png": "image/png", "jpg": "image/jpeg", "webp": "image/webp",
@@ -1561,6 +1672,8 @@ def branding():
     """Public: lets the frontend know if a custom logo has been uploaded."""
     path, _ = _current_logo_file()
     return {"logo": "/logo" if path else ""}
+
+
 @app.post("/api/teacher/passcode")
 def change_passcode(body: PasscodeBody):
     if not check_passcode(body.passcode):
@@ -1571,6 +1684,8 @@ def change_passcode(body: PasscodeBody):
     cfg["passcode"] = body.new_passcode.strip()
     save_config(cfg)
     return {"ok": True}
+
+
 @app.post("/api/teacher/questions")
 def teacher_questions(body: TeacherAuth):
     if not check_passcode(body.passcode):
@@ -1578,11 +1693,15 @@ def teacher_questions(body: TeacherAuth):
     log = load_qlog()
     # newest first
     return {"questions": list(reversed(log))[:500]}
+
+
 class AskBody(BaseModel):
     recording_id: str
     question: str
     language: str | None = None
     token: str | None = None
+
+
 @app.post("/api/ask")
 async def ask(body: AskBody):
     sess = valid_session(body.token)
@@ -1591,9 +1710,11 @@ async def ask(body: AskBody):
     rec = REC_BY_ID.get(body.recording_id)
     if not rec:
         return JSONResponse({"error": "Recording not found"}, status_code=404)
-    idx = retrieve(rec, body.question)
+    
+    idx = await retrieve(rec, body.question)
     ctx = context_from_indices(rec, idx)
     notes_ctx = notes_context(rec, body.question)
+    
     # Answers are always in English (school policy), regardless of the question's language.
     lang_line = "\nAlways respond in English, even if the student's question is written in another language."
     notes_rules = ""
@@ -1606,25 +1727,35 @@ async def ask(body: AskBody):
             "7. NEVER reproduce a note in full or dump large portions verbatim — quote only the parts "
             "directly relevant to the question. The notes are not downloadable by students."
         )
+
+    course_name = rec.get('unit') or "Unassigned Course"
+
     system = (
-        "You are ClassMate, a study assistant for students. You answer ONLY using the "
-        "provided class recording transcript excerpts and any teacher notes provided. "
-        "Each transcript excerpt is prefixed with a timestamp like [12:34] and sometimes a speaker name.\n"
-        "RULES:\n"
-        "1. Base every claim strictly on the transcript and the teacher notes. Do NOT use outside knowledge.\n"
-        "2. When you state something from the recording, cite the timestamp in parentheses, e.g. (at 12:34).\n"
-        "3. If the answer is in neither the transcript nor the notes, say clearly that it wasn't covered, and do not invent an answer.\n"
-        "4. Be clear, friendly and concise, like a helpful tutor."
+        f"You are an expert Biology tutor for Cambridge IGCSE, AS/A Level, and Pearson Edexcel. "
+        f"You are currently answering a question for a student in the course: '{course_name}'. "
+        "Your ONLY goal is to explain concepts exactly as they were taught in the provided class recording and teacher notes.\n\n"
+        "CRITICAL RULES:\n"
+        "1. STRICT GROUNDING: You must base your answer *exclusively* on the provided excerpts. "
+        "Do NOT include outside biological knowledge, facts, or syllabus details under any circumstances. "
+        "If a student asks about something not explicitly mentioned in the text, you must reply exactly: "
+        "'This topic wasn't covered in this specific class or the attached notes.'\n"
+        "2. EXAM BOARD ACCURACY: Pay close attention to the course name. Use the exact terminology, "
+        "mark scheme phrasing, and syllabus conventions found in the provided text. Never mix Cambridge and Edexcel terminology.\n"
+        "3. CITATIONS: Always cite your source by including the timestamp in parentheses, e.g. (at 12:34).\n"
+        "4. NO HALLUCINATION: Do not invent, infer, or guess answers."
         + notes_rules
         + lang_line
     )
+
     notes_block = f"\n\nTeacher notes for this class:\n{notes_ctx}" if notes_ctx else ""
     user = (
+        f"Course: {course_name}\n"
         f"Class recording: {rec.get('display_title') or rec.get('topic')}\n\n"
         f"Transcript excerpts:\n{ctx}"
         f"{notes_block}\n\n"
         f"Student question: {body.question}"
     )
+    
     try:
         answer = await llm(
             [{"role": "system", "content": system}, {"role": "user", "content": user}],
@@ -1632,6 +1763,7 @@ async def ask(body: AskBody):
         )
     except (LLMConfigError, LLMUpstreamError) as e:
         return JSONResponse({"error": str(e)}, status_code=503)
+    
     # log the student question for the teacher
     try:
         from datetime import datetime
@@ -1649,12 +1781,16 @@ async def ask(body: AskBody):
     except Exception:
         pass
     return {"answer": answer, "cited_segments": len(idx)}
+
+
 class QuizBody(BaseModel):
     recording_id: str
     num_questions: int = 5
     language: str | None = None
     difficulty: str | None = "mixed"
     token: str | None = None
+
+
 @app.post("/api/quiz")
 async def quiz(body: QuizBody):
     if not valid_session(body.token):
@@ -1703,6 +1839,8 @@ async def quiz(body: QuizBody):
     if not data or "questions" not in data:
         return JSONResponse({"error": "Could not generate quiz", "raw": raw[:500]}, status_code=500)
     return data
+
+
 # ---------- Zoom webhook ----------
 @app.post("/api/zoom/webhook")
 async def zoom_webhook(request: Request):
@@ -1748,6 +1886,8 @@ async def zoom_webhook(request: Request):
         except Exception as e:
             print("Zoom ingest error:", e)
     return {"ok": True}
+
+
 # ---------- one-time backfill of EXISTING cloud recordings ----------
 # Pulls recordings already stored in Zoom cloud (meetings AND webinars) via the
 # Zoom REST API and ingests any that aren't in the app yet, reusing the exact
@@ -2139,7 +2279,6 @@ def _remove_recording(rid: str) -> bool:
         return False
     RECORDINGS = [r for r in RECORDINGS if r.get("id") != rid]
     REC_BY_ID.pop(rid, None)
-    _INDEX_CACHE.pop(rid, None)
     return True
 
 
@@ -2183,7 +2322,7 @@ async def generate_summary_and_topics(rec):
     if not segs:
         return None
     # sample across the whole recording for a representative context
-    idx = retrieve(rec, rec.get("display_title") or rec.get("topic") or "lecture", k=30, window=1)
+    idx = await retrieve(rec, rec.get("display_title") or rec.get("topic") or "lecture", k=30, window=1)
     context = context_from_indices(rec, idx, max_chars=40000)
     system = (
         "You summarize a class recording for students. Use ONLY the transcript. "
@@ -2199,227 +2338,3 @@ async def generate_summary_and_topics(rec):
     import json as _json
     txt = (raw or "").strip()
     if txt.startswith("```"):
-        txt = txt.strip("`")
-        txt = txt.split("\n", 1)[-1] if "\n" in txt else txt
-    try:
-        data = _json.loads(txt[txt.find("{"): txt.rfind("}") + 1])
-    except Exception:
-        data = {"summary": txt[:400], "topics": []}
-    rec["summary"] = (data.get("summary") or "").strip()
-    rec["topics"] = [t.strip() for t in (data.get("topics") or []) if t.strip()][:8]
-    return rec
-
-
-class SummaryBody(BaseModel):
-    passcode: str
-    id: str
-
-
-@app.post("/api/teacher/summary")
-async def teacher_summary(body: SummaryBody):
-    if not check_passcode(body.passcode):
-        return JSONResponse({"error": "unauthorized"}, status_code=401)
-    rec = REC_BY_ID.get(body.id)
-    if not rec:
-        return JSONResponse({"error": "not found"}, status_code=404)
-    if not rec.get("segments"):
-        return JSONResponse({"error": "This recording has no transcript yet. Generate a transcript first."}, status_code=422)
-    try:
-        await generate_summary_and_topics(rec)
-    except LLMConfigError as e:
-        return JSONResponse({"error": str(e)}, status_code=503)
-    except Exception as e:
-        return JSONResponse({"error": f"Could not generate summary: {e}"}, status_code=500)
-    save_recordings(RECORDINGS)
-    return {"ok": True, "id": body.id, "summary": rec.get("summary", ""), "topics": rec.get("topics", [])}
-
-
-# ---------- dashboard stats ----------
-@app.post("/api/teacher/stats")
-def teacher_stats(body: TeacherAuth):
-    if not check_passcode(body.passcode):
-        return JSONResponse({"error": "unauthorized"}, status_code=401)
-    from datetime import datetime, timedelta
-    roster = load_roster()
-    log = load_qlog()
-    total = len(RECORDINGS)
-    transcribed = sum(1 for r in RECORDINGS if r.get("segments"))
-    visible = sum(1 for r in RECORDINGS if r.get("visible", True))
-    unassigned = sum(1 for r in RECORDINGS if (r.get("unit") or "Unassigned") == "Unassigned")
-    week_ago = datetime.utcnow() - timedelta(days=7)
-    q_week = 0
-    for q in log:
-        try:
-            if datetime.strptime((q.get("time") or "")[:10], "%Y-%m-%d") >= week_ago:
-                q_week += 1
-        except Exception:
-            pass
-    courses = len({(r.get("unit") or "Unassigned") for r in RECORDINGS})
-    return {
-        "recordings_total": total,
-        "recordings_transcribed": transcribed,
-        "recordings_missing": total - transcribed,
-        "recordings_visible": visible,
-        "recordings_unassigned": unassigned,
-        "courses": courses,
-        "students": len(roster),
-        "questions_total": len(log),
-        "questions_this_week": q_week,
-    }
-
-
-# ---------- question analytics ----------
-_STOPWORDS = set("the a an and or of to in is are was were be been what how why when where "
-                 "which who whom this that these those i you he she it we they for on at by "
-                 "with about from as do does did can could would should will shall may might "
-                 "not no yes please tell me my your our their his her its me can't cant explain "
-                 "give show list define describe difference between them then than".split())
-
-
-@app.post("/api/teacher/analytics")
-def teacher_analytics(body: TeacherAuth):
-    if not check_passcode(body.passcode):
-        return JSONResponse({"error": "unauthorized"}, status_code=401)
-    log = load_qlog()
-    # most-asked keywords
-    kw = Counter()
-    per_student = Counter()
-    per_course = Counter()
-    per_day = Counter()
-    for q in log:
-        for w in tokenize(q.get("question", "")):
-            if len(w) > 2 and w not in _STOPWORDS:
-                kw[w] += 1
-        per_student[q.get("student") or "Unknown"] += 1
-        per_course[q.get("unit") or "Unassigned"] += 1
-        d = (q.get("time") or "")[:10]
-        if d:
-            per_day[d] += 1
-    return {
-        "total": len(log),
-        "top_keywords": kw.most_common(15),
-        "top_students": per_student.most_common(10),
-        "by_course": per_course.most_common(20),
-        "by_day": sorted(per_day.items()),
-    }
-
-
-# ---------- exports ----------
-@app.get("/api/teacher/export/questions.csv")
-def export_questions_csv(passcode: str = Query(...)):
-    if not check_passcode(passcode):
-        return JSONResponse({"error": "unauthorized"}, status_code=401)
-    import csv
-    log = load_qlog()
-    buf = io.StringIO()
-    w = csv.writer(buf)
-    w.writerow(["Time", "Student", "Recording", "Unit", "Question"])
-    for q in reversed(log):
-        w.writerow([q.get("time", ""), q.get("student", ""), q.get("recording_title", ""),
-                    q.get("unit", ""), q.get("question", "")])
-    data = buf.getvalue().encode("utf-8-sig")
-    from fastapi.responses import Response
-    return Response(content=data, media_type="text/csv",
-                    headers={"Content-Disposition": "attachment; filename=questions.csv"})
-
-
-@app.get("/api/teacher/export/roster.csv")
-def export_roster_csv(passcode: str = Query(...)):
-    if not check_passcode(passcode):
-        return JSONResponse({"error": "unauthorized"}, status_code=401)
-    import csv
-    roster = load_roster()
-    buf = io.StringIO()
-    w = csv.writer(buf)
-    w.writerow(["Name", "Email", "Courses"])
-    for s in roster:
-        w.writerow([s.get("name", ""), s.get("email", ""), ", ".join(s.get("courses", []) or [])])
-    data = buf.getvalue().encode("utf-8-sig")
-    from fastapi.responses import Response
-    return Response(content=data, media_type="text/csv",
-                    headers={"Content-Disposition": "attachment; filename=roster.csv"})
-
-
-@app.get("/api/teacher/export/questions.pdf")
-def export_questions_pdf(passcode: str = Query(...)):
-    if not check_passcode(passcode):
-        return JSONResponse({"error": "unauthorized"}, status_code=401)
-    from fastapi.responses import Response
-    from datetime import datetime
-    log = load_qlog()
-    # Minimal dependency-free PDF: render a simple text-based report.
-    lines = [f"NG-ClassMate — Student Questions Report",
-             f"Generated {datetime.utcnow().strftime('%Y-%m-%d %H:%M')} UTC",
-             f"Total questions: {len(log)}", ""]
-    for q in reversed(log):
-        lines.append(f"{q.get('time','')}  |  {q.get('student','')}  |  {q.get('unit','')}")
-        lines.append(f"  Q: {q.get('question','')}")
-        lines.append(f"  Recording: {q.get('recording_title','')}")
-        lines.append("")
-    pdf_bytes = _simple_text_pdf(lines)
-    return Response(content=pdf_bytes, media_type="application/pdf",
-                    headers={"Content-Disposition": "attachment; filename=questions.pdf"})
-
-
-def _simple_text_pdf(lines):
-    """Build a minimal multi-page PDF from plain text lines with no external deps."""
-    def esc(s):
-        return (s or "").replace("\\", r"\\").replace("(", r"\(").replace(")", r"\)")
-    # paginate
-    per_page = 48
-    pages = [lines[i:i + per_page] for i in range(0, max(1, len(lines)), per_page)] or [[""]]
-    objs = []
-    # 1: catalog, 2: pages tree; page objs + content objs follow
-    n_pages = len(pages)
-    font_obj = 3 + n_pages * 2  # after pages+contents
-    kids = []
-    body_objs = {}
-    obj_num = 3
-    content_nums = []
-    page_nums = []
-    for pi, pg in enumerate(pages):
-        page_no = obj_num; obj_num += 1
-        content_no = obj_num; obj_num += 1
-        page_nums.append(page_no); content_nums.append(content_no)
-    font_no = obj_num
-    # content streams
-    for pi, pg in enumerate(pages):
-        text_cmds = ["BT", "/F1 10 Tf", "12 TL", "40 800 Td"]
-        for ln in pg:
-            text_cmds.append(f"({esc(ln)[:180]}) Tj")
-            text_cmds.append("T*")
-        text_cmds.append("ET")
-        stream = "\n".join(text_cmds)
-        body_objs[content_nums[pi]] = f"<< /Length {len(stream)} >>\nstream\n{stream}\nendstream"
-        body_objs[page_nums[pi]] = (
-            f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
-            f"/Resources << /Font << /F1 {font_no} 0 R >> >> /Contents {content_nums[pi]} 0 R >>"
-        )
-    body_objs[font_no] = "<< /Type /Font /Subtype /Type1 /BaseFont /Courier >>"
-    kids_str = " ".join(f"{pn} 0 R" for pn in page_nums)
-    body_objs[1] = "<< /Type /Catalog /Pages 2 0 R >>"
-    body_objs[2] = f"<< /Type /Pages /Kids [{kids_str}] /Count {n_pages} >>"
-    # assemble
-    out = "%PDF-1.4\n"
-    offsets = {}
-    for num in sorted(body_objs):
-        offsets[num] = len(out.encode("latin-1", "replace"))
-        out += f"{num} 0 obj\n{body_objs[num]}\nendobj\n"
-    xref_pos = len(out.encode("latin-1", "replace"))
-    max_num = max(body_objs)
-    out += f"xref\n0 {max_num + 1}\n0000000000 65535 f \n"
-    for num in range(1, max_num + 1):
-        out += f"{offsets.get(num, 0):010d} 00000 n \n"
-    out += f"trailer\n<< /Size {max_num + 1} /Root 1 0 R >>\nstartxref\n{xref_pos}\n%%EOF"
-    return out.encode("latin-1", "replace")
-
-
-@app.get("/api/health")
-def health():
-    return {"status": "ok", "recordings": len(RECORDINGS)}
-# ---------- serve frontend ----------
-if os.path.isdir(FRONTEND_DIR):
-    @app.get("/")
-    def index():
-        return FileResponse(os.path.join(FRONTEND_DIR, "index.html"))
-    app.mount("/", StaticFiles(directory=FRONTEND_DIR), name="static")

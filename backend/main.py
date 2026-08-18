@@ -1905,11 +1905,17 @@ async def upload_note(passcode: str = Form(...), id: str = Form(...), file: Uplo
 
 class ListLibraryBody(BaseModel):
     passcode: str
+    for_recording: str | None = None   # scope results to this recording's course/unit
 
 
 @app.post("/api/teacher/notes/library")
 def notes_library(body: ListLibraryBody):
-    """List all shared notes, with how many recordings each is attached to."""
+    """List shared notes with usage counts.
+
+    If `for_recording` is given, scope the results to that recording's COURSE
+    (its unit): return only notes already used by recordings in the same unit.
+    Exception: if that recording's unit is 'Unassigned' (no course set), return
+    all notes so the teacher can pick freely until a course is assigned."""
     if not check_passcode(body.passcode):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     lib = load_notes_library()
@@ -1917,12 +1923,26 @@ def notes_library(body: ListLibraryBody):
     for r in RECORDINGS:
         for nid in (r.get("note_ids") or []):
             usage[nid] = usage.get(nid, 0) + 1
-    return {"library": [
-        {"id": n["id"], "filename": n.get("filename"),
-         "chars": n.get("chars", sum(len(c) for c in n.get("chunks", []))),
-         "used_by": usage.get(n["id"], 0)}
-        for n in lib
-    ]}
+
+    allowed_ids = None  # None = no scoping (show all)
+    if body.for_recording:
+        target = REC_BY_ID.get(body.for_recording)
+        target_unit = (target.get("unit") or "Unassigned") if target else "Unassigned"
+        if target_unit != "Unassigned":
+            allowed_ids = set()
+            for r in RECORDINGS:
+                if (r.get("unit") or "Unassigned") == target_unit:
+                    for nid in (r.get("note_ids") or []):
+                        allowed_ids.add(nid)
+
+    out = []
+    for n in lib:
+        if allowed_ids is not None and n["id"] not in allowed_ids:
+            continue
+        out.append({"id": n["id"], "filename": n.get("filename"),
+                    "chars": n.get("chars", sum(len(c) for c in n.get("chunks", []))),
+                    "used_by": usage.get(n["id"], 0)})
+    return {"library": out}
 
 
 class AttachNoteBody(BaseModel):

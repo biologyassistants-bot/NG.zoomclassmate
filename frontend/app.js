@@ -733,9 +733,13 @@ function renderTeacherRecordings(list) {
         <div class="notes-box">
           <div class="notes-head">📎 Teacher notes <span class="notes-hint">(used by the AI to answer; students can't view or download them)</span></div>
           <div class="notes-list"></div>
+          <div class="notes-attach">
+            <select class="note-lib-select"><option value="">Attach existing note ▾</option></select>
+            <button class="note-attach-btn ghost-sm">Attach</button>
+          </div>
           <div class="notes-add">
             <input type="file" class="note-file" accept=".pdf,.docx,.txt,.md" />
-            <button class="note-upload-btn ghost-sm">Upload note</button>
+            <button class="note-upload-btn ghost-sm">Upload new note</button>
             <span class="note-status"></span>
           </div>
         </div>
@@ -798,11 +802,13 @@ function renderTeacherRecordings(list) {
       } catch (e) { toast("Network error during delete.", "error"); deleteBtn.disabled = false; }
     });
 
-    // ---- teacher notes: render + upload + delete ----
+    // ---- teacher notes: render + attach-from-library + upload + detach ----
     const notesList = row.querySelector(".notes-list");
     const noteFile = row.querySelector(".note-file");
     const noteUploadBtn = row.querySelector(".note-upload-btn");
     const noteStatus = row.querySelector(".note-status");
+    const noteLibSelect = row.querySelector(".note-lib-select");
+    const noteAttachBtn = row.querySelector(".note-attach-btn");
 
     function renderNotes(notes) {
       notesList.innerHTML = "";
@@ -810,27 +816,66 @@ function renderTeacherRecordings(list) {
       notes.forEach(n => {
         const item = document.createElement("div");
         item.className = "note-item";
-        item.innerHTML = `<span class="note-name">📄 ${escapeHtml(n.filename)}</span><span class="note-meta">${n.chars.toLocaleString()} chars</span><button class="note-del danger-btn">Remove</button>`;
+        item.innerHTML = `<span class="note-name">📄 ${escapeHtml(n.filename)}</span><span class="note-meta">${n.chars.toLocaleString()} chars</span><button class="note-del danger-btn">Detach</button>`;
         item.querySelector(".note-del").addEventListener("click", async () => {
-          if (!confirm(`Remove note "${n.filename}" from this recording?`)) return;
+          if (!confirm(`Detach "${n.filename}" from this recording?\n(The note stays in your library and on any other recordings using it.)`)) return;
           try {
-            const res = await fetch(`${API}/api/teacher/notes/delete`, {
+            const res = await fetch(`${API}/api/teacher/notes/detach`, {
               method: "POST", headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ passcode: state.passcode, id: r.id, note_id: n.id })
             });
             const data = await res.json();
             if (res.ok) {
-              toast("Note removed.", "success");
+              toast("Note detached from this recording.", "success");
               const cached = teacherRecordings.find(x => x.id === r.id);
               if (cached) cached.notes = data.recording.notes;
               renderNotes(data.recording.notes);
-            } else toast(data.error || "Could not remove note.", "error");
+            } else toast(data.error || "Could not detach note.", "error");
           } catch (e) { toast("Network error.", "error"); }
         });
         notesList.appendChild(item);
       });
     }
     renderNotes(r.notes);
+
+    // populate the library dropdown (notes not already attached here)
+    async function refreshLibDropdown() {
+      try {
+        const res = await fetch(`${API}/api/teacher/notes/library`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ passcode: state.passcode })
+        });
+        const data = await res.json();
+        const attachedIds = new Set((r.notes || []).map(n => n.id));
+        noteLibSelect.innerHTML = '<option value="">Attach existing note ▾</option>';
+        (data.library || []).filter(n => !attachedIds.has(n.id)).forEach(n => {
+          const opt = document.createElement("option");
+          opt.value = n.id;
+          opt.textContent = `${n.filename} (used by ${n.used_by})`;
+          noteLibSelect.appendChild(opt);
+        });
+      } catch (e) { /* silent */ }
+    }
+    refreshLibDropdown();
+
+    noteAttachBtn.addEventListener("click", async () => {
+      const nid = noteLibSelect.value;
+      if (!nid) { toast("Pick a note from the list first.", "info"); return; }
+      try {
+        const res = await fetch(`${API}/api/teacher/notes/attach`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ passcode: state.passcode, id: r.id, note_id: nid })
+        });
+        const data = await res.json();
+        if (res.ok) {
+          toast("Shared note attached ✓", "success");
+          const cached = teacherRecordings.find(x => x.id === r.id);
+          if (cached) cached.notes = data.recording.notes;
+          renderNotes(data.recording.notes);
+          refreshLibDropdown();
+        } else toast(data.error || "Could not attach note.", "error");
+      } catch (e) { toast("Network error.", "error"); }
+    });
 
     noteUploadBtn.addEventListener("click", async () => {
       const f = noteFile.files[0];
@@ -846,10 +891,15 @@ function renderTeacherRecordings(list) {
         const data = await res.json();
         if (res.ok) {
           noteStatus.textContent = "";
-          toast(`Note "${data.note.filename}" attached ✓`, "success");
+          const fileKB = Math.round((data.file_bytes || 0) / 1024);
+          const textKB = Math.max(1, Math.round((data.text_chars || 0) / 1024));
+          let msg = `Note "${data.note.filename}" attached ✓ (${fileKB} KB file → ${textKB} KB text stored)`;
+          if (data.trimmed) msg += ` — very long, trimmed to the first ${textKB} KB of text.`;
+          toast(msg, "success", data.trimmed ? 6000 : 4000);
           const cached = teacherRecordings.find(x => x.id === r.id);
           if (cached) cached.notes = data.recording.notes;
           renderNotes(data.recording.notes);
+          refreshLibDropdown();
           noteFile.value = "";
         } else { noteStatus.textContent = ""; toast(data.error || "Upload failed.", "error"); }
       } catch (e) { noteStatus.textContent = ""; toast("Network error during upload.", "error"); }

@@ -452,12 +452,41 @@ function renderStudents(list) {
         <div class="s-email">Courses: ${escapeHtml(courses)}</div>
       </div>
       <div class="pin-badge">${s.has_password ? "🔑 set" : "no pw"}</div>
+      <button class="s-btn reset-pw">Reset password</button>
       <button class="s-btn danger remove">Remove</button>`;
     row.querySelector(".remove").addEventListener("click", async () => {
+      if (!confirm(`Remove ${s.name || s.email}? They will lose access immediately.`)) return;
       await fetch(`${API}/api/teacher/students/remove`, {
         method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ passcode: state.passcode, id: s.id })
       });
+      toast("Student removed.", "success");
       loadStudents();
+    });
+    row.querySelector(".reset-pw").addEventListener("click", async () => {
+      const choice = prompt(
+        `Reset password for ${s.email || s.name}.\n\n` +
+        `Type a new password, or leave blank and press OK to auto-generate one.`,
+        ""
+      );
+      if (choice === null) return; // cancelled
+      try {
+        const res = await fetch(`${API}/api/teacher/students/reset-password`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ passcode: state.passcode, id: s.id, new_password: choice.trim() })
+        });
+        const data = await res.json();
+        if (res.ok) {
+          // show the new password once so the teacher can copy/share it
+          window.prompt(
+            `✅ Password reset for ${data.email}.\nCopy it now and share it with the student — it won't be shown again:`,
+            data.new_password
+          );
+          toast("Password reset. The student must log in again.", "success", 5000);
+          loadStudents();
+        } else {
+          toast(data.error || "Could not reset password.", "error");
+        }
+      } catch (e) { toast("Network error during reset.", "error"); }
     });
     box.appendChild(row);
   });
@@ -476,6 +505,8 @@ el("addStudentBtn").addEventListener("click", async () => {
   const data = await res.json();
   if (!res.ok || data.error) { err.textContent = data.error || "Could not add student."; err.classList.remove("hidden"); return; }
   el("newStudentName").value = ""; el("newStudentEmail").value = ""; el("newStudentPassword").value = ""; el("newStudentCourses").value = "";
+  if (data.merged) toast(data.message || "Student updated.", "success", 5000);
+  else toast("Student added.", "success");
   loadStudents();
 });
 

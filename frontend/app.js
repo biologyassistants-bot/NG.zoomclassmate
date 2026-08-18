@@ -445,52 +445,112 @@ function renderStudents(list) {
   list.forEach(s => {
     const row = document.createElement("div"); row.className = "student-row";
     const courses = (s.courses && s.courses.length) ? s.courses.join(", ") : "— no course —";
+    const pw = s.has_password
+      ? '<span class="pw-status ok">🔑 Password set</span>'
+      : '<span class="pw-status warn">⚠️ No password</span>';
     row.innerHTML = `
       <div>
         <div class="s-name">${escapeHtml(s.name)}</div>
         ${s.email ? `<div class="s-email">${escapeHtml(s.email)}</div>` : ""}
         <div class="s-email">Courses: ${escapeHtml(courses)}</div>
+        ${pw}
       </div>
-      <div class="pin-badge">${s.has_password ? "🔑 set" : "no pw"}</div>
-      <button class="s-btn reset-pw">Reset password</button>
-      <button class="s-btn danger remove">Remove</button>`;
-    row.querySelector(".remove").addEventListener("click", async () => {
-      if (!confirm(`Remove ${s.name || s.email}? They will lose access immediately.`)) return;
-      await fetch(`${API}/api/teacher/students/remove`, {
-        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ passcode: state.passcode, id: s.id })
-      });
-      toast("Student removed.", "success");
-      loadStudents();
-    });
-    row.querySelector(".reset-pw").addEventListener("click", async () => {
-      const choice = prompt(
-        `Reset password for ${s.email || s.name}.\n\n` +
-        `Type a new password, or leave blank and press OK to auto-generate one.`,
-        ""
-      );
-      if (choice === null) return; // cancelled
-      try {
-        const res = await fetch(`${API}/api/teacher/students/reset-password`, {
-          method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ passcode: state.passcode, id: s.id, new_password: choice.trim() })
-        });
-        const data = await res.json();
-        if (res.ok) {
-          // show the new password once so the teacher can copy/share it
-          window.prompt(
-            `✅ Password reset for ${data.email}.\nCopy it now and share it with the student — it won't be shown again:`,
-            data.new_password
-          );
-          toast("Password reset. The student must log in again.", "success", 5000);
-          loadStudents();
-        } else {
-          toast(data.error || "Could not reset password.", "error");
-        }
-      } catch (e) { toast("Network error during reset.", "error"); }
-    });
+      <button class="s-btn edit-btn">✏️ Edit</button>`;
+    row.querySelector(".edit-btn").addEventListener("click", () => openStudentEditor(s));
     box.appendChild(row);
   });
 }
+
+// ---------- student editor modal ----------
+let editingStudent = null;
+let editCourses = [];
+
+function renderEditCourses() {
+  const wrap = el("edCourseList");
+  wrap.innerHTML = "";
+  if (!editCourses.length) { wrap.innerHTML = '<span class="ed-no-course">No courses — this student will see nothing until you add one.</span>'; return; }
+  editCourses.forEach((c, i) => {
+    const chip = document.createElement("span");
+    chip.className = "course-chip";
+    chip.innerHTML = `${escapeHtml(c)} <button type="button" class="chip-x" title="Remove">✕</button>`;
+    chip.querySelector(".chip-x").addEventListener("click", () => { editCourses.splice(i, 1); renderEditCourses(); });
+    wrap.appendChild(chip);
+  });
+}
+
+function openStudentEditor(s) {
+  editingStudent = s;
+  editCourses = Array.isArray(s.courses) ? [...s.courses] : [];
+  el("edName").value = s.name || "";
+  el("edEmail").value = s.email || "";
+  el("edPassword").value = "";
+  el("edCourseInput").value = "";
+  el("edStatus").textContent = "";
+  renderEditCourses();
+  el("studentModal").classList.remove("hidden");
+}
+function closeStudentEditor() { el("studentModal").classList.add("hidden"); editingStudent = null; }
+
+el("closeStudentModal").addEventListener("click", closeStudentEditor);
+el("edCancel").addEventListener("click", closeStudentEditor);
+
+el("edCourseAddBtn").addEventListener("click", () => {
+  const v = el("edCourseInput").value.trim();
+  if (!v) return;
+  if (!editCourses.some(c => c.toLowerCase() === v.toLowerCase())) editCourses.push(v);
+  el("edCourseInput").value = "";
+  renderEditCourses();
+});
+el("edCourseInput").addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); el("edCourseAddBtn").click(); } });
+
+el("edGenPw").addEventListener("click", () => {
+  const abc = "abcdefghijkmnpqrstuvwxyz23456789";
+  let p = ""; for (let i = 0; i < 8; i++) p += abc[Math.floor(Math.random() * abc.length)];
+  el("edPassword").value = p;
+});
+
+el("edSave").addEventListener("click", async () => {
+  if (!editingStudent) return;
+  const payload = {
+    passcode: state.passcode,
+    id: editingStudent.id,
+    name: el("edName").value.trim(),
+    email: el("edEmail").value.trim(),
+    courses: editCourses,
+  };
+  const np = el("edPassword").value.trim();
+  if (np) payload.new_password = np;
+  el("edSave").disabled = true;
+  try {
+    const res = await fetch(`${API}/api/teacher/students/update`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload)
+    });
+    const data = await res.json();
+    if (res.ok) {
+      let msg = "Student updated.";
+      if (np) msg += " New password set — they'll need to log in again.";
+      toast(msg, "success", 5000);
+      closeStudentEditor();
+      loadStudents();
+    } else {
+      el("edStatus").textContent = data.error || "Could not save.";
+      el("edStatus").className = "ed-status err";
+    }
+  } catch (e) { el("edStatus").textContent = "Network error while saving."; el("edStatus").className = "ed-status err"; }
+  finally { el("edSave").disabled = false; }
+});
+
+el("edDelete").addEventListener("click", async () => {
+  if (!editingStudent) return;
+  if (!confirm(`Delete ${editingStudent.name || editingStudent.email}? This permanently removes their account and access.`)) return;
+  try {
+    const res = await fetch(`${API}/api/teacher/students/remove`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ passcode: state.passcode, id: editingStudent.id })
+    });
+    if (res.ok) { toast("Student deleted.", "success"); closeStudentEditor(); loadStudents(); }
+    else { const d = await res.json(); toast(d.error || "Could not delete.", "error"); }
+  } catch (e) { toast("Network error during delete.", "error"); }
+});
 
 el("addStudentBtn").addEventListener("click", async () => {
   const name = el("newStudentName").value.trim();

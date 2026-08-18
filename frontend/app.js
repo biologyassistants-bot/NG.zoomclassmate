@@ -694,7 +694,7 @@ function applyRecFilters() {
     course_az: (a, b) => byCourse(a, b) || byTitle(a, b),
     title_az: (a, b) => byTitle(a, b),
   };
-  list.sort(sorters[sort] || sorters.added_desc);
+  list.sort(sorters[sort] || sorters.date_asc);
 
   el("recCount").textContent = `${list.length} of ${teacherRecordings.length} recording${teacherRecordings.length === 1 ? "" : "s"}`;
   renderTeacherRecordings(list);

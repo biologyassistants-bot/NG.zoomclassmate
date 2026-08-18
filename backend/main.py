@@ -2337,4 +2337,11 @@ async def generate_summary_and_topics(rec):
     )
     import json as _json
     txt = (raw or "").strip()
+    
     if txt.startswith("```"):
+        txt = txt.strip("`")
+        txt = txt.split("\n", 1)[-1] if "\n" in txt else txt
+        
+    try:
+        data = _json.loads(txt[txt.find("{"): txt.rfind("}") + 1])
+    except

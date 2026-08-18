@@ -226,12 +226,23 @@ def build_index(rec):
     N = len(docs) or 1
     idf = {w: math.log(1 + N / (c)) for w, c in df.items()}
     return docs, idf
-_INDEX_CACHE = {}
+from collections import OrderedDict
+# Bounded LRU cache: keep only the few most-recently-used recording indexes in
+# RAM instead of letting all 40+ accumulate. Prevents unbounded memory growth
+# as students query many different recordings.
+_INDEX_CACHE = OrderedDict()
+_INDEX_CACHE_MAX = int(os.environ.get("INDEX_CACHE_MAX", "8"))
 def get_index(rec):
     rid = rec["id"]
-    if rid not in _INDEX_CACHE:
-        _INDEX_CACHE[rid] = build_index(rec)
-    return _INDEX_CACHE[rid]
+    if rid in _INDEX_CACHE:
+        _INDEX_CACHE.move_to_end(rid)
+        return _INDEX_CACHE[rid]
+    idx = build_index(rec)
+    _INDEX_CACHE[rid] = idx
+    _INDEX_CACHE.move_to_end(rid)
+    while len(_INDEX_CACHE) > _INDEX_CACHE_MAX:
+        _INDEX_CACHE.popitem(last=False)  # evict least-recently-used
+    return idx
 def retrieve(rec, query, k=18, window=1):
     segs = rec["segments"]
     docs, idf = get_index(rec)
@@ -598,6 +609,64 @@ async def fetch_zoom_recording_files(meeting_id):
         return r.json().get("recording_files", []) or []
 
 
+async def fetch_zoom_recording_object(meeting_id):
+    """Fetch a meeting's FULL cloud-recording object from Zoom (topic, start_time,
+    type, recording_files, ...) by meeting id/uuid — the shape ingest_zoom_meeting expects."""
+    import httpx
+    from urllib.parse import quote
+    token = await zoom_token()
+    mid = str(meeting_id)
+    needs_double = mid.startswith("/") or "//" in mid or "/" in mid
+    path_id = quote(quote(mid, safe=""), safe="") if needs_double else quote(mid, safe="")
+    async with httpx.AsyncClient(timeout=60) as client:
+        r = await client.get(
+            f"https://api.zoom.us/v2/meetings/{path_id}/recordings",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        if r.status_code == 404:
+            raise LLMUpstreamError(
+                "No cloud recording found for that meeting ID. Check the ID/link, or the "
+                "recording may have been deleted from Zoom."
+            )
+        if r.status_code != 200:
+            raise LLMUpstreamError(f"Zoom lookup returned {r.status_code}: {r.text[:300]}")
+        return r.json()
+
+
+def _parse_meeting_id(raw: str) -> str:
+    """Accept a plain meeting ID/UUID OR a Zoom recording link and return the id/uuid.
+    Handles URLs like:
+      https://zoom.us/rec/share/<...>            (share link -> not an id; rejected)
+      https://<acct>.zoom.us/recording/detail?meeting_id=<UUID>
+      https://zoom.us/j/<meetingNumber>
+    and bare numeric IDs or base64 UUIDs.
+    """
+    import re as _re
+    from urllib.parse import urlparse, parse_qs, unquote
+    s = (raw or "").strip()
+    if not s:
+        return ""
+    if s.startswith("http"):
+        u = urlparse(s)
+        qs = parse_qs(u.query)
+        # explicit meeting_id query param (recording detail pages)
+        for key in ("meeting_id", "meetingId", "confId"):
+            if key in qs and qs[key]:
+                return unquote(qs[key][0])
+        # /j/<number> or /rec/play|share/... — try to pull an id-ish path segment
+        m = _re.search(r"/j/(\d{9,})", u.path)
+        if m:
+            return m.group(1)
+        # a numeric meeting number anywhere
+        m = _re.search(r"(\d{9,})", u.path)
+        if m:
+            return m.group(1)
+        # otherwise we can't derive an ID from a share link
+        return ""
+    # bare id: strip spaces some people paste in meeting numbers
+    return s.replace(" ", "")
+
+
 def _pick_audio_file(files):
     """From a list of Zoom recording_files pick the best one to transcribe:
     prefer a dedicated audio-only (M4A) file, else fall back to the video (MP4)."""
@@ -708,6 +777,15 @@ async def transcribe_recording_by_id(meeting_id):
 
     rec["segments"] = segments
     save_recordings(RECORDINGS)
+    # Free the (potentially large) audio buffer and this recording's stale index,
+    # then run a GC pass so memory drops back down after a transcription spike.
+    try:
+        audio_bytes = None
+    except Exception:
+        pass
+    _INDEX_CACHE.pop(meeting_id, None)
+    import gc as _gc
+    _gc.collect()
     return len(segments)
 
 
@@ -1012,8 +1090,20 @@ async def import_students(passcode: str = Form(...), file: UploadFile = File(...
         key = _norm(email)
         if key in by_email:
             s = by_email[key]
-            s["name"] = name
-            s["courses"] = courses
+            # MERGE, don't overwrite: add any new courses to the existing account
+            # (case-insensitive de-dupe, preserving existing order then appending new).
+            existing = s.get("courses", []) or []
+            seen = {_norm(c) for c in existing}
+            merged = list(existing)
+            for c in courses:
+                if _norm(c) not in seen:
+                    merged.append(c)
+                    seen.add(_norm(c))
+            s["courses"] = merged
+            # Only update name/password if the row actually provides one, so a
+            # course-only re-import never wipes an existing name or password.
+            if name and name != email.split("@")[0]:
+                s["name"] = name
             if pw:
                 s["password_hash"] = hash_pw(pw)
             updated += 1
@@ -1378,6 +1468,55 @@ async def teacher_backfill(body: BackfillBody):
         "skipped_already_present": skipped,
         "errors": errors,
         "added_recordings": details,
+        "total_recordings_now": len(RECORDINGS),
+    }
+
+
+class ImportOneBody(BaseModel):
+    passcode: str
+    ref: str   # a Zoom meeting ID / UUID, or a Zoom recording link
+
+
+@app.post("/api/teacher/import-one")
+async def teacher_import_one(body: ImportOneBody):
+    """Import a single specific Zoom cloud recording by meeting ID / UUID / link.
+    Uses the Zoom .vtt transcript if present; otherwise imports with an empty
+    transcript that the teacher can generate on demand (keeps this request fast)."""
+    if not check_passcode(body.passcode):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    meeting_id = _parse_meeting_id(body.ref)
+    if not meeting_id:
+        return JSONResponse(
+            {"error": "Couldn't read a meeting ID from that. Paste the Zoom Meeting ID/UUID, "
+                      "or a recording link that contains a meeting_id."},
+            status_code=400,
+        )
+    try:
+        obj = await fetch_zoom_recording_object(meeting_id)
+    except LLMUpstreamError as e:
+        return JSONResponse({"error": str(e)}, status_code=502)
+    except Exception as e:
+        return JSONResponse({"error": f"Could not fetch that recording: {e}"}, status_code=502)
+    # Already imported?
+    existing_id = str(obj.get("id") or obj.get("uuid") or meeting_id)
+    if existing_id in REC_BY_ID:
+        return JSONResponse(
+            {"error": f"That recording is already imported: "
+                      f"\"{REC_BY_ID[existing_id].get('display_title')}\"."},
+            status_code=409,
+        )
+    try:
+        # Fast import (Zoom transcript only); teacher can Generate transcript after.
+        added = await ingest_zoom_meeting(obj, allow_whisper_fallback=False)
+    except Exception as e:
+        return JSONResponse({"error": f"Import failed: {e}"}, status_code=500)
+    if not added:
+        return JSONResponse({"error": "That recording is already imported."}, status_code=409)
+    rec = REC_BY_ID.get(existing_id)
+    return {
+        "ok": True,
+        "recording": _card(rec, include_hidden=True) if rec else None,
+        "has_transcript": bool(rec and rec.get("segments")),
         "total_recordings_now": len(RECORDINGS),
     }
 

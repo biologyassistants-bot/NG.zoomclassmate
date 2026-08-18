@@ -1044,6 +1044,58 @@ def teacher_login(body: LoginBody):
 # ---------- student roster auth ----------
 def _norm(s):
     return (s or "").strip().lower()
+
+
+def normalize_courses(value):
+    """Coerce a student's 'courses' value into a clean list of course names,
+    regardless of how it was stored historically:
+      - list  -> cleaned list (stripped, de-duped, order preserved)
+      - string -> split on ';' or ',' (handles legacy single-string storage)
+      - None/other -> []
+    This fixes older data where courses were saved as a string, which caused
+    iteration to yield individual characters during merges/filtering."""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        parts = re.split(r"[;,]", value)
+    elif isinstance(value, (list, tuple)):
+        parts = []
+        for v in value:
+            if isinstance(v, str):
+                parts.extend(re.split(r"[;,]", v))
+            elif v is not None:
+                parts.append(str(v))
+    else:
+        return []
+    seen, out = set(), []
+    for p in parts:
+        p = (p or "").strip()
+        if p and p.lower() not in seen:
+            out.append(p); seen.add(p.lower())
+    return out
+
+
+def _repair_roster_courses():
+    """One-time startup repair: rewrite any student whose 'courses' isn't a clean
+    list (e.g. stored as a string) into a proper list, so filtering & merges work."""
+    try:
+        roster = load_roster()
+        changed = False
+        for s in roster:
+            fixed = normalize_courses(s.get("courses"))
+            if fixed != s.get("courses"):
+                s["courses"] = fixed
+                changed = True
+        if changed:
+            save_roster(roster)
+            print("[roster] normalized course lists on startup")
+    except Exception as e:
+        print(f"[roster] repair warning: {e}")
+
+
+_repair_roster_courses()
+
+
 class StudentLoginBody(BaseModel):
     email: str
     password: str
@@ -1056,7 +1108,7 @@ def student_login(body: StudentLoginBody):
             SESSIONS[token] = {
                 "student_id": st["id"],
                 "name": st.get("name") or st.get("email"),
-                "courses": st.get("courses", []),
+                "courses": normalize_courses(st.get("courses")),
             }
             return {"ok": True, "token": token, "name": SESSIONS[token]["name"]}
     return JSONResponse(
@@ -1076,7 +1128,7 @@ def list_students(body: RosterAuth):
         "id": s["id"],
         "name": s.get("name", ""),
         "email": s.get("email", ""),
-        "courses": s.get("courses", []),
+        "courses": normalize_courses(s.get("courses")),
         "has_password": bool(s.get("password_hash")),
     } for s in load_roster()]
     return {"students": safe}
@@ -1100,7 +1152,7 @@ def add_student(body: AddStudentBody):
     # instead of rejecting it or creating a duplicate.
     existing = next((s for s in roster if _norm(s.get("email")) == _norm(email)), None)
     if existing:
-        prev = existing.get("courses", []) or []
+        prev = normalize_courses(existing.get("courses"))
         seen = {_norm(c) for c in prev}
         merged = list(prev)
         added_courses = []
@@ -1252,10 +1304,11 @@ def _find_email_duplicates(roster):
 
 
 def _merge_group_courses(entries):
-    """Union all courses across the group's entries, de-duped, order-preserving."""
+    """Union all courses across the group's entries, de-duped, order-preserving.
+    Uses normalize_courses so a legacy string value can't corrupt the merge."""
     seen, merged = set(), []
     for e in entries:
-        for c in (e.get("courses") or []):
+        for c in normalize_courses(e.get("courses")):
             if _norm(c) not in seen:
                 merged.append(c); seen.add(_norm(c))
     return merged
@@ -1368,7 +1421,7 @@ async def import_students(passcode: str = Form(...), file: UploadFile = File(...
             s = by_email[key]
             # MERGE, don't overwrite: add any new courses to the existing account
             # (case-insensitive de-dupe, preserving existing order then appending new).
-            existing = s.get("courses", []) or []
+            existing = normalize_courses(s.get("courses"))
             seen = {_norm(c) for c in existing}
             merged = list(existing)
             for c in courses:

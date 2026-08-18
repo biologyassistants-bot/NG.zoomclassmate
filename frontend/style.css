@@ -219,8 +219,30 @@ button{font-family:inherit;cursor:pointer;border:none}
 .add-student input:focus{outline:none;border-color:var(--brand);background:#fff}
 .add-student .primary{width:auto;padding:12px 20px}
 .student-list{display:flex;flex-direction:column;gap:10px;max-width:760px;margin-top:14px}
-.student-row{display:grid;grid-template-columns:1fr 90px 130px 90px;gap:12px;align-items:center;background:var(--panel);border:1px solid var(--line);border-radius:13px;padding:13px 16px;box-shadow:var(--shadow-sm)}
-.student-row .reset-pw{white-space:nowrap}
+.student-row{display:grid;grid-template-columns:1fr auto;gap:12px;align-items:center;background:var(--panel);border:1px solid var(--line);border-radius:13px;padding:13px 16px;box-shadow:var(--shadow-sm)}
+.student-row .edit-btn{white-space:nowrap;font-weight:800}
+.pw-status{display:inline-block;margin-top:6px;font-size:11.5px;font-weight:700}
+.pw-status.ok{color:var(--ok,#12b886)}
+.pw-status.warn{color:#e8590c}
+
+/* ---- student editor modal ---- */
+.modal-body.student-edit{padding:18px 22px;display:flex;flex-direction:column;gap:14px;overflow-y:auto}
+.student-edit .fld{display:flex;flex-direction:column;gap:6px;font-size:13px;font-weight:800;color:var(--text)}
+.student-edit .fld em{font-weight:600;color:var(--muted);font-style:normal}
+.student-edit .fld input{padding:11px 13px;border-radius:11px;border:1.5px solid var(--line);background:var(--panel2);font-size:14px;font-weight:600}
+.student-edit .fld input:focus{outline:none;border-color:var(--brand);background:#fff}
+.ed-course-list{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:4px}
+.ed-no-course{font-size:12.5px;color:var(--muted);font-weight:600}
+.course-chip{display:inline-flex;align-items:center;gap:7px;background:rgba(11,191,191,.12);color:var(--brand-d);border:1px solid var(--line);border-radius:20px;padding:5px 11px;font-size:13px;font-weight:800}
+.course-chip .chip-x{background:none;border:none;color:var(--brand-d);font-size:12px;cursor:pointer;font-weight:900;padding:0}
+.course-chip .chip-x:hover{color:var(--bad,#e03131)}
+.ed-course-add,.ed-pw-row{display:flex;gap:8px}
+.ed-course-add input,.ed-pw-row input{flex:1}
+.ghost-sm{padding:8px 12px;border-radius:10px;background:var(--panel2);border:1.5px solid var(--line);color:var(--brand-d);font-weight:800;font-size:12.5px;white-space:nowrap}
+.ghost-sm:hover{border-color:var(--brand);background:#fff}
+.ed-status{font-size:13px;font-weight:700;margin:0}
+.ed-status.err{color:var(--bad,#e03131)}
+.student-edit-foot{display:flex;align-items:center;gap:10px}
 .student-row .s-name{font-weight:800;font-size:15px}
 .student-row .s-email{font-size:12px;color:var(--muted);margin-top:2px;font-weight:600}
 .pin-badge{font-family:ui-monospace,monospace;font-size:19px;font-weight:900;letter-spacing:3px;color:var(--brand-d);background:var(--bg2);border:1.5px solid var(--line);border-radius:10px;padding:7px 10px;text-align:center}

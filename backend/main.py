@@ -1016,12 +1016,16 @@ def list_recordings(body: RecListBody):
         if not my_courses:          # no courses assigned -> see nothing
             return False
         return (r.get("unit") or "Unassigned") in my_courses
-    out = [_card(r) for r in RECORDINGS if allowed(r)]
+    # Default order for students: by the original class DATE, oldest first, so
+    # lessons appear in chronological teaching order. `date` is a sortable
+    # "YYYY-MM-DD HH:MM:SS" string; blanks sort last.
+    def _date_key(r):
+        return (r.get("date") or "9999-12-31 23:59:59")
+    allowed_recs = sorted([r for r in RECORDINGS if allowed(r)], key=_date_key)
+    out = [_card(r) for r in allowed_recs]
     units = []
     seen = set()
-    for r in RECORDINGS:
-        if not allowed(r):
-            continue
+    for r in allowed_recs:
         u = r.get("unit") or "Unassigned"
         if u not in seen:
             seen.add(u)

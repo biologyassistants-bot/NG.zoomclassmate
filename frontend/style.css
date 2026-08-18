@@ -219,7 +219,8 @@ button{font-family:inherit;cursor:pointer;border:none}
 .add-student input:focus{outline:none;border-color:var(--brand);background:#fff}
 .add-student .primary{width:auto;padding:12px 20px}
 .student-list{display:flex;flex-direction:column;gap:10px;max-width:760px;margin-top:14px}
-.student-row{display:grid;grid-template-columns:1fr 130px 90px 90px;gap:14px;align-items:center;background:var(--panel);border:1px solid var(--line);border-radius:13px;padding:13px 16px;box-shadow:var(--shadow-sm)}
+.student-row{display:grid;grid-template-columns:1fr 90px 130px 90px;gap:12px;align-items:center;background:var(--panel);border:1px solid var(--line);border-radius:13px;padding:13px 16px;box-shadow:var(--shadow-sm)}
+.student-row .reset-pw{white-space:nowrap}
 .student-row .s-name{font-weight:800;font-size:15px}
 .student-row .s-email{font-size:12px;color:var(--muted);margin-top:2px;font-weight:600}
 .pin-badge{font-family:ui-monospace,monospace;font-size:19px;font-weight:900;letter-spacing:3px;color:var(--brand-d);background:var(--bg2);border:1.5px solid var(--line);border-radius:10px;padding:7px 10px;text-align:center}

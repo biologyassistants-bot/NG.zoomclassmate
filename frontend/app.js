@@ -36,28 +36,35 @@ function saveStudentStats() {
   localStorage.setItem('studentStats_NGClassMate', JSON.stringify(studentStats));
 }
 
-// ---------- Auto-Login Check on Refresh ----------
-document.addEventListener("DOMContentLoaded", async () => {
-  const savedStudentToken = localStorage.getItem("ng_studentToken");
-  const savedStudentName = localStorage.getItem("ng_studentName");
-  const savedTeacherPasscode = localStorage.getItem("ng_teacherPasscode");
+// ---------- Safe Auto-Login Check on Refresh ----------
+document.addEventListener("DOMContentLoaded", () => {
+  try {
+    const savedStudentToken = localStorage.getItem("ng_studentToken");
+    const savedStudentName = localStorage.getItem("ng_studentName");
+    const savedTeacherPasscode = localStorage.getItem("ng_teacherPasscode");
 
-  if (savedTeacherPasscode) {
-    teacherLogin(savedTeacherPasscode);
-  } else if (savedStudentToken) {
-    state.token = savedStudentToken;
-    state.name = savedStudentName || "Student";
-    
-    if(el("whoName")) el("whoName").textContent = state.name;
-    if(el("dashName")) el("dashName").textContent = state.name;
-    
-    show("main");
-    try {
-      await loadRecordings();
-      switchStudentTab("Dash");
-    } catch (e) {
-      signOut();
+    if (savedTeacherPasscode) {
+      // Auto-login teacher safely
+      teacherLogin(savedTeacherPasscode);
+    } else if (savedStudentToken) {
+      // Auto-login student safely
+      state.token = savedStudentToken;
+      state.name = savedStudentName || "Student";
+      
+      if(el("whoName")) el("whoName").textContent = state.name;
+      if(el("dashName")) el("dashName").textContent = state.name;
+      
+      show("main");
+      loadRecordings().then(() => {
+        switchStudentTab("Dash");
+      }).catch(err => {
+        console.warn("Auto-load recordings failed, clearing token:", err);
+        signOut();
+      });
     }
+  } catch (e) {
+    console.error("Auto-login error:", e);
+    signOut();
   }
 });
 

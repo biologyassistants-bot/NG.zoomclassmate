@@ -4,12 +4,19 @@ let state = { name: "", recordings: [], current: null, passcode: "", token: "" }
 // Local tracking for student dashboard stats
 let studentStats = JSON.parse(localStorage.getItem('studentStats_NGClassMate') || '{"questions":0, "quizzes":0}');
 
+// Unique declaration for Study Plan
+let currentStudyPlan = JSON.parse(localStorage.getItem('studyPlan_NGClassMate') || 'null');
+
 function el(id) { return document.getElementById(id); }
 function escapeHtml(s) { return (s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
 
 function show(sectionId) {
-  ["landing", "gate", "teacherGate", "main", "teacher"].forEach(s => el(s).classList.add("hidden"));
-  el(sectionId).classList.remove("hidden");
+  ["landing", "gate", "teacherGate", "main", "teacher"].forEach(s => {
+    const elem = el(s);
+    if (elem) elem.classList.add("hidden");
+  });
+  const target = el(sectionId);
+  if (target) target.classList.remove("hidden");
 }
 
 // ---------- markdown-lite for bot answers ----------
@@ -44,10 +51,8 @@ document.addEventListener("DOMContentLoaded", () => {
     const savedTeacherPasscode = localStorage.getItem("ng_teacherPasscode");
 
     if (savedTeacherPasscode) {
-      // Auto-login teacher safely
       teacherLogin(savedTeacherPasscode);
     } else if (savedStudentToken) {
-      // Auto-login student safely
       state.token = savedStudentToken;
       state.name = savedStudentName || "Student";
       
@@ -58,19 +63,17 @@ document.addEventListener("DOMContentLoaded", () => {
       loadRecordings().then(() => {
         switchStudentTab("Dash");
       }).catch(err => {
-        console.warn("Auto-load recordings failed, clearing token:", err);
         signOut();
       });
     }
   } catch (e) {
-    console.error("Auto-login error:", e);
     signOut();
   }
 });
 
 // ---------- landing / role nav ----------
-el("roleStudent").addEventListener("click", () => { show("gate"); el("emailInput").focus(); });
-el("roleTeacher").addEventListener("click", () => { show("teacherGate"); el("passInput").focus(); });
+if(el("roleStudent")) el("roleStudent").addEventListener("click", () => { show("gate"); if(el("emailInput")) el("emailInput").focus(); });
+if(el("roleTeacher")) el("roleTeacher").addEventListener("click", () => { show("teacherGate"); if(el("passInput")) el("passInput").focus(); });
 document.querySelectorAll("[data-back]").forEach(b => b.addEventListener("click", () => show(b.dataset.back)));
 
 // ---------- student gate (email + password against roster) ----------
@@ -78,14 +81,14 @@ async function enter() {
   const email = el("emailInput").value.trim();
   const password = el("passwordInput").value;
   const errEl = el("studentErr");
-  errEl.classList.add("hidden");
-  if (!email || !password) { errEl.textContent = "Please enter your email and password."; errEl.classList.remove("hidden"); return; }
+  if(errEl) errEl.classList.add("hidden");
+  if (!email || !password) { if(errEl) { errEl.textContent = "Please enter your email and password."; errEl.classList.remove("hidden"); } return; }
   try {
     const res = await fetch(`${API}/api/student/login`, {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email, password })
     });
     const data = await res.json();
-    if (!res.ok || !data.ok) { errEl.textContent = data.error || "Login failed."; errEl.classList.remove("hidden"); return; }
+    if (!res.ok || !data.ok) { if(errEl) { errEl.textContent = data.error || "Login failed."; errEl.classList.remove("hidden"); } return; }
     
     state.name = data.name;
     state.token = data.token;
@@ -96,18 +99,20 @@ async function enter() {
     if(el("whoName")) el("whoName").textContent = data.name;
     if(el("dashName")) el("dashName").textContent = data.name;
     
-    el("passwordInput").value = "";
+    if(el("passwordInput")) el("passwordInput").value = "";
     show("main");
     await loadRecordings();
     switchStudentTab("Dash");
   } catch (e) {
-    errEl.textContent = "Couldn't reach the server. Try again.";
-    errEl.classList.remove("hidden");
+    if(errEl) {
+      errEl.textContent = "Couldn't reach the server. Try again.";
+      errEl.classList.remove("hidden");
+    }
   }
 }
-el("enterBtn").addEventListener("click", enter);
-el("emailInput").addEventListener("keydown", e => { if (e.key === "Enter") el("passwordInput").focus(); });
-el("passwordInput").addEventListener("keydown", e => { if (e.key === "Enter") enter(); });
+if(el("enterBtn")) el("enterBtn").addEventListener("click", enter);
+if(el("emailInput")) el("emailInput").addEventListener("keydown", e => { if (e.key === "Enter" && el("passwordInput")) el("passwordInput").focus(); });
+if(el("passwordInput")) el("passwordInput").addEventListener("keydown", e => { if (e.key === "Enter") enter(); });
 
 // ---------- teacher gate ----------
 async function teacherLogin(passcodeOverride = null) {
@@ -127,7 +132,7 @@ async function teacherLogin(passcodeOverride = null) {
 
   if(btn) {
     btn.disabled = true;
-    btn.textContent = "Connecting… (server may be waking up)";
+    btn.textContent = "Connecting…";
   }
   if(errEl) errEl.classList.add("hidden");
 
@@ -136,7 +141,7 @@ async function teacherLogin(passcodeOverride = null) {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ passcode: p })
     });
     let data = {};
-    try { data = await res.json(); } catch (e) { /* non-JSON response */ }
+    try { data = await res.json(); } catch (e) {}
     
     if (res.ok && data.ok) {
       state.passcode = p;
@@ -149,13 +154,13 @@ async function teacherLogin(passcodeOverride = null) {
       if (passcodeOverride) localStorage.removeItem("ng_teacherPasscode");
       
       if(errEl) {
-        errEl.textContent = res.status === 401 ? "Wrong passcode. The default is teach123." : `Login failed (server responded ${res.status}).`;
+        errEl.textContent = res.status === 401 ? "Wrong passcode. The default is teach123." : `Login failed (${res.status}).`;
         errEl.classList.remove("hidden");
       }
     }
   } catch (e) {
     if(errEl) {
-      errEl.textContent = "Couldn't reach the server. It may be waking up — wait ~30s and try again.";
+      errEl.textContent = "Couldn't reach the server. Try again.";
       errEl.classList.remove("hidden");
     }
   } finally {
@@ -165,22 +170,22 @@ async function teacherLogin(passcodeOverride = null) {
     }
   }
 }
-el("passBtn").addEventListener("click", () => teacherLogin());
-el("passInput").addEventListener("keydown", e => { if (e.key === "Enter") teacherLogin(); });
+if(el("passBtn")) el("passBtn").addEventListener("click", () => teacherLogin());
+if(el("passInput")) el("passInput").addEventListener("keydown", e => { if (e.key === "Enter") teacherLogin(); });
 
 // ================= STUDENT TABS & DASHBOARD =================
-el("tabStudentDash").addEventListener("click", () => switchStudentTab("Dash"));
-el("tabStudentTutor").addEventListener("click", () => switchStudentTab("Tutor"));
-el("tabStudentPlanner").addEventListener("click", () => switchStudentTab("Planner"));
+if(el("tabStudentDash")) el("tabStudentDash").addEventListener("click", () => switchStudentTab("Dash"));
+if(el("tabStudentTutor")) el("tabStudentTutor").addEventListener("click", () => switchStudentTab("Tutor"));
+if(el("tabStudentPlanner")) el("tabStudentPlanner").addEventListener("click", () => switchStudentTab("Planner"));
 
 function switchStudentTab(name) {
-  el("tabStudentDash").classList.toggle("active", name === "Dash");
-  el("tabStudentTutor").classList.toggle("active", name === "Tutor");
-  el("tabStudentPlanner").classList.toggle("active", name === "Planner");
+  if(el("tabStudentDash")) el("tabStudentDash").classList.toggle("active", name === "Dash");
+  if(el("tabStudentTutor")) el("tabStudentTutor").classList.toggle("active", name === "Tutor");
+  if(el("tabStudentPlanner")) el("tabStudentPlanner").classList.toggle("active", name === "Planner");
   
-  el("studentDashPane").classList.toggle("hidden", name !== "Dash");
-  el("studentTutorPane").classList.toggle("hidden", name !== "Tutor");
-  el("studentPlannerPane").classList.toggle("hidden", name !== "Planner");
+  if(el("studentDashPane")) el("studentDashPane").classList.toggle("hidden", name !== "Dash");
+  if(el("studentTutorPane")) el("studentTutorPane").classList.toggle("hidden", name !== "Tutor");
+  if(el("studentPlannerPane")) el("studentPlannerPane").classList.toggle("hidden", name !== "Planner");
 
   if (name === "Dash") renderStudentDashboard();
   if (name === "Planner") initPlanner();
@@ -198,6 +203,7 @@ function calculatePlanProgress() {
 function renderStudentDashboard() {
   const planPct = calculatePlanProgress();
   const statsBar = el("studentStatsBar");
+  if(!statsBar) return;
   
   const courses = new Set(state.recordings.map(r => r.unit || "Unassigned"));
   
@@ -241,7 +247,8 @@ function populateStudentCourseFilter(units) {
 }
 
 function applyStudentFilters() {
-  const q = (el("search").value || "").toLowerCase();
+  const searchEl = el("search");
+  const q = searchEl ? (searchEl.value || "").toLowerCase() : "";
   const sel = el("studentCourseFilter");
   const selectedCourse = sel ? sel.value : "";
 
@@ -256,6 +263,7 @@ function applyStudentFilters() {
 
 function renderRecList(list) {
   const box = el("recList");
+  if(!box) return;
   box.innerHTML = "";
   if (!list.length) { box.innerHTML = '<div class="rec-item"><div class="d">No recordings available yet.</div></div>'; return; }
   const groups = {};
@@ -276,81 +284,101 @@ function renderRecList(list) {
   });
 }
 
-el("search").addEventListener("input", applyStudentFilters);
+if(el("search")) el("search").addEventListener("input", applyStudentFilters);
 document.addEventListener("change", e => { if (e.target.id === "studentCourseFilter") applyStudentFilters(); });
 
 function selectRecording(r) {
   state.current = r;
   applyStudentFilters();
-  el("emptyState").classList.add("hidden");
-  el("workspace").classList.remove("hidden");
-  el("wsTitle").textContent = r.title;
-  el("wsMeta").innerHTML = `${escapeHtml(r.unit)} · ${escapeHtml(r.date || "")} · ${r.segments} transcript lines` +
+  if(el("emptyState")) el("emptyState").classList.add("hidden");
+  if(el("workspace")) el("workspace").classList.remove("hidden");
+  if(el("wsTitle")) el("wsTitle").textContent = r.title;
+  if(el("wsMeta")) el("wsMeta").innerHTML = `${escapeHtml(r.unit)} · ${escapeHtml(r.date || "")} · ${r.segments} transcript lines` +
     (r.has_notes ? ` · <span class="notes-flag">📎 includes extra class notes</span>` : "");
-  el("chat").innerHTML = "";
+  if(el("chat")) el("chat").innerHTML = "";
   const notesLine = r.has_notes ? " This class also has extra notes from your teacher that I can draw on." : "";
   addBot(`Hi ${state.name}! Ask me anything about **${r.title}**. I'll answer using only what was said in this recording (with timestamps).${notesLine} 😊`);
 }
 
-function addUser(text) { const d = document.createElement("div"); d.className = "msg user"; d.textContent = text; el("chat").appendChild(d); scrollChat(); }
-function addBot(text) { const d = document.createElement("div"); d.className = "msg bot"; d.innerHTML = renderBotText(text); el("chat").appendChild(d); scrollChat(); }
-function addTyping() { const d = document.createElement("div"); d.className = "typing"; d.id = "typing"; d.innerHTML = 'ClassMate is reading the recording <span class="dot">●</span><span class="dot">●</span><span class="dot">●</span>'; el("chat").appendChild(d); scrollChat(); }
+function addUser(text) { 
+  const chat = el("chat");
+  if(!chat) return;
+  const d = document.createElement("div"); d.className = "msg user"; d.textContent = text; chat.appendChild(d); scrollChat(); 
+}
+function addBot(text) { 
+  const chat = el("chat");
+  if(!chat) return;
+  const d = document.createElement("div"); d.className = "msg bot"; d.innerHTML = renderBotText(text); chat.appendChild(d); scrollChat(); 
+}
+function addTyping() { 
+  const chat = el("chat");
+  if(!chat) return;
+  const d = document.createElement("div"); d.className = "typing"; d.id = "typing"; d.innerHTML = 'ClassMate is reading the recording <span class="dot">●</span><span class="dot">●</span><span class="dot">●</span>'; chat.appendChild(d); scrollChat(); 
+}
 function removeTyping() { const t = el("typing"); if (t) t.remove(); }
-function scrollChat() { const c = el("chat"); c.scrollTop = c.scrollHeight; }
+function scrollChat() { const c = el("chat"); if(c) c.scrollTop = c.scrollHeight; }
 
-el("askForm").addEventListener("submit", async e => {
-  e.preventDefault();
-  const q = el("questionInput").value.trim();
-  if (!q || !state.current) return;
-  el("questionInput").value = "";
-  el("askBtn").disabled = true;
-  addUser(q); addTyping();
-  try {
-    const res = await fetch(`${API}/api/ask`, {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ recording_id: state.current.id, question: q, language: "English", token: state.token })
-    });
-    const data = await res.json();
-    removeTyping();
-    if (data.error) addBot("Sorry, something went wrong: " + data.error);
-    else {
-      addBot(data.answer);
-      studentStats.questions++;
-      saveStudentStats();
-    }
-  } catch (err) { removeTyping(); addBot("Sorry, I couldn't reach the server. Please try again."); }
-  el("askBtn").disabled = false; el("questionInput").focus();
-});
+if(el("askForm")) {
+  el("askForm").addEventListener("submit", async e => {
+    e.preventDefault();
+    const qInput = el("questionInput");
+    if(!qInput) return;
+    const q = qInput.value.trim();
+    if (!q || !state.current) return;
+    qInput.value = "";
+    if(el("askBtn")) el("askBtn").disabled = true;
+    addUser(q); addTyping();
+    try {
+      const res = await fetch(`${API}/api/ask`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ recording_id: state.current.id, question: q, language: "English", token: state.token })
+      });
+      const data = await res.json();
+      removeTyping();
+      if (data.error) addBot("Sorry, something went wrong: " + data.error);
+      else {
+        addBot(data.answer);
+        studentStats.questions++;
+        saveStudentStats();
+      }
+    } catch (err) { removeTyping(); addBot("Sorry, I couldn't reach the server. Please try again."); }
+    if(el("askBtn")) el("askBtn").disabled = false; 
+    qInput.focus();
+  });
+}
 
 // ---------- quiz ----------
 let quizData = null;
-el("quizBtn").addEventListener("click", generateQuiz);
+if(el("quizBtn")) el("quizBtn").addEventListener("click", generateQuiz);
 
 async function generateQuiz() {
   if (!state.current) return;
-  el("quizModal").classList.remove("hidden");
-  el("submitQuiz").classList.add("hidden"); el("retryQuiz").classList.add("hidden");
-  el("quizBody").innerHTML = '<div class="typing">Creating your quiz from the recording <span class="dot">●</span><span class="dot">●</span><span class="dot">●</span></div>';
+  if(el("quizModal")) el("quizModal").classList.remove("hidden");
+  if(el("submitQuiz")) el("submitQuiz").classList.add("hidden"); 
+  if(el("retryQuiz")) el("retryQuiz").classList.add("hidden");
+  if(el("quizBody")) el("quizBody").innerHTML = '<div class="typing">Creating your quiz from the recording <span class="dot">●</span><span class="dot">●</span><span class="dot">●</span></div>';
   try {
     const res = await fetch(`${API}/api/quiz`, {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ recording_id: state.current.id, num_questions: 5, language: "English", token: state.token })
     });
     const data = await res.json();
-    if (data.error || !data.questions) { el("quizBody").innerHTML = '<p>Sorry, I could not build a quiz for this recording. Try another one.</p>'; return; }
+    if (data.error || !data.questions) { if(el("quizBody")) el("quizBody").innerHTML = '<p>Sorry, I could not build a quiz for this recording. Try another one.</p>'; return; }
     quizData = data.questions; 
     renderQuiz();
     
     studentStats.quizzes++;
     saveStudentStats();
-  } catch (e) { el("quizBody").innerHTML = '<p>Could not reach the server. Please try again.</p>'; }
+  } catch (e) { if(el("quizBody")) el("quizBody").innerHTML = '<p>Could not reach the server. Please try again.</p>'; }
 }
 
 if(el("closeQuiz")) el("closeQuiz").addEventListener("click", () => el("quizModal").classList.add("hidden"));
 if(el("retryQuiz")) el("retryQuiz").addEventListener("click", generateQuiz);
 
 function renderQuiz() {
-  const body = el("quizBody"); body.innerHTML = "";
+  const body = el("quizBody"); 
+  if(!body) return;
+  body.innerHTML = "";
   quizData.forEach((q, qi) => {
     const block = document.createElement("div"); block.className = "q-block";
     let opts = "";
@@ -363,7 +391,8 @@ function renderQuiz() {
     body.querySelectorAll(`.opt[data-q="${qi}"]`).forEach(x => x.classList.remove("sel"));
     l.classList.add("sel");
   }));
-  el("submitQuiz").classList.remove("hidden"); el("retryQuiz").classList.add("hidden");
+  if(el("submitQuiz")) el("submitQuiz").classList.remove("hidden"); 
+  if(el("retryQuiz")) el("retryQuiz").classList.add("hidden");
 }
 
 if(el("submitQuiz")) {
@@ -379,15 +408,18 @@ if(el("submitQuiz")) {
       });
       if (ci === q.answer_index) score++;
       const exp = el(`exp${qi}`);
-      const ts = q.timestamp ? `<span class="ts-chip">⏱ ${escapeHtml(q.timestamp)}</span>` : "";
-      exp.innerHTML = `✅ <strong>Answer:</strong> ${escapeHtml(q.options[q.answer_index])} ${ts}<br>${escapeHtml(q.explanation || "")}`;
-      exp.classList.remove("hidden");
+      if(exp) {
+        const ts = q.timestamp ? `<span class="ts-chip">⏱ ${escapeHtml(q.timestamp)}</span>` : "";
+        exp.innerHTML = `✅ <strong>Answer:</strong> ${escapeHtml(q.options[q.answer_index])} ${ts}<br>${escapeHtml(q.explanation || "")}`;
+        exp.classList.remove("hidden");
+      }
     });
     const head = document.createElement("div"); head.className = "score";
     const pct = Math.round(100 * score / quizData.length);
     head.textContent = `You scored ${score} / ${quizData.length}  (${pct}%) ${pct >= 80 ? "🎉" : pct >= 50 ? "👍" : "📖 keep reviewing!"}`;
-    el("quizBody").prepend(head);
-    el("submitQuiz").classList.add("hidden"); el("retryQuiz").classList.remove("hidden");
+    if(el("quizBody")) el("quizBody").prepend(head);
+    if(el("submitQuiz")) el("submitQuiz").classList.add("hidden"); 
+    if(el("retryQuiz")) el("retryQuiz").classList.remove("hidden");
   });
 }
 
@@ -395,8 +427,6 @@ if(el("submitQuiz")) {
 /* =========================================================
    STUDY PLAN FEATURE (DEDICATED PANE)
    ========================================================= */
-
-let currentStudyPlan = JSON.parse(localStorage.getItem('studyPlan_NGClassMate') || 'null');
 
 const planClassSelect = document.getElementById('planClassSelect');
 const generatePlanBtn = document.getElementById('generatePlanBtn');
@@ -594,23 +624,25 @@ if (resetPlanBtn) {
 
 
 // ================= TEACHER VIEW =================
-el("tabRecordings").addEventListener("click", () => switchTab("Recordings"));
-el("tabStudents").addEventListener("click", () => switchTab("Students"));
-el("tabQuestions").addEventListener("click", () => switchTab("Questions"));
-el("tabAnalytics").addEventListener("click", () => switchTab("Analytics"));
-el("tabSettings").addEventListener("click", () => switchTab("Settings"));
+if(el("tabRecordings")) el("tabRecordings").addEventListener("click", () => switchTab("Recordings"));
+if(el("tabStudents")) el("tabStudents").addEventListener("click", () => switchTab("Students"));
+if(el("tabQuestions")) el("tabQuestions").addEventListener("click", () => switchTab("Questions"));
+if(el("tabAnalytics")) el("tabAnalytics").addEventListener("click", () => switchTab("Analytics"));
+if(el("tabSettings")) el("tabSettings").addEventListener("click", () => switchTab("Settings"));
 
 function switchTab(name) {
-  el("tabRecordings").classList.toggle("active", name === "Recordings");
-  el("tabStudents").classList.toggle("active", name === "Students");
-  el("tabQuestions").classList.toggle("active", name === "Questions");
-  el("tabAnalytics").classList.toggle("active", name === "Analytics");
-  el("tabSettings").classList.toggle("active", name === "Settings");
-  el("teacherRecordings").classList.toggle("hidden", name !== "Recordings");
-  el("teacherStudents").classList.toggle("hidden", name !== "Students");
-  el("teacherQuestions").classList.toggle("hidden", name !== "Questions");
-  el("teacherAnalytics").classList.toggle("hidden", name !== "Analytics");
-  el("teacherSettings").classList.toggle("hidden", name !== "Settings");
+  if(el("tabRecordings")) el("tabRecordings").classList.toggle("active", name === "Recordings");
+  if(el("tabStudents")) el("tabStudents").classList.toggle("active", name === "Students");
+  if(el("tabQuestions")) el("tabQuestions").classList.toggle("active", name === "Questions");
+  if(el("tabAnalytics")) el("tabAnalytics").classList.toggle("active", name === "Analytics");
+  if(el("tabSettings")) el("tabSettings").classList.toggle("active", name === "Settings");
+  
+  if(el("teacherRecordings")) el("teacherRecordings").classList.toggle("hidden", name !== "Recordings");
+  if(el("teacherStudents")) el("teacherStudents").classList.toggle("hidden", name !== "Students");
+  if(el("teacherQuestions")) el("teacherQuestions").classList.toggle("hidden", name !== "Questions");
+  if(el("teacherAnalytics")) el("teacherAnalytics").classList.toggle("hidden", name !== "Analytics");
+  if(el("teacherSettings")) el("teacherSettings").classList.toggle("hidden", name !== "Settings");
+  
   if (name === "Questions") loadQuestions();
   if (name === "Recordings") { loadTeacherRecordings(); loadStats(); }
   if (name === "Students") loadStudents();
@@ -632,7 +664,8 @@ function toast(msg, kind = "info", ms = 3200) {
 // ---------- dashboard stats ----------
 async function loadStats() {
   const bar = el("statsBar");
-  if (bar && !bar.dataset.loaded) bar.innerHTML = '<div class="stat-skeleton"></div>'.repeat(5);
+  if (!bar) return;
+  if (!bar.dataset.loaded) bar.innerHTML = '<div class="stat-skeleton"></div>'.repeat(5);
   try {
     const res = await fetch(`${API}/api/teacher/stats`, {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ passcode: state.passcode })
@@ -650,12 +683,13 @@ async function loadStats() {
       `<div class="stat-card"><div class="stat-value">${escapeHtml(String(c.value))}</div><div class="stat-label">${escapeHtml(c.label)}</div><div class="stat-sub">${escapeHtml(c.sub)}</div></div>`
     ).join("");
     bar.dataset.loaded = "1";
-  } catch (e) { /* non-blocking */ }
+  } catch (e) {}
 }
 
 // ---------- question analytics ----------
 async function loadAnalytics() {
   const box = el("analyticsBody");
+  if(!box) return;
   box.innerHTML = '<div class="stat-skeleton" style="height:120px;"></div>';
   try {
     const res = await fetch(`${API}/api/teacher/analytics`, {
@@ -694,133 +728,144 @@ function downloadUrl(path) {
   const a = document.createElement("a");
   a.href = url; a.download = ""; document.body.appendChild(a); a.click(); a.remove();
 }
-el("exportQCsv").addEventListener("click", () => { downloadUrl("/api/teacher/export/questions.csv"); toast("Downloading questions CSV…", "info"); });
-el("exportQPdf").addEventListener("click", () => { downloadUrl("/api/teacher/export/questions.pdf"); toast("Downloading questions PDF…", "info"); });
-el("exportRosterCsv").addEventListener("click", () => { downloadUrl("/api/teacher/export/roster.csv"); toast("Downloading roster CSV…", "info"); });
+if(el("exportQCsv")) el("exportQCsv").addEventListener("click", () => { downloadUrl("/api/teacher/export/questions.csv"); toast("Downloading questions CSV…", "info"); });
+if(el("exportQPdf")) el("exportQPdf").addEventListener("click", () => { downloadUrl("/api/teacher/export/questions.pdf"); toast("Downloading questions PDF…", "info"); });
+if(el("exportRosterCsv")) el("exportRosterCsv").addEventListener("click", () => { downloadUrl("/api/teacher/export/roster.csv"); toast("Downloading roster CSV…", "info"); });
 
 // ---------- merge duplicate accounts ----------
-el("dedupeBtn").addEventListener("click", async () => {
-  const body = el("dedupeBody");
-  el("dedupeApply").classList.add("hidden");
-  body.innerHTML = '<p class="meta">Scanning for duplicate emails…</p>';
-  el("dedupeModal").classList.remove("hidden");
-  try {
-    const res = await fetch(`${API}/api/teacher/students/dedupe-preview`, {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ passcode: state.passcode })
-    });
-    const data = await res.json();
-    if (!res.ok) { body.innerHTML = `<p class="ed-status err">${escapeHtml(data.error || "Could not scan.")}</p>`; return; }
-    if (!data.groups || !data.groups.length) {
-      body.innerHTML = '<p class="dedupe-clean">✅ No duplicate accounts found — every email is unique.</p>';
-      return;
-    }
-    let html = `<p class="meta">Found <strong>${data.duplicate_emails}</strong> email(s) with duplicates. `
-      + `Merging keeps the <strong>oldest</strong> account, combines all courses into it, and deletes `
-      + `<strong>${data.accounts_to_delete}</strong> extra account(s).</p>`;
-    data.groups.forEach(g => {
-      html += `<div class="dedupe-group">
-        <div class="dg-email">📧 ${escapeHtml(g.email)} <span class="dg-count">${g.duplicate_count} accounts</span></div>
-        <div class="dg-line"><strong>Keep:</strong> ${escapeHtml(g.keep.name || "(no name)")} ${g.keep.has_password ? "🔑" : "⚠️ no pw"}</div>
-        <div class="dg-line"><strong>Delete:</strong> ${g.will_delete.map(d => escapeHtml(d.name || "(no name)")).join(", ")}</div>
-        <div class="dg-line"><strong>Final courses:</strong> ${g.merged_courses.length ? g.merged_courses.map(c => `<span class="course-chip">${escapeHtml(c)}</span>`).join(" ") : "— none —"}</div>
-      </div>`;
-    });
-    body.innerHTML = html;
-    el("dedupeApply").classList.remove("hidden");
-  } catch (e) { body.innerHTML = '<p class="ed-status err">Network error while scanning.</p>'; }
-});
-el("closeDedupe").addEventListener("click", () => el("dedupeModal").classList.add("hidden"));
-el("dedupeCancel").addEventListener("click", () => el("dedupeModal").classList.add("hidden"));
-el("dedupeApply").addEventListener("click", async () => {
-  el("dedupeApply").disabled = true;
-  try {
-    const res = await fetch(`${API}/api/teacher/students/dedupe-apply`, {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ passcode: state.passcode })
-    });
-    const data = await res.json();
-    if (res.ok) {
-      toast(`Merged ${data.merged_emails} email(s), deleted ${data.deleted_accounts} duplicate account(s).`, "success", 6000);
-      el("dedupeModal").classList.add("hidden");
-      loadStudents(); loadStats();
-    } else { toast(data.error || "Merge failed.", "error"); }
-  } catch (e) { toast("Network error during merge.", "error"); }
-  finally { el("dedupeApply").disabled = false; }
-});
-
-// ---------- bulk: transcribe all missing ----------
-el("transcribeAllBtn").addEventListener("click", async () => {
-  const missing = teacherRecordings.filter(r => !r.segments);
-  if (!missing.length) { toast("All recordings already have transcripts 🎉", "success"); return; }
-  if (!confirm(`Generate transcripts for ${missing.length} recording(s) with none? This runs one at a time and can take several minutes.`)) return;
-  const btn = el("transcribeAllBtn");
-  btn.disabled = true;
-  const prog = el("bulkProgress"), fill = el("bulkBarFill"), txt = el("bulkProgressText");
-  prog.classList.remove("hidden");
-  let done = 0, ok = 0, failed = 0;
-  for (const r of missing) {
-    txt.textContent = `Transcribing ${done + 1} of ${missing.length}: ${r.title}…`;
+if(el("dedupeBtn")) {
+  el("dedupeBtn").addEventListener("click", async () => {
+    const body = el("dedupeBody");
+    if(el("dedupeApply")) el("dedupeApply").classList.add("hidden");
+    if(body) body.innerHTML = '<p class="meta">Scanning for duplicate emails…</p>';
+    if(el("dedupeModal")) el("dedupeModal").classList.remove("hidden");
     try {
-      const res = await fetch(`${API}/api/teacher/transcribe`, {
+      const res = await fetch(`${API}/api/teacher/students/dedupe-preview`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ passcode: state.passcode, id: r.id })
+        body: JSON.stringify({ passcode: state.passcode })
       });
       const data = await res.json();
-      if (res.ok) ok++; else failed++;
-    } catch (e) { failed++; }
-    done++;
-    fill.style.width = `${Math.round(done / missing.length * 100)}%`;
-  }
-  txt.textContent = `Finished: ${ok} transcribed, ${failed} failed.`;
-  toast(`Transcribe-all done: ${ok} succeeded${failed ? `, ${failed} failed` : ""}.`, failed ? "error" : "success", 5000);
-  btn.disabled = false;
-  setTimeout(() => prog.classList.add("hidden"), 4000);
-  await loadTeacherRecordings(); loadStats();
-});
+      if (!res.ok) { if(body) body.innerHTML = `<p class="ed-status err">${escapeHtml(data.error || "Could not scan.")}</p>`; return; }
+      if (!data.groups || !data.groups.length) {
+        if(body) body.innerHTML = '<p class="dedupe-clean">✅ No duplicate accounts found — every email is unique.</p>';
+        return;
+      }
+      let html = `<p class="meta">Found <strong>${data.duplicate_emails}</strong> email(s) with duplicates. `
+        + `Merging keeps the <strong>oldest</strong> account, combines all courses into it, and deletes `
+        + `<strong>${data.accounts_to_delete}</strong> extra account(s).</p>`;
+      data.groups.forEach(g => {
+        html += `<div class="dedupe-group">
+          <div class="dg-email">📧 ${escapeHtml(g.email)} <span class="dg-count">${g.duplicate_count} accounts</span></div>
+          <div class="dg-line"><strong>Keep:</strong> ${escapeHtml(g.keep.name || "(no name)")} ${g.keep.has_password ? "🔑" : "⚠️ no pw"}</div>
+          <div class="dg-line"><strong>Delete:</strong> ${g.will_delete.map(d => escapeHtml(d.name || "(no name)")).join(", ")}</div>
+          <div class="dg-line"><strong>Final courses:</strong> ${g.merged_courses.length ? g.merged_courses.map(c => `<span class="course-chip">${escapeHtml(c)}</span>`).join(" ") : "— none —"}</div>
+        </div>`;
+      });
+      if(body) body.innerHTML = html;
+      if(el("dedupeApply")) el("dedupeApply").classList.remove("hidden");
+    } catch (e) { if(body) body.innerHTML = '<p class="ed-status err">Network error while scanning.</p>'; }
+  });
+}
+if(el("closeDedupe")) el("closeDedupe").addEventListener("click", () => el("dedupeModal").classList.add("hidden"));
+if(el("dedupeCancel")) el("dedupeCancel").addEventListener("click", () => el("dedupeModal").classList.add("hidden"));
+if(el("dedupeApply")) {
+  el("dedupeApply").addEventListener("click", async () => {
+    el("dedupeApply").disabled = true;
+    try {
+      const res = await fetch(`${API}/api/teacher/students/dedupe-apply`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ passcode: state.passcode })
+      });
+      const data = await res.json();
+      if (res.ok) {
+        toast(`Merged ${data.merged_emails} email(s), deleted ${data.deleted_accounts} duplicate account(s).`, "success", 6000);
+        if(el("dedupeModal")) el("dedupeModal").classList.add("hidden");
+        loadStudents(); loadStats();
+      } else { toast(data.error || "Merge failed.", "error"); }
+    } catch (e) { toast("Network error during merge.", "error"); }
+    finally { el("dedupeApply").disabled = false; }
+  });
+}
+
+// ---------- bulk: transcribe all missing ----------
+if(el("transcribeAllBtn")) {
+  el("transcribeAllBtn").addEventListener("click", async () => {
+    const missing = teacherRecordings.filter(r => !r.segments);
+    if (!missing.length) { toast("All recordings already have transcripts 🎉", "success"); return; }
+    if (!confirm(`Generate transcripts for ${missing.length} recording(s) with none? This runs one at a time and can take several minutes.`)) return;
+    const btn = el("transcribeAllBtn");
+    btn.disabled = true;
+    const prog = el("bulkProgress"), fill = el("bulkBarFill"), txt = el("bulkProgressText");
+    if(prog) prog.classList.remove("hidden");
+    let done = 0, ok = 0, failed = 0;
+    for (const r of missing) {
+      if(txt) txt.textContent = `Transcribing ${done + 1} of ${missing.length}: ${r.title}…`;
+      try {
+        const res = await fetch(`${API}/api/teacher/transcribe`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ passcode: state.passcode, id: r.id })
+        });
+        if (res.ok) ok++; else failed++;
+      } catch (e) { failed++; }
+      done++;
+      if(fill) fill.style.width = `${Math.round(done / missing.length * 100)}%`;
+    }
+    if(txt) txt.textContent = `Finished: ${ok} transcribed, ${failed} failed.`;
+    toast(`Transcribe-all done: ${ok} succeeded${failed ? `, ${failed} failed` : ""}.`, failed ? "error" : "success", 5000);
+    btn.disabled = false;
+    if(prog) setTimeout(() => prog.classList.add("hidden"), 4000);
+    await loadTeacherRecordings(); loadStats();
+  });
+}
 
 // ---------- import one specific recording ----------
-el("importOneBtn").addEventListener("click", async () => {
-  const ref = el("importOneInput").value.trim();
-  const status = el("importOneStatus");
-  if (!ref) { status.textContent = "Paste a Zoom Meeting ID/UUID or a recording link first."; return; }
-  const btn = el("importOneBtn");
-  btn.disabled = true;
-  status.textContent = "Contacting Zoom and importing…";
-  try {
-    const res = await fetch(`${API}/api/teacher/import-one`, {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ passcode: state.passcode, ref })
-    });
-    const data = await res.json();
-    if (!res.ok) { status.textContent = ""; toast(data.error || "Import failed.", "error", 5000); }
-    else {
-      status.textContent = "";
-      const t = data.recording ? data.recording.title : "recording";
-      const note = data.has_transcript ? "with its Zoom transcript" : "— no Zoom transcript, use “Generate transcript”";
-      toast(`Imported “${t}” ${note}. It starts hidden until you assign a course & make it visible.`, "success", 6000);
-      el("importOneInput").value = "";
-      await loadTeacherRecordings(); loadStats();
-    }
-  } catch (e) { status.textContent = ""; toast("Network error during import.", "error"); }
-  finally { btn.disabled = false; }
-});
-el("importOneInput").addEventListener("keydown", e => { if (e.key === "Enter") el("importOneBtn").click(); });
+if(el("importOneBtn")) {
+  el("importOneBtn").addEventListener("click", async () => {
+    const inputRef = el("importOneInput");
+    const status = el("importOneStatus");
+    if(!inputRef) return;
+    const ref = inputRef.value.trim();
+    if (!ref) { if(status) status.textContent = "Paste a Zoom Meeting ID/UUID or a recording link first."; return; }
+    const btn = el("importOneBtn");
+    btn.disabled = true;
+    if(status) status.textContent = "Contacting Zoom and importing…";
+    try {
+      const res = await fetch(`${API}/api/teacher/import-one`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ passcode: state.passcode, ref })
+      });
+      const data = await res.json();
+      if (!res.ok) { if(status) status.textContent = ""; toast(data.error || "Import failed.", "error", 5000); }
+      else {
+        if(status) status.textContent = "";
+        const t = data.recording ? data.recording.title : "recording";
+        const note = data.has_transcript ? "with its Zoom transcript" : "— no Zoom transcript, use “Generate transcript”";
+        toast(`Imported “${t}” ${note}. It starts hidden until you assign a course & make it visible.`, "success", 6000);
+        inputRef.value = "";
+        await loadTeacherRecordings(); loadStats();
+      }
+    } catch (e) { if(status) status.textContent = ""; toast("Network error during import.", "error"); }
+    finally { btn.disabled = false; }
+  });
+  if(el("importOneInput")) el("importOneInput").addEventListener("keydown", e => { if (e.key === "Enter") el("importOneBtn").click(); });
+}
 
 // ---------- bulk: delete unassigned ----------
-el("deleteUnassignedBtn").addEventListener("click", async () => {
-  const unassigned = teacherRecordings.filter(r => (r.unit || "Unassigned") === "Unassigned");
-  if (!unassigned.length) { toast("There are no unassigned recordings.", "info"); return; }
-  if (!confirm(`Permanently delete ${unassigned.length} unassigned recording(s)? This cannot be undone.`)) return;
-  try {
-    const res = await fetch(`${API}/api/teacher/recordings/delete-unassigned`, {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ passcode: state.passcode })
-    });
-    const data = await res.json();
-    if (res.ok) { toast(`Deleted ${data.deleted} unassigned recording(s).`, "success"); await loadTeacherRecordings(); loadStats(); }
-    else toast(data.error || "Delete failed.", "error");
-  } catch (e) { toast("Network error during delete.", "error"); }
-});
+if(el("deleteUnassignedBtn")) {
+  el("deleteUnassignedBtn").addEventListener("click", async () => {
+    const unassigned = teacherRecordings.filter(r => (r.unit || "Unassigned") === "Unassigned");
+    if (!unassigned.length) { toast("There are no unassigned recordings.", "info"); return; }
+    if (!confirm(`Permanently delete ${unassigned.length} unassigned recording(s)? This cannot be undone.`)) return;
+    try {
+      const res = await fetch(`${API}/api/teacher/recordings/delete-unassigned`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ passcode: state.passcode })
+      });
+      const data = await res.json();
+      if (res.ok) { toast(`Deleted ${data.deleted} unassigned recording(s).`, "success"); await loadTeacherRecordings(); loadStats(); }
+      else toast(data.error || "Delete failed.", "error");
+    } catch (e) { toast("Network error during delete.", "error"); }
+  });
+}
 
 // ---------- roster management ----------
 async function loadStudents() {
@@ -832,7 +877,9 @@ async function loadStudents() {
 }
 
 function renderStudents(list) {
-  const box = el("studentList"); box.innerHTML = "";
+  const box = el("studentList"); 
+  if(!box) return;
+  box.innerHTML = "";
   if (!list.length) { box.innerHTML = '<div class="roster-empty">No students yet. Import a sheet or add one above.</div>'; return; }
   list.forEach(s => {
     const row = document.createElement("div"); row.className = "student-row";
@@ -859,6 +906,7 @@ let editCourses = [];
 
 function renderEditCourses() {
   const wrap = el("edCourseList");
+  if(!wrap) return;
   wrap.innerHTML = "";
   if (!editCourses.length) { wrap.innerHTML = '<span class="ed-no-course">No courses — this student will see nothing until you add one.</span>'; return; }
   editCourses.forEach((c, i) => {
@@ -873,117 +921,151 @@ function renderEditCourses() {
 function openStudentEditor(s) {
   editingStudent = s;
   editCourses = Array.isArray(s.courses) ? [...s.courses] : [];
-  el("edName").value = s.name || "";
-  el("edEmail").value = s.email || "";
-  el("edPassword").value = "";
-  el("edCourseInput").value = "";
-  el("edStatus").textContent = "";
+  if(el("edName")) el("edName").value = s.name || "";
+  if(el("edEmail")) el("edEmail").value = s.email || "";
+  if(el("edPassword")) el("edPassword").value = "";
+  if(el("edCourseInput")) el("edCourseInput").value = "";
+  if(el("edStatus")) el("edStatus").textContent = "";
   renderEditCourses();
-  el("studentModal").classList.remove("hidden");
+  if(el("studentModal")) el("studentModal").classList.remove("hidden");
 }
-function closeStudentEditor() { el("studentModal").classList.add("hidden"); editingStudent = null; }
+function closeStudentEditor() { 
+  if(el("studentModal")) el("studentModal").classList.add("hidden"); 
+  editingStudent = null; 
+}
 
-el("closeStudentModal").addEventListener("click", closeStudentEditor);
-el("edCancel").addEventListener("click", closeStudentEditor);
+if(el("closeStudentModal")) el("closeStudentModal").addEventListener("click", closeStudentEditor);
+if(el("edCancel")) el("edCancel").addEventListener("click", closeStudentEditor);
 
-el("edCourseAddBtn").addEventListener("click", () => {
-  const v = el("edCourseInput").value.trim();
-  if (!v) return;
-  if (!editCourses.some(c => c.toLowerCase() === v.toLowerCase())) editCourses.push(v);
-  el("edCourseInput").value = "";
-  renderEditCourses();
-});
-el("edCourseInput").addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); el("edCourseAddBtn").click(); } });
+if(el("edCourseAddBtn")) {
+  el("edCourseAddBtn").addEventListener("click", () => {
+    const input = el("edCourseInput");
+    if(!input) return;
+    const v = input.value.trim();
+    if (!v) return;
+    if (!editCourses.some(c => c.toLowerCase() === v.toLowerCase())) editCourses.push(v);
+    input.value = "";
+    renderEditCourses();
+  });
+  if(el("edCourseInput")) el("edCourseInput").addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); el("edCourseAddBtn").click(); } });
+}
 
-el("edGenPw").addEventListener("click", () => {
-  const abc = "abcdefghijkmnpqrstuvwxyz23456789";
-  let p = ""; for (let i = 0; i < 8; i++) p += abc[Math.floor(Math.random() * abc.length)];
-  el("edPassword").value = p;
-});
+if(el("edGenPw")) {
+  el("edGenPw").addEventListener("click", () => {
+    const abc = "abcdefghijkmnpqrstuvwxyz23456789";
+    let p = ""; for (let i = 0; i < 8; i++) p += abc[Math.floor(Math.random() * abc.length)];
+    if(el("edPassword")) el("edPassword").value = p;
+  });
+}
 
-el("edSave").addEventListener("click", async () => {
-  if (!editingStudent) return;
-  const payload = {
-    passcode: state.passcode,
-    id: editingStudent.id,
-    name: el("edName").value.trim(),
-    email: el("edEmail").value.trim(),
-    courses: editCourses,
-  };
-  const np = el("edPassword").value.trim();
-  if (np) payload.new_password = np;
-  el("edSave").disabled = true;
-  try {
-    const res = await fetch(`${API}/api/teacher/students/update`, {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload)
+if(el("edSave")) {
+  el("edSave").addEventListener("click", async () => {
+    if (!editingStudent) return;
+    const payload = {
+      passcode: state.passcode,
+      id: editingStudent.id,
+      name: el("edName") ? el("edName").value.trim() : "",
+      email: el("edEmail") ? el("edEmail").value.trim() : "",
+      courses: editCourses,
+    };
+    const np = el("edPassword") ? el("edPassword").value.trim() : "";
+    if (np) payload.new_password = np;
+    el("edSave").disabled = true;
+    try {
+      const res = await fetch(`${API}/api/teacher/students/update`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload)
+      });
+      const data = await res.json();
+      if (res.ok) {
+        let msg = "Student updated.";
+        if (np) msg += " New password set — they'll need to log in again.";
+        toast(msg, "success", 5000);
+        closeStudentEditor();
+        loadStudents();
+      } else {
+        const stat = el("edStatus");
+        if(stat) {
+          stat.textContent = data.error || "Could not save.";
+          stat.className = "ed-status err";
+        }
+      }
+    } catch (e) {
+      const stat = el("edStatus");
+      if(stat) {
+        stat.textContent = "Network error while saving."; 
+        stat.className = "ed-status err";
+      }
+    } finally { el("edSave").disabled = false; }
+  });
+}
+
+if(el("edDelete")) {
+  el("edDelete").addEventListener("click", async () => {
+    if (!editingStudent) return;
+    if (!confirm(`Delete ${editingStudent.name || editingStudent.email}? This permanently removes their account and access.`)) return;
+    try {
+      const res = await fetch(`${API}/api/teacher/students/remove`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ passcode: state.passcode, id: editingStudent.id })
+      });
+      if (res.ok) { toast("Student deleted.", "success"); closeStudentEditor(); loadStudents(); }
+      else { const d = await res.json(); toast(d.error || "Could not delete.", "error"); }
+    } catch (e) { toast("Network error during delete.", "error"); }
+  });
+}
+
+if(el("addStudentBtn")) {
+  el("addStudentBtn").addEventListener("click", async () => {
+    const name = el("newStudentName") ? el("newStudentName").value.trim() : "";
+    const email = el("newStudentEmail") ? el("newStudentEmail").value.trim() : "";
+    const password = el("newStudentPassword") ? el("newStudentPassword").value : "";
+    const courses = el("newStudentCourses") ? el("newStudentCourses").value.trim() : "";
+    const err = el("addStudentErr"); 
+    if(err) err.classList.add("hidden");
+    if (!email) { if(err) { err.textContent = "Enter a student email."; err.classList.remove("hidden"); } return; }
+    const res = await fetch(`${API}/api/teacher/students/add`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ passcode: state.passcode, name, email, password, courses })
     });
     const data = await res.json();
-    if (res.ok) {
-      let msg = "Student updated.";
-      if (np) msg += " New password set — they'll need to log in again.";
-      toast(msg, "success", 5000);
-      closeStudentEditor();
-      loadStudents();
-    } else {
-      el("edStatus").textContent = data.error || "Could not save.";
-      el("edStatus").className = "ed-status err";
-    }
-  } catch (e) { el("edStatus").textContent = "Network error while saving."; el("edStatus").className = "ed-status err"; }
-  finally { el("edSave").disabled = false; }
-});
-
-el("edDelete").addEventListener("click", async () => {
-  if (!editingStudent) return;
-  if (!confirm(`Delete ${editingStudent.name || editingStudent.email}? This permanently removes their account and access.`)) return;
-  try {
-    const res = await fetch(`${API}/api/teacher/students/remove`, {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ passcode: state.passcode, id: editingStudent.id })
-    });
-    if (res.ok) { toast("Student deleted.", "success"); closeStudentEditor(); loadStudents(); }
-    else { const d = await res.json(); toast(d.error || "Could not delete.", "error"); }
-  } catch (e) { toast("Network error during delete.", "error"); }
-});
-
-el("addStudentBtn").addEventListener("click", async () => {
-  const name = el("newStudentName").value.trim();
-  const email = el("newStudentEmail").value.trim();
-  const password = el("newStudentPassword").value;
-  const courses = el("newStudentCourses").value.trim();
-  const err = el("addStudentErr"); err.classList.add("hidden");
-  if (!email) { err.textContent = "Enter a student email."; err.classList.remove("hidden"); return; }
-  const res = await fetch(`${API}/api/teacher/students/add`, {
-    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ passcode: state.passcode, name, email, password, courses })
+    if (!res.ok || data.error) { if(err) { err.textContent = data.error || "Could not add student."; err.classList.remove("hidden"); } return; }
+    if(el("newStudentName")) el("newStudentName").value = ""; 
+    if(el("newStudentEmail")) el("newStudentEmail").value = ""; 
+    if(el("newStudentPassword")) el("newStudentPassword").value = ""; 
+    if(el("newStudentCourses")) el("newStudentCourses").value = "";
+    if (data.merged) toast(data.message || "Student updated.", "success", 5000);
+    else toast("Student added.", "success");
+    loadStudents();
   });
-  const data = await res.json();
-  if (!res.ok || data.error) { err.textContent = data.error || "Could not add student."; err.classList.remove("hidden"); return; }
-  el("newStudentName").value = ""; el("newStudentEmail").value = ""; el("newStudentPassword").value = ""; el("newStudentCourses").value = "";
-  if (data.merged) toast(data.message || "Student updated.", "success", 5000);
-  else toast("Student added.", "success");
-  loadStudents();
-});
+}
 
 // ---------- Excel import ----------
-el("importBtn").addEventListener("click", async () => {
-  const fileInput = el("excelFile");
-  const msg = el("importMsg"); const err = el("importErr");
-  msg.classList.add("hidden"); err.classList.add("hidden");
-  if (!fileInput.files.length) { err.textContent = "Choose an .xlsx file first."; err.classList.remove("hidden"); return; }
-  const fd = new FormData();
-  fd.append("file", fileInput.files[0]);
-  fd.append("passcode", state.passcode);
-  try {
-    const res = await fetch(`${API}/api/teacher/students/import`, { method: "POST", body: fd });
-    const data = await res.json();
-    if (!res.ok || data.error) { err.textContent = data.error || "Import failed."; err.classList.remove("hidden"); return; }
-    msg.textContent = `Imported ✓  ${data.added} added, ${data.updated} updated.`;
-    msg.classList.remove("hidden");
-    fileInput.value = "";
-    loadStudents();
-  } catch (e) {
-    err.textContent = "Couldn't reach the server. Try again.";
-    err.classList.remove("hidden");
-  }
-});
+if(el("importBtn")) {
+  el("importBtn").addEventListener("click", async () => {
+    const fileInput = el("excelFile");
+    const msg = el("importMsg"); const err = el("importErr");
+    if(msg) msg.classList.add("hidden"); 
+    if(err) err.classList.add("hidden");
+    if (!fileInput || !fileInput.files.length) { if(err) { err.textContent = "Choose an .xlsx file first."; err.classList.remove("hidden"); } return; }
+    const fd = new FormData();
+    fd.append("file", fileInput.files[0]);
+    fd.append("passcode", state.passcode);
+    try {
+      const res = await fetch(`${API}/api/teacher/students/import`, { method: "POST", body: fd });
+      const data = await res.json();
+      if (!res.ok || data.error) { if(err) { err.textContent = data.error || "Import failed."; err.classList.remove("hidden"); } return; }
+      if(msg) {
+        msg.textContent = `Imported ✓  ${data.added} added, ${data.updated} updated.`;
+        msg.classList.remove("hidden");
+      }
+      fileInput.value = "";
+      loadStudents();
+    } catch (e) {
+      if(err) {
+        err.textContent = "Couldn't reach the server. Try again.";
+        err.classList.remove("hidden");
+      }
+    }
+  });
+}
 
 let teacherRecordings = [];
 
@@ -999,6 +1081,7 @@ async function loadTeacherRecordings() {
 
 function populateCourseFilter(list) {
   const sel = el("recCourseFilter");
+  if(!sel) return;
   const current = sel.value;
   const units = Array.from(new Set(list.map(r => r.unit || "Unassigned"))).sort();
   sel.innerHTML = '<option value="">All courses</option>' +
@@ -1007,10 +1090,15 @@ function populateCourseFilter(list) {
 }
 
 function applyRecFilters() {
-  const q = (el("recSearch").value || "").toLowerCase();
-  const course = el("recCourseFilter").value;
-  const type = el("recTypeFilter").value;
-  const sort = el("recSort").value;
+  const searchEl = el("recSearch");
+  const courseEl = el("recCourseFilter");
+  const typeEl = el("recTypeFilter");
+  const sortEl = el("recSort");
+
+  const q = searchEl ? (searchEl.value || "").toLowerCase() : "";
+  const course = courseEl ? courseEl.value : "";
+  const type = typeEl ? typeEl.value : "";
+  const sort = sortEl ? sortEl.value : "date_asc";
 
   let list = teacherRecordings.filter(r => {
     const matchesCourse = !course || (r.unit || "Unassigned") === course;
@@ -1035,17 +1123,20 @@ function applyRecFilters() {
   };
   list.sort(sorters[sort] || sorters.date_asc);
 
-  el("recCount").textContent = `${list.length} of ${teacherRecordings.length} recording${teacherRecordings.length === 1 ? "" : "s"}`;
+  const countEl = el("recCount");
+  if(countEl) countEl.textContent = `${list.length} of ${teacherRecordings.length} recording${teacherRecordings.length === 1 ? "" : "s"}`;
   renderTeacherRecordings(list);
 }
 
-el("recSearch").addEventListener("input", applyRecFilters);
-el("recCourseFilter").addEventListener("change", applyRecFilters);
-el("recTypeFilter").addEventListener("change", applyRecFilters);
-el("recSort").addEventListener("change", applyRecFilters);
+if(el("recSearch")) el("recSearch").addEventListener("input", applyRecFilters);
+if(el("recCourseFilter")) el("recCourseFilter").addEventListener("change", applyRecFilters);
+if(el("recTypeFilter")) el("recTypeFilter").addEventListener("change", applyRecFilters);
+if(el("recSort")) el("recSort").addEventListener("change", applyRecFilters);
 
 function renderTeacherRecordings(list) {
-  const box = el("tRecList"); box.innerHTML = "";
+  const box = el("tRecList"); 
+  if(!box) return;
+  box.innerHTML = "";
   if (!list.length) { box.innerHTML = '<div class="roster-empty">No recordings match your filter.</div>'; return; }
   list.forEach(r => {
     const row = document.createElement("div"); row.className = "t-rec";
@@ -1189,7 +1280,7 @@ function renderTeacherRecordings(list) {
           opt.textContent = `${n.filename} (used by ${n.used_by})`;
           noteLibSelect.appendChild(opt);
         });
-      } catch (e) { /* silent */ }
+      } catch (e) {}
     }
     refreshLibDropdown();
 
@@ -1300,7 +1391,9 @@ async function loadQuestions() {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ passcode: state.passcode })
   });
   const data = await res.json();
-  const box = el("qLog"); box.innerHTML = "";
+  const box = el("qLog"); 
+  if(!box) return;
+  box.innerHTML = "";
   const qs = data.questions || [];
   if (!qs.length) { box.innerHTML = '<div class="q-empty">No questions yet. They\'ll show up here as students ask.</div>'; return; }
   qs.forEach(q => {
@@ -1311,15 +1404,26 @@ async function loadQuestions() {
   });
 }
 
-el("savePass").addEventListener("click", async () => {
-  const np = el("newPass").value.trim();
-  if (!np) return;
-  const res = await fetch(`${API}/api/teacher/passcode`, {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ passcode: state.passcode, new_passcode: np })
+if(el("savePass")) {
+  el("savePass").addEventListener("click", async () => {
+    const newPassEl = el("newPass");
+    if(!newPassEl) return;
+    const np = newPassEl.value.trim();
+    if (!np) return;
+    const res = await fetch(`${API}/api/teacher/passcode`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ passcode: state.passcode, new_passcode: np })
+    });
+    if (res.ok) { 
+      state.passcode = np; 
+      newPassEl.value = ""; 
+      if(el("passSaved")) {
+        el("passSaved").classList.remove("hidden"); 
+        setTimeout(() => el("passSaved").classList.add("hidden"), 2000); 
+      }
+    }
   });
-  if (res.ok) { state.passcode = np; el("newPass").value = ""; el("passSaved").classList.remove("hidden"); setTimeout(() => el("passSaved").classList.add("hidden"), 2000); }
-});
+}
 
 // ---------- sign out ----------
 function signOut() {
@@ -1334,30 +1438,38 @@ function signOut() {
   const pw = el("passwordInput"); if (pw) pw.value = "";
   show("landing");
 }
-el("studentSignOut").addEventListener("click", signOut);
-el("teacherSignOut").addEventListener("click", signOut);
+if(el("studentSignOut")) el("studentSignOut").addEventListener("click", signOut);
+if(el("teacherSignOut")) el("teacherSignOut").addEventListener("click", signOut);
 
 // ---------- logo upload ----------
-el("saveLogo").addEventListener("click", async () => {
-  const fileInput = el("logoFile");
-  const ok = el("logoSaved"); const err = el("logoErr");
-  ok.classList.add("hidden"); err.classList.add("hidden");
-  if (!fileInput.files.length) { err.textContent = "Choose an image file first."; err.classList.remove("hidden"); return; }
-  const fd = new FormData();
-  fd.append("file", fileInput.files[0]);
-  fd.append("passcode", state.passcode);
-  try {
-    const res = await fetch(`${API}/api/teacher/logo`, { method: "POST", body: fd });
-    const data = await res.json();
-    if (!res.ok || data.error) { err.textContent = data.error || "Upload failed."; err.classList.remove("hidden"); return; }
-    ok.classList.remove("hidden"); setTimeout(() => ok.classList.add("hidden"), 2500);
-    fileInput.value = "";
-    applyLogo(data.logo + "?t=" + Date.now());
-  } catch (e) {
-    err.textContent = "Couldn't reach the server. Try again.";
-    err.classList.remove("hidden");
-  }
-});
+if(el("saveLogo")) {
+  el("saveLogo").addEventListener("click", async () => {
+    const fileInput = el("logoFile");
+    const ok = el("logoSaved"); const err = el("logoErr");
+    if(ok) ok.classList.add("hidden"); 
+    if(err) err.classList.add("hidden");
+    if (!fileInput || !fileInput.files.length) { if(err) { err.textContent = "Choose an image file first."; err.classList.remove("hidden"); } return; }
+    const fd = new FormData();
+    fd.append("file", fileInput.files[0]);
+    fd.append("passcode", state.passcode);
+    try {
+      const res = await fetch(`${API}/api/teacher/logo`, { method: "POST", body: fd });
+      const data = await res.json();
+      if (!res.ok || data.error) { if(err) { err.textContent = data.error || "Upload failed."; err.classList.remove("hidden"); } return; }
+      if(ok) {
+        ok.classList.remove("hidden"); 
+        setTimeout(() => ok.classList.add("hidden"), 2500);
+      }
+      fileInput.value = "";
+      applyLogo(data.logo + "?t=" + Date.now());
+    } catch (e) {
+      if(err) {
+        err.textContent = "Couldn't reach the server. Try again.";
+        err.classList.remove("hidden");
+      }
+    }
+  });
+}
 
 function applyLogo(url) {
   if (!url) return;
@@ -1379,95 +1491,13 @@ async function loadBranding() {
     const res = await fetch(`${API}/api/branding`);
     const data = await res.json();
     if (data.logo) applyLogo(data.logo + "?t=" + Date.now());
-  } catch (e) { /* ignore */ }
+  } catch (e) {}
 }
 loadBranding();
-
-(function setupImportRecordings() {
-  function injectImportButton() {
-    const pane = el("teacherRecordings");
-    if (!pane) return;
-    let btn = el("importRecBtn");
-    if (btn) {
-      if (!btn._backfillBound) {
-        btn.addEventListener("click", runBackfill);
-        btn._backfillBound = true;
-      }
-      return;
-    }
-    const head = pane.querySelector(".pane-head") || pane;
-    const bar = document.createElement("div");
-    bar.className = "import-rec-bar";
-    bar.style.cssText = "display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:12px;";
-    btn = document.createElement("button");
-    btn.id = "importRecBtn";
-    btn.className = "primary";
-    btn.type = "button";
-    btn.textContent = "⬇️ Import cloud recordings";
-    const status = document.createElement("span");
-    status.id = "importRecStatus";
-    status.className = "meta";
-    status.style.cssText = "font-size:0.9em;color:#555;";
-    bar.appendChild(btn);
-    bar.appendChild(status);
-    head.appendChild(bar);
-    btn.addEventListener("click", runBackfill);
-    btn._backfillBound = true;
-  }
-
-  async function runBackfill() {
-    const btn = el("importRecBtn");
-    const status = el("importRecStatus");
-    if (!btn) return;
-    if (!state.passcode) { if (status) status.textContent = "Please sign in as teacher first."; return; }
-    btn.disabled = true;
-    const original = btn.textContent;
-    btn.textContent = "Importing…";
-    if (status) status.textContent = "Contacting Zoom and importing recordings — this can take a minute…";
-    try {
-      const res = await fetch(`${API}/api/teacher/backfill`, {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ passcode: state.passcode }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        if (status) status.textContent = "Import failed: " + (data.error || ("HTTP " + res.status));
-      } else {
-        const added = data.added || 0;
-        const skipped = data.skipped_already_present || 0;
-        const found = data.found || 0;
-        if (status) {
-          status.textContent =
-            `Done — imported ${added} new recording${added === 1 ? "" : "s"} ` +
-            `(${skipped} already present, ${found} found in Zoom). ` +
-            `New ones are hidden until you make them visible.`;
-        }
-        if (typeof loadTeacherRecordings === "function") loadTeacherRecordings();
-      }
-    } catch (e) {
-      if (status) status.textContent = "Import failed: could not reach the server. Try again.";
-    } finally {
-      btn.disabled = false;
-      btn.textContent = original;
-    }
-  }
-  const tabRec = el("tabRecordings");
-  if (tabRec) tabRec.addEventListener("click", () => setTimeout(injectImportButton, 0));
-  document.addEventListener("DOMContentLoaded", injectImportButton);
-  injectImportButton();
-})();
 
 /* =========================================================
    STUDY PLAN FEATURE (DEDICATED PANE)
    ========================================================= */
-
-let currentStudyPlan = JSON.parse(localStorage.getItem('studyPlan_NGClassMate') || 'null');
-
-const planClassSelect = document.getElementById('planClassSelect');
-const generatePlanBtn = document.getElementById('generatePlanBtn');
-const resetPlanBtn = document.getElementById('resetPlanBtn');
-const planEmptyState = document.getElementById('planEmptyState');
-const planResult = document.getElementById('planResult');
 
 function initPlanner() {
   if (!planClassSelect) return;
@@ -1611,7 +1641,7 @@ function renderPlan() {
   const isComplete = totalTasks > 0 && completedTasks === totalTasks;
 
   const progressHtml = `
-    <div style="margin-bottom: 20px; background: var(--panel); border: 1px solid var(--line); padding: 16px; border-radius: 14px; box-shadow: var(--shadow-sm);">
+    <div style="margin-bottom: 20px; background: var(--panel); border: 1.5px solid var(--line); padding: 16px; border-radius: 14px; box-shadow: var(--shadow-sm);">
       <div style="display: flex; justify-content: space-between; align-items: center; font-weight: 900; font-size: 15px; margin-bottom: 10px;">
         <span>Plan Progress</span>
         <span style="color: var(--brand-d);">${pct}% Completed</span>

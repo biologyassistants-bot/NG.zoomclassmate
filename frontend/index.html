@@ -68,28 +68,49 @@
     </div>
   </section>
 
-  <!-- Student app -->
+ <!-- Student app -->
   <section id="main" class="main hidden">
     <header class="topbar">
       <div class="brand"><span class="logo-sm">🎓</span> NG-ClassMate</div>
-      <div class="who">Hi, <strong id="whoName">student</strong> 👋 <button class="link" id="studentSignOut">Sign out</button></div>
+      <div class="who">
+        <button id="tabStudentDash" class="tab active">Dashboard</button>
+        <button id="tabStudentTutor" class="tab">AI Tutor & Quizzes</button>
+        <button id="tabStudentPlanner" class="tab">Study Planner</button>
+        <button class="link" id="studentSignOut" style="margin-left: 12px;">Sign out</button>
+      </div>
     </header>
-    <div class="layout">
+
+    <!-- Pane 1: Dashboard -->
+    <div id="studentDashPane" class="student-pane" style="padding: 26px 30px; overflow-y: auto;">
+      <div class="pane-head" style="margin-bottom: 24px;">
+        <h2 style="font-size: 26px; margin-bottom: 8px;">Welcome back, <span id="dashName">Student</span>! 👋</h2>
+        <div id="dailyQuote" style="background: rgba(11,191,191,.10); border-left: 4px solid var(--brand); padding: 12px 16px; border-radius: 8px; font-weight: 700; color: var(--brand-d); max-width: 800px;">
+          "Success is like cellular respiration—it takes a little activation energy to start, but the payoff is massive."
+        </div>
+      </div>
+      
+      <h3 style="margin-bottom: 12px; font-size: 18px; font-weight: 800;">Your Learning Overview</h3>
+      <div id="studentStatsBar" class="stats-bar" style="max-width: 900px;">
+        <!-- Stats injected by JS -->
+      </div>
+    </div>
+
+    <!-- Pane 2: AI Tutor & Quizzes -->
+    <div id="studentTutorPane" class="student-pane hidden layout">
       <aside class="sidebar">
         <div class="sidebar-head">
           <h2>Class recordings</h2>
           <input id="search" type="text" placeholder="Search classes…" style="margin-bottom: 8px;" />
-          <select id="studentCourseFilter" class="filter-select" title="Filter by course" style="width: 100%; margin-bottom: 8px;">
+          <select id="studentCourseFilter" class="filter-select" title="Filter by course" style="width: 100%;">
             <option value="">All courses</option>
           </select>
-          <button id="openPlanModalBtn" class="primary" style="width: 100%;">📅 Build Study Plan</button>
         </div>
         <div id="recList" class="rec-list"></div>
       </aside>
       <main class="content">
         <div id="emptyState" class="empty">
           <div class="empty-emoji">📚</div>
-          <p>Pick a class recording on the left to start asking questions.</p>
+          <p>Pick a class recording on the left to start asking questions or generating quizzes.</p>
         </div>
         <div id="workspace" class="workspace hidden">
           <div class="ws-head">
@@ -109,6 +130,59 @@
           </form>
         </div>
       </main>
+    </div>
+
+    <!-- Pane 3: Study Planner -->
+    <div id="studentPlannerPane" class="student-pane hidden" style="padding: 26px 30px; overflow-y: auto;">
+      <div class="pane-head" style="margin-bottom: 20px;">
+        <h2>📅 Your Study Plan</h2>
+        <p class="meta">Build a structured, day-by-day roadmap to conquer your syllabus.</p>
+      </div>
+
+      <div class="planner-layout">
+        <!-- Setup Sidebar -->
+        <div class="planner-setup">
+          <div id="planSetup">
+            <label class="fld" style="margin-bottom: 12px; display: block;">
+              <span style="font-weight: 800; font-size: 13px;">Classes to review</span>
+              <div id="planClassSelect" style="max-height: 200px; overflow-y: auto; background: var(--panel2); border: 1.5px solid var(--line); border-radius: 11px; padding: 10px; margin-top: 6px;">
+                <!-- Checkboxes injected by JS -->
+              </div>
+            </label>
+            <div style="display: flex; gap: 12px; margin-bottom: 12px;">
+              <label class="fld" style="flex: 1;">
+                <span style="font-weight: 800; font-size: 13px; display: block; margin-bottom: 6px;">Days until goal</span>
+                <input id="planDays" type="number" min="1" max="30" value="7" style="width: 100%; padding: 11px 13px; border-radius: 11px; border: 1.5px solid var(--line); background: var(--panel2); font-weight: 600;" />
+              </label>
+              <label class="fld" style="flex: 1;">
+                <span style="font-weight: 800; font-size: 13px; display: block; margin-bottom: 6px;">Hours/day</span>
+                <input id="planHours" type="number" step="0.5" min="0.5" max="12" value="2" style="width: 100%; padding: 11px 13px; border-radius: 11px; border: 1.5px solid var(--line); background: var(--panel2); font-weight: 600;" />
+              </label>
+            </div>
+            <label class="fld" style="margin-bottom: 16px; display: block;">
+              <span style="font-weight: 800; font-size: 13px; display: block; margin-bottom: 6px;">Study Focus</span>
+              <select id="planFocus" style="width: 100%; padding: 11px 13px; border-radius: 11px; border: 1.5px solid var(--line); background: var(--panel2); font-weight: 600;">
+                <option value="First-time learning">First-time learning</option>
+                <option value="Reviewing and memorizing definitions">Reviewing and memorizing definitions</option>
+                <option value="Past paper and exam practice">Past paper & exam practice</option>
+              </select>
+            </label>
+            <button id="generatePlanBtn" class="primary" style="width: 100%;">Generate My Plan</button>
+            <button id="resetPlanBtn" class="ghost hidden" style="width: 100%; margin-top: 8px;">🗑️ Delete Plan & Start Over</button>
+          </div>
+        </div>
+
+        <!-- Result Workspace -->
+        <div class="planner-result">
+          <div id="planEmptyState" class="empty">
+            <div class="empty-emoji">🗓️</div>
+            <p>No active plan. Select your classes and time limit on the left to generate one!</p>
+          </div>
+          <div id="planResult" class="hidden">
+            <!-- Checklist injected here -->
+          </div>
+        </div>
+      </div>
     </div>
   </section>
 
@@ -289,61 +363,6 @@
         <div style="flex:1"></div>
         <button id="dedupeCancel" class="ghost">Cancel</button>
         <button id="dedupeApply" class="primary hidden">Merge & delete duplicates</button>
-      </div>
-    </div>
-  </div>
-
- <!-- Study Plan Modal -->
-  <div id="planModal" class="modal hidden">
-    <div class="modal-card">
-      <div class="modal-head">
-        <h2>📅 Your Study Plan</h2>
-        <button id="closePlanModal" class="close">✕</button>
-      </div>
-      <!-- ADDED: flex: 1; min-height: 0; and increased bottom padding to 30px -->
-      <div id="planBody" class="modal-body" style="padding: 20px 22px 30px; overflow-y: auto; flex: 1; min-height: 0;">
-        
-        <!-- Input Form (Shown first) -->
-        <div id="planSetup">
-          <p class="meta" style="margin-bottom: 16px;">Select the classes you want to review, and tell me how much time you have. I'll build a day-by-day schedule for you.</p>
-          
-          <label class="fld" style="margin-bottom: 12px; display: block;">
-            <span style="font-weight: 800; font-size: 13px;">Classes to review</span>
-            <div id="planClassSelect" style="max-height: 150px; overflow-y: auto; background: var(--panel2); border: 1.5px solid var(--line); border-radius: 11px; padding: 10px; margin-top: 6px;">
-              <!-- Checkboxes injected by JS -->
-            </div>
-          </label>
-
-          <div style="display: flex; gap: 12px; margin-bottom: 12px;">
-            <label class="fld" style="flex: 1;">
-              <span style="font-weight: 800; font-size: 13px; display: block; margin-bottom: 6px;">Days until exam/goal</span>
-              <input id="planDays" type="number" min="1" max="30" value="7" style="width: 100%; padding: 11px 13px; border-radius: 11px; border: 1.5px solid var(--line); background: var(--panel2); font-weight: 600;" />
-            </label>
-            <label class="fld" style="flex: 1;">
-              <span style="font-weight: 800; font-size: 13px; display: block; margin-bottom: 6px;">Hours per day</span>
-              <input id="planHours" type="number" step="0.5" min="0.5" max="12" value="2" style="width: 100%; padding: 11px 13px; border-radius: 11px; border: 1.5px solid var(--line); background: var(--panel2); font-weight: 600;" />
-            </label>
-          </div>
-
-          <label class="fld" style="display: block;">
-            <span style="font-weight: 800; font-size: 13px; display: block; margin-bottom: 6px;">Study Focus</span>
-            <select id="planFocus" style="width: 100%; padding: 11px 13px; border-radius: 11px; border: 1.5px solid var(--line); background: var(--panel2); font-weight: 600;">
-              <option value="First-time learning">First-time learning</option>
-              <option value="Reviewing and memorizing definitions">Reviewing and memorizing definitions</option>
-              <option value="Past paper and exam practice">Past paper & exam practice</option>
-            </select>
-          </label>
-        </div>
-
-        <!-- Result View (Shown after generating) -->
-        <div id="planResult" class="hidden">
-          <!-- The JS will inject the day-by-day checklist here -->
-        </div>
-
-      </div>
-      <div class="modal-foot">
-        <button id="generatePlanBtn" class="primary">Generate My Plan</button>
-        <button id="resetPlanBtn" class="ghost hidden">Start Over</button>
       </div>
     </div>
   </div>

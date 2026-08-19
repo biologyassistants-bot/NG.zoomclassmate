@@ -79,9 +79,10 @@
         <div class="sidebar-head">
           <h2>Class recordings</h2>
           <input id="search" type="text" placeholder="Search classes…" style="margin-bottom: 8px;" />
-          <select id="studentCourseFilter" class="filter-select" title="Filter by course" style="width: 100%;">
+          <select id="studentCourseFilter" class="filter-select" title="Filter by course" style="width: 100%; margin-bottom: 8px;">
             <option value="">All courses</option>
           </select>
+          <button id="openPlanModalBtn" class="primary" style="width: 100%;">📅 Build Study Plan</button>
         </div>
         <div id="recList" class="rec-list"></div>
       </aside>
@@ -288,6 +289,60 @@
         <div style="flex:1"></div>
         <button id="dedupeCancel" class="ghost">Cancel</button>
         <button id="dedupeApply" class="primary hidden">Merge & delete duplicates</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Study Plan Modal -->
+  <div id="planModal" class="modal hidden">
+    <div class="modal-card">
+      <div class="modal-head">
+        <h2>📅 Your Study Plan</h2>
+        <button id="closePlanModal" class="close">✕</button>
+      </div>
+      <div id="planBody" class="modal-body" style="padding: 20px 22px; overflow-y: auto;">
+        
+        <!-- Input Form (Shown first) -->
+        <div id="planSetup">
+          <p class="meta" style="margin-bottom: 16px;">Select the classes you want to review, and tell me how much time you have. I'll build a day-by-day schedule for you.</p>
+          
+          <label class="fld" style="margin-bottom: 12px; display: block;">
+            <span style="font-weight: 800; font-size: 13px;">Classes to review</span>
+            <div id="planClassSelect" style="max-height: 150px; overflow-y: auto; background: var(--panel2); border: 1.5px solid var(--line); border-radius: 11px; padding: 10px; margin-top: 6px;">
+              <!-- Checkboxes injected by JS -->
+            </div>
+          </label>
+
+          <div style="display: flex; gap: 12px; margin-bottom: 12px;">
+            <label class="fld" style="flex: 1;">
+              <span style="font-weight: 800; font-size: 13px; display: block; margin-bottom: 6px;">Days until exam/goal</span>
+              <input id="planDays" type="number" min="1" max="30" value="7" style="width: 100%; padding: 11px 13px; border-radius: 11px; border: 1.5px solid var(--line); background: var(--panel2); font-weight: 600;" />
+            </label>
+            <label class="fld" style="flex: 1;">
+              <span style="font-weight: 800; font-size: 13px; display: block; margin-bottom: 6px;">Hours per day</span>
+              <input id="planHours" type="number" step="0.5" min="0.5" max="12" value="2" style="width: 100%; padding: 11px 13px; border-radius: 11px; border: 1.5px solid var(--line); background: var(--panel2); font-weight: 600;" />
+            </label>
+          </div>
+
+          <label class="fld" style="margin-bottom: 16px; display: block;">
+            <span style="font-weight: 800; font-size: 13px; display: block; margin-bottom: 6px;">Study Focus</span>
+            <select id="planFocus" style="width: 100%; padding: 11px 13px; border-radius: 11px; border: 1.5px solid var(--line); background: var(--panel2); font-weight: 600;">
+              <option value="First-time learning">First-time learning</option>
+              <option value="Reviewing and memorizing definitions">Reviewing and memorizing definitions</option>
+              <option value="Past paper and exam practice">Past paper & exam practice</option>
+            </select>
+          </label>
+        </div>
+
+        <!-- Result View (Shown after generating) -->
+        <div id="planResult" class="hidden">
+          <!-- The JS will inject the day-by-day checklist here -->
+        </div>
+
+      </div>
+      <div class="modal-foot">
+        <button id="generatePlanBtn" class="primary">Generate My Plan</button>
+        <button id="resetPlanBtn" class="ghost hidden">Start Over</button>
       </div>
     </div>
   </div>

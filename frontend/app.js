@@ -455,14 +455,18 @@ function initPlanner() {
       courseGroups[courseName].push(r);
     });
 
-    // 2. Container for Course Selection checkboxes
+    // 2. Container for Course Selection checkboxes (styled & scrollable)
     const courseSelectContainer = document.createElement('div');
-    courseSelectContainer.style.cssText = 'margin-bottom: 12px; padding-bottom: 10px; border-bottom: 1.5px solid var(--line);';
+    courseSelectContainer.style.cssText = 'margin-bottom: 14px; padding-bottom: 12px; border-bottom: 1.5px solid var(--line); background: var(--panel2); padding: 10px; border-radius: 10px; border: 1.5px solid var(--line);';
     
     const courseTitle = document.createElement('div');
     courseTitle.style.cssText = 'font-weight: 800; font-size: 13px; color: var(--brand-d); margin-bottom: 8px;';
     courseTitle.textContent = '1️⃣ Select Courses to Include:';
     courseSelectContainer.appendChild(courseTitle);
+
+    const courseListDiv = document.createElement('div');
+    courseListDiv.style.cssText = 'max-height: 140px; overflow-y: auto;';
+    courseSelectContainer.appendChild(courseListDiv);
 
     // 3. Container for Classes Selection (filtered dynamically)
     const classesSelectContainer = document.createElement('div');
@@ -516,7 +520,7 @@ function initPlanner() {
       }
     };
 
-    // Build course checkboxes
+    // Build course checkboxes inside the scrollable list container
     Object.keys(courseGroups).sort().forEach(courseName => {
       const label = document.createElement('label');
       label.style.cssText = 'display: flex; align-items: center; gap: 8px; margin-bottom: 6px; cursor: pointer;';
@@ -535,7 +539,7 @@ function initPlanner() {
 
       label.appendChild(checkbox);
       label.appendChild(span);
-      courseSelectContainer.appendChild(label);
+      courseListDiv.appendChild(label);
     });
 
     planClassSelect.appendChild(courseSelectContainer);

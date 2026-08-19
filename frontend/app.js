@@ -43,10 +43,8 @@ document.addEventListener("DOMContentLoaded", async () => {
   const savedTeacherPasscode = localStorage.getItem("ng_teacherPasscode");
 
   if (savedTeacherPasscode) {
-    // Auto-login teacher
     teacherLogin(savedTeacherPasscode);
   } else if (savedStudentToken) {
-    // Auto-login student
     state.token = savedStudentToken;
     state.name = savedStudentName || "Student";
     
@@ -58,7 +56,6 @@ document.addEventListener("DOMContentLoaded", async () => {
       await loadRecordings();
       switchStudentTab("Dash");
     } catch (e) {
-      // If token expired or server error, clean up and go to landing
       signOut();
     }
   }
@@ -539,20 +536,37 @@ function renderPlan() {
   });
 
   const pct = totalTasks === 0 ? 0 : Math.round((completedTasks / totalTasks) * 100);
+  const isComplete = totalTasks > 0 && completedTasks === totalTasks;
+
   const progressHtml = `
     <div style="margin-bottom: 20px; background: var(--panel); border: 1px solid var(--line); padding: 16px; border-radius: 14px; box-shadow: var(--shadow-sm);">
-      <div style="display: flex; justify-content: space-between; font-weight: 900; font-size: 15px; margin-bottom: 10px;">
+      <div style="display: flex; justify-content: space-between; align-items: center; font-weight: 900; font-size: 15px; margin-bottom: 10px;">
         <span>Plan Progress</span>
         <span style="color: var(--brand-d);">${pct}% Completed</span>
       </div>
-      <div class="bulk-bar" style="max-width: 100%; height: 14px; background: var(--bg2);">
+      <div class="bulk-bar" style="max-width: 100%; height: 14px; background: var(--bg2); margin-bottom: 14px;">
         <div class="bulk-bar-fill" style="width: ${pct}%; border-radius: 20px;"></div>
       </div>
+      
+      <button id="finishPlanBtn" class="primary" ${isComplete ? '' : 'disabled'} style="width: 100%; opacity: ${isComplete ? '1' : '0.5'}; cursor: ${isComplete ? 'pointer' : 'not-allowed'}; background: ${isComplete ? 'linear-gradient(135deg, var(--ok), #0ca678)' : 'var(--line)'};">
+        ${isComplete ? '✅ Plan Completed' : '🔒 Complete all tasks to finish plan'}
+      </button>
     </div>
   `;
 
   planResult.innerHTML = progressHtml;
   planResult.appendChild(planContainer);
+
+  const finishBtn = document.getElementById('finishPlanBtn');
+  if (finishBtn && isComplete) {
+    finishBtn.addEventListener('click', () => {
+      if (confirm("Congratulations on completing your study plan! 🎉 Would you like to wrap this up and clear it so you can start a new one?")) {
+        currentStudyPlan = null;
+        localStorage.removeItem('studyPlan_NGClassMate');
+        initPlanner();
+      }
+    });
+  }
 }
 
 window.togglePlanTask = function(dIdx, tIdx) {
@@ -1435,3 +1449,203 @@ loadBranding();
   document.addEventListener("DOMContentLoaded", injectImportButton);
   injectImportButton();
 })();
+
+/* =========================================================
+   STUDY PLAN FEATURE (DEDICATED PANE)
+   ========================================================= */
+
+let currentStudyPlan = JSON.parse(localStorage.getItem('studyPlan_NGClassMate') || 'null');
+
+const planClassSelect = document.getElementById('planClassSelect');
+const generatePlanBtn = document.getElementById('generatePlanBtn');
+const resetPlanBtn = document.getElementById('resetPlanBtn');
+const planEmptyState = document.getElementById('planEmptyState');
+const planResult = document.getElementById('planResult');
+
+function initPlanner() {
+  if (!planClassSelect) return;
+  planClassSelect.innerHTML = '';
+  if (state.recordings.length === 0) {
+    planClassSelect.innerHTML = '<p class="meta">No classes available.</p>';
+  } else {
+    state.recordings.forEach(r => {
+      const label = document.createElement('label');
+      label.style.display = 'flex';
+      label.style.alignItems = 'center';
+      label.style.gap = '8px';
+      label.style.marginBottom = '8px';
+      label.style.cursor = 'pointer';
+      
+      label.innerHTML = `
+        <input type="checkbox" value="${r.id}" style="transform: scale(1.2); margin-top: 2px;" /> 
+        <span style="font-size: 13.5px; font-weight: 700; color: var(--text);">${escapeHtml(r.title)}</span>
+      `;
+      planClassSelect.appendChild(label);
+    });
+  }
+
+  const setupDiv = document.getElementById('planSetup');
+  const formEls = setupDiv ? setupDiv.querySelectorAll('input, select') : [];
+  
+  if (currentStudyPlan) {
+    formEls.forEach(el => el.disabled = true);
+    if(generatePlanBtn) generatePlanBtn.classList.add('hidden');
+    if(resetPlanBtn) resetPlanBtn.classList.remove('hidden');
+    if(planEmptyState) planEmptyState.classList.add('hidden');
+    if(planResult) planResult.classList.remove('hidden');
+    renderPlan();
+  } else {
+    formEls.forEach(el => el.disabled = false);
+    if(generatePlanBtn) generatePlanBtn.classList.remove('hidden');
+    if(resetPlanBtn) resetPlanBtn.classList.add('hidden');
+    if(planEmptyState) planEmptyState.classList.remove('hidden');
+    if(planResult) planResult.classList.add('hidden');
+  }
+}
+
+if (generatePlanBtn) {
+  generatePlanBtn.addEventListener('click', async () => {
+    const selectedIds = Array.from(planClassSelect.querySelectorAll('input:checked')).map(cb => cb.value);
+    
+    if (selectedIds.length === 0) {
+      alert("Please select at least one class to review.");
+      return;
+    }
+
+    const days = document.getElementById('planDays').value;
+    const hours = document.getElementById('planHours').value;
+    const focus = document.getElementById('planFocus').value;
+
+    const btnOrig = generatePlanBtn.innerText;
+    generatePlanBtn.innerText = "⏳ Building your schedule...";
+    generatePlanBtn.disabled = true;
+
+    try {
+      const res = await fetch(`${API}/api/student/plan`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          recording_ids: selectedIds,
+          days: parseInt(days),
+          hours_per_day: parseFloat(hours),
+          focus: focus,
+          token: state.token
+        })
+      });
+
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to generate plan");
+
+      data.plan.forEach(day => {
+        day.tasks.forEach(task => task.completed = false);
+      });
+
+      currentStudyPlan = data.plan;
+      localStorage.setItem('studyPlan_NGClassMate', JSON.stringify(currentStudyPlan));
+      
+      initPlanner();
+
+    } catch (err) {
+      alert(err.message);
+    } finally {
+      generatePlanBtn.innerText = btnOrig;
+      generatePlanBtn.disabled = false;
+    }
+  });
+}
+
+function renderPlan() {
+  if (!planResult) return;
+  planResult.innerHTML = '';
+  let totalTasks = 0;
+  let completedTasks = 0;
+
+  const planContainer = document.createElement('div');
+  planContainer.style.display = 'flex';
+  planContainer.style.flexDirection = 'column';
+  planContainer.style.gap = '16px';
+
+  currentStudyPlan.forEach((day, dIdx) => {
+    const dayCard = document.createElement('div');
+    dayCard.className = 'q-block'; 
+    
+    const quoteHtml = day.quote ? `
+      <div class="explain" style="margin-top:0; margin-bottom:12px; border-left: 3px solid var(--brand); font-style: italic; color: var(--brand-d);">
+        💡 "${escapeHtml(day.quote)}"
+      </div>` : '';
+
+    let tasksHtml = '';
+    day.tasks.forEach((task, tIdx) => {
+      totalTasks++;
+      if (task.completed) completedTasks++;
+      
+      tasksHtml += `
+        <label style="display: flex; align-items: flex-start; gap: 12px; padding: 12px; background: var(--panel); border: 1.5px solid var(--line); border-radius: 12px; margin-bottom: 8px; cursor: pointer; transition: 0.15s; opacity: ${task.completed ? '0.55' : '1'};">
+          <input type="checkbox" style="margin-top: 3px; transform: scale(1.3);" onchange="togglePlanTask(${dIdx}, ${tIdx})" ${task.completed ? 'checked' : ''} />
+          <div>
+            <strong style="display:block; font-size: 14.5px; margin-bottom: 3px; color: ${task.completed ? 'var(--muted)' : 'var(--text)'};">
+              ${escapeHtml(task.title)} <span class="meta" style="font-weight:800; color: var(--brand-d);">(${task.est_minutes}m)</span>
+            </strong>
+            <span style="font-size: 13px; color: var(--muted); font-weight:600; line-height: 1.4; display: block;">${escapeHtml(task.description)}</span>
+          </div>
+        </label>
+      `;
+    });
+
+    dayCard.innerHTML = `
+      <div class="q-title"><span class="q-num" style="padding: 4px 12px; font-size: 13px;">Day ${day.day}</span></div>
+      ${quoteHtml}
+      ${tasksHtml}
+    `;
+    planContainer.appendChild(dayCard);
+  });
+
+  const pct = totalTasks === 0 ? 0 : Math.round((completedTasks / totalTasks) * 100);
+  const isComplete = totalTasks > 0 && completedTasks === totalTasks;
+
+  const progressHtml = `
+    <div style="margin-bottom: 20px; background: var(--panel); border: 1px solid var(--line); padding: 16px; border-radius: 14px; box-shadow: var(--shadow-sm);">
+      <div style="display: flex; justify-content: space-between; align-items: center; font-weight: 900; font-size: 15px; margin-bottom: 10px;">
+        <span>Plan Progress</span>
+        <span style="color: var(--brand-d);">${pct}% Completed</span>
+      </div>
+      <div class="bulk-bar" style="max-width: 100%; height: 14px; background: var(--bg2); margin-bottom: 14px;">
+        <div class="bulk-bar-fill" style="width: ${pct}%; border-radius: 20px;"></div>
+      </div>
+      
+      <button id="finishPlanBtn" class="primary" ${isComplete ? '' : 'disabled'} style="width: 100%; opacity: ${isComplete ? '1' : '0.5'}; cursor: ${isComplete ? 'pointer' : 'not-allowed'}; background: ${isComplete ? 'linear-gradient(135deg, var(--ok), #0ca678)' : 'var(--line)'};">
+        ${isComplete ? '✅ Plan Completed' : '🔒 Complete all tasks to finish plan'}
+      </button>
+    </div>
+  `;
+
+  planResult.innerHTML = progressHtml;
+  planResult.appendChild(planContainer);
+
+  const finishBtn = document.getElementById('finishPlanBtn');
+  if (finishBtn && isComplete) {
+    finishBtn.addEventListener('click', () => {
+      if (confirm("Congratulations on completing your study plan! 🎉 Would you like to wrap this up and clear it so you can start a new one?")) {
+        currentStudyPlan = null;
+        localStorage.removeItem('studyPlan_NGClassMate');
+        initPlanner();
+      }
+    });
+  }
+}
+
+window.togglePlanTask = function(dIdx, tIdx) {
+  currentStudyPlan[dIdx].tasks[tIdx].completed = !currentStudyPlan[dIdx].tasks[tIdx].completed;
+  localStorage.setItem('studyPlan_NGClassMate', JSON.stringify(currentStudyPlan));
+  renderPlan(); 
+};
+
+if (resetPlanBtn) {
+  resetPlanBtn.addEventListener('click', () => {
+    if(confirm("Are you sure you want to delete your current plan and start over?")) {
+      currentStudyPlan = null;
+      localStorage.removeItem('studyPlan_NGClassMate');
+      initPlanner(); 
+    }
+  });
+}

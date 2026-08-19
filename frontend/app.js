@@ -1165,3 +1165,218 @@ loadBranding();
   document.addEventListener("DOMContentLoaded", injectImportButton);
   injectImportButton();
 })();
+
+/* =========================================================
+   STUDY PLAN FEATURE
+   ========================================================= */
+
+let currentStudyPlan = JSON.parse(localStorage.getItem('studyPlan_NGClassMate') || 'null');
+
+const planModal = document.getElementById('planModal');
+const openPlanModalBtn = document.getElementById('openPlanModalBtn');
+const closePlanModal = document.getElementById('closePlanModal');
+const planSetup = document.getElementById('planSetup');
+const planResult = document.getElementById('planResult');
+const planClassSelect = document.getElementById('planClassSelect');
+const generatePlanBtn = document.getElementById('generatePlanBtn');
+const resetPlanBtn = document.getElementById('resetPlanBtn');
+
+// 1. Open modal and dynamically load the student's available classes
+if (openPlanModalBtn) {
+  openPlanModalBtn.addEventListener('click', () => {
+    // Grab the classes currently visible in the student's sidebar
+    const recElements = document.querySelectorAll('.rec-item');
+    planClassSelect.innerHTML = '';
+    
+    if (recElements.length === 0) {
+      planClassSelect.innerHTML = '<p class="meta">No classes available to select.</p>';
+    } else {
+      recElements.forEach(el => {
+        const id = el.dataset.id || el.querySelector('.t').innerText; // Using title as fallback if dataset.id isn't explicitly set in HTML.
+        const title = el.querySelector('.t').innerText;
+        
+        // Find the actual ID from the state.recordings list based on the title if needed
+        const recObj = state.recordings.find(r => (r.title + (r.has_notes ? ' 📎' : '')) === title || r.title === title);
+        const actualId = recObj ? recObj.id : id;
+
+        const label = document.createElement('label');
+        label.style.display = 'flex';
+        label.style.alignItems = 'center';
+        label.style.gap = '8px';
+        label.style.marginBottom = '8px';
+        label.style.cursor = 'pointer';
+        
+        // Build the checkbox
+        label.innerHTML = `
+          <input type="checkbox" value="${actualId}" checked style="transform: scale(1.2); margin-top: 2px;" /> 
+          <span style="font-size: 13.5px; font-weight: 700; color: var(--text);">${title}</span>
+        `;
+        planClassSelect.appendChild(label);
+      });
+    }
+
+    // If they already have a plan saved, show it. Otherwise, show the setup form.
+    if (currentStudyPlan) {
+      renderPlan();
+    } else {
+      planSetup.classList.remove('hidden');
+      planResult.classList.add('hidden');
+      resetPlanBtn.classList.add('hidden');
+      generatePlanBtn.classList.remove('hidden');
+    }
+    
+    planModal.classList.remove('hidden');
+  });
+}
+
+if (closePlanModal) {
+  closePlanModal.addEventListener('click', () => planModal.classList.add('hidden'));
+}
+
+// 2. Generate Plan (Talk to the backend AI)
+if (generatePlanBtn) {
+  generatePlanBtn.addEventListener('click', async () => {
+    const selectedIds = Array.from(planClassSelect.querySelectorAll('input:checked')).map(cb => cb.value);
+    
+    if (selectedIds.length === 0) {
+      alert("Please select at least one class to review.");
+      return;
+    }
+
+    const days = document.getElementById('planDays').value;
+    const hours = document.getElementById('planHours').value;
+    const focus = document.getElementById('planFocus').value;
+
+    const btnOrig = generatePlanBtn.innerText;
+    generatePlanBtn.innerText = "⏳ Building your schedule...";
+    generatePlanBtn.disabled = true;
+
+    try {
+      const res = await fetch(`${API}/api/student/plan`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          recording_ids: selectedIds,
+          days: parseInt(days),
+          hours_per_day: parseFloat(hours),
+          focus: focus,
+          token: state.token
+        })
+      });
+
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to generate plan");
+
+      // Inject a 'completed' boolean into every task so we can track checkboxes
+      data.plan.forEach(day => {
+        day.tasks.forEach(task => task.completed = false);
+      });
+
+      // Save to memory and browser storage
+      currentStudyPlan = data.plan;
+      localStorage.setItem('studyPlan_NGClassMate', JSON.stringify(currentStudyPlan));
+      
+      renderPlan();
+
+    } catch (err) {
+      alert(err.message);
+    } finally {
+      generatePlanBtn.innerText = btnOrig;
+      generatePlanBtn.disabled = false;
+    }
+  });
+}
+
+// 3. Render the Plan and Checklists
+function renderPlan() {
+  planSetup.classList.add('hidden');
+  generatePlanBtn.classList.add('hidden');
+  planResult.classList.remove('hidden');
+  resetPlanBtn.classList.remove('hidden');
+
+  planResult.innerHTML = '';
+
+  let totalTasks = 0;
+  let completedTasks = 0;
+
+  const planContainer = document.createElement('div');
+  planContainer.style.display = 'flex';
+  planContainer.style.flexDirection = 'column';
+  planContainer.style.gap = '16px';
+
+  currentStudyPlan.forEach((day, dIdx) => {
+    const dayCard = document.createElement('div');
+    dayCard.className = 'q-block'; // Reusing your nice border box styling
+    
+    // The AI's motivational quote
+    const quoteHtml = day.quote ? `
+      <div class="explain" style="margin-top:0; margin-bottom:12px; border-left: 3px solid var(--brand); font-style: italic; color: var(--brand-d);">
+        💡 "${escapeHtml(day.quote)}"
+      </div>` : '';
+
+    // The Tasks
+    let tasksHtml = '';
+    day.tasks.forEach((task, tIdx) => {
+      totalTasks++;
+      if (task.completed) completedTasks++;
+      
+      tasksHtml += `
+        <label style="display: flex; align-items: flex-start; gap: 12px; padding: 12px; background: var(--panel); border: 1.5px solid var(--line); border-radius: 12px; margin-bottom: 8px; cursor: pointer; transition: 0.15s; opacity: ${task.completed ? '0.55' : '1'};">
+          <input type="checkbox" style="margin-top: 3px; transform: scale(1.3);" onchange="togglePlanTask(${dIdx}, ${tIdx})" ${task.completed ? 'checked' : ''} />
+          <div>
+            <strong style="display:block; font-size: 14.5px; margin-bottom: 3px; color: ${task.completed ? 'var(--muted)' : 'var(--text)'};">
+              ${escapeHtml(task.title)} <span class="meta" style="font-weight:800; color: var(--brand-d);">(${task.est_minutes}m)</span>
+            </strong>
+            <span style="font-size: 13px; color: var(--muted); font-weight:600; line-height: 1.4; display: block;">${escapeHtml(task.description)}</span>
+          </div>
+        </label>
+      `;
+    });
+
+    dayCard.innerHTML = `
+      <div class="q-title"><span class="q-num" style="padding: 4px 12px; font-size: 13px;">Day ${day.day}</span></div>
+      ${quoteHtml}
+      ${tasksHtml}
+    `;
+    planContainer.appendChild(dayCard);
+  });
+
+  // Calculate and draw the Progress Bar
+  const pct = totalTasks === 0 ? 0 : Math.round((completedTasks / totalTasks) * 100);
+  const progressHtml = `
+    <div style="margin-bottom: 20px; background: var(--panel); border: 1px solid var(--line); padding: 16px; border-radius: 14px; box-shadow: var(--shadow-sm);">
+      <div style="display: flex; justify-content: space-between; font-weight: 900; font-size: 15px; margin-bottom: 10px;">
+        <span>Plan Progress</span>
+        <span style="color: var(--brand-d);">${pct}% Completed</span>
+      </div>
+      <div class="bulk-bar" style="max-width: 100%; height: 14px; background: var(--bg2);">
+        <div class="bulk-bar-fill" style="width: ${pct}%; border-radius: 20px;"></div>
+      </div>
+    </div>
+  `;
+
+  planResult.innerHTML = progressHtml;
+  planResult.appendChild(planContainer);
+}
+
+// 4. Toggle a checkbox and save progress
+window.togglePlanTask = function(dIdx, tIdx) {
+  currentStudyPlan[dIdx].tasks[tIdx].completed = !currentStudyPlan[dIdx].tasks[tIdx].completed;
+  localStorage.setItem('studyPlan_NGClassMate', JSON.stringify(currentStudyPlan));
+  renderPlan(); // Re-render to update the progress bar and fade the checked item
+};
+
+// 5. Delete the plan and start over
+if (resetPlanBtn) {
+  resetPlanBtn.addEventListener('click', () => {
+    if(confirm("Are you sure you want to delete your current plan and start over?")) {
+      currentStudyPlan = null;
+      localStorage.removeItem('studyPlan_NGClassMate');
+      
+      planSetup.classList.remove('hidden');
+      planResult.classList.add('hidden');
+      resetPlanBtn.classList.add('hidden');
+      generatePlanBtn.classList.remove('hidden');
+    }
+  });
+}

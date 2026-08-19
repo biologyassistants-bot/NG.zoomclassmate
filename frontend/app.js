@@ -32,7 +32,7 @@ function renderBotText(text) {
     const ul = line.match(/^\s*[-*]\s+(.*)/);
     const ol = line.match(/^\s*\d+\.\s+(.*)/);
     if (ul) { if (!inUl) { html += "<ul>"; inUl = true; } if (inOl) { html += "</ol>"; inOl = false; } html += `<li>${ul[1]}</li>`; }
-    else if (ol) { if (!inOl) { html += "<ol>"; inOl = true; } if (inUl) { html += "</ul>"; inUl = false; } html += `<li>${ol[1]}</li>`; }
+    else if (ol) { if (!inOl) { html += "<ol>"; inUl = true; } if (inUl) { html += "</ul>"; inUl = false; } html += `<li>${ol[1]}</li>`; }
     else { if (inUl) { html += "</ul>"; inUl = false; } if (inOl) { html += "</ol>"; inOl = false; } html += line + "\n"; }
   }
   if (inUl) html += "</ul>"; if (inOl) html += "</ol>";
@@ -576,7 +576,7 @@ function renderPlan() {
   const isComplete = totalTasks > 0 && completedTasks === totalTasks;
 
   const progressHtml = `
-    <div style="margin-bottom: 20px; background: var(--panel); border: 1px solid var(--line); padding: 16px; border-radius: 14px; box-shadow: var(--shadow-sm);">
+    <div style="margin-bottom: 20px; background: var(--panel); border: 1.5px solid var(--line); padding: 16px; border-radius: 14px; box-shadow: var(--shadow-sm);">
       <div style="display: flex; justify-content: space-between; align-items: center; font-weight: 900; font-size: 15px; margin-bottom: 10px;">
         <span>Plan Progress</span>
         <span style="color: var(--brand-d);">${pct}% Completed</span>

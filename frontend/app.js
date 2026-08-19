@@ -1396,10 +1396,23 @@ async function loadQuestions() {
   box.innerHTML = "";
   const qs = data.questions || [];
   if (!qs.length) { box.innerHTML = '<div class="q-empty">No questions yet. They\'ll show up here as students ask.</div>'; return; }
+  
   qs.forEach(q => {
-    const row = document.createElement("div"); row.className = "q-row";
-    row.innerHTML = `<div class="q-q">${escapeHtml(q.question)}</div>
-      <div class="q-meta"><span class="q-who">${escapeHtml(q.student)}</span> · ${escapeHtml(q.recording_title)} (${escapeHtml(q.unit)}) · ${escapeHtml(q.time)}</div>`;
+    const row = document.createElement("div"); 
+    row.className = "q-row";
+    row.style.cssText = "display: flex; flex-direction: column; gap: 8px; padding: 14px; background: var(--panel); border: 1.5px solid var(--line); border-radius: 12px; margin-bottom: 12px;";
+    
+    row.innerHTML = `
+      <div class="q-meta" style="font-weight: 700; color: var(--brand-d);">
+        👤 ${escapeHtml(q.student)} · 📁 ${escapeHtml(q.recording_title)} (${escapeHtml(q.unit)}) · 🕒 ${escapeHtml(q.time)}
+      </div>
+      <div style="font-size: 14px; font-weight: 800; color: var(--text);">
+        ❓ Q: ${escapeHtml(q.question)}
+      </div>
+      <div style="font-size: 13.5px; color: var(--muted); background: var(--bg); padding: 10px; border-radius: 8px; border-left: 3px solid var(--brand); line-height: 1.4;">
+        🤖 <strong>AI Answer:</strong> ${escapeHtml(q.answer || "No answer recorded.")}
+      </div>
+    `;
     box.appendChild(row);
   });
 }

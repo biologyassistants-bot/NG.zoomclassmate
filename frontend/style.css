@@ -417,6 +417,44 @@ button{font-family:inherit;cursor:pointer;border:none}
    Responsive Design for Mobile, Tablet, and iPad
    ========================================================= */
 
+/* ---------- student 3-tab layout ---------- */
+.student-pane {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.planner-layout {
+  display: flex;
+  gap: 24px;
+  align-items: flex-start;
+}
+
+.planner-setup {
+  width: 320px;
+  flex-shrink: 0;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 20px;
+  box-shadow: var(--shadow-sm);
+  position: sticky;
+  top: 0;
+}
+
+.planner-result {
+  flex: 1;
+  background: var(--bg);
+  border-radius: 16px;
+}
+
+/* Make sure topbar scroll works for students on mobile too */
+@media (max-width: 820px) {
+  .planner-layout { flex-direction: column; }
+  .planner-setup { width: 100%; position: static; }
+}
+
 @media (max-width: 1024px) {
   /* Tablet / iPad / Mobile layout split */
   .layout { flex-direction: column; }

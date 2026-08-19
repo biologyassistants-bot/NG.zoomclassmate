@@ -1192,10 +1192,10 @@ if (openPlanModalBtn) {
       planClassSelect.innerHTML = '<p class="meta">No classes available to select.</p>';
     } else {
       recElements.forEach(el => {
-        const id = el.dataset.id || el.querySelector('.t').innerText; // Using title as fallback if dataset.id isn't explicitly set in HTML.
+        const id = el.dataset.id || el.querySelector('.t').innerText; 
         const title = el.querySelector('.t').innerText;
         
-        // Find the actual ID from the state.recordings list based on the title if needed
+        // Find the actual ID from the state.recordings list
         const recObj = state.recordings.find(r => (r.title + (r.has_notes ? ' 📎' : '')) === title || r.title === title);
         const actualId = recObj ? recObj.id : id;
 
@@ -1206,9 +1206,9 @@ if (openPlanModalBtn) {
         label.style.marginBottom = '8px';
         label.style.cursor = 'pointer';
         
-        // Build the checkbox
+        // Build the checkbox (Removed "checked" so they default to unselected)
         label.innerHTML = `
-          <input type="checkbox" value="${actualId}" checked style="transform: scale(1.2); margin-top: 2px;" /> 
+          <input type="checkbox" value="${actualId}" style="transform: scale(1.2); margin-top: 2px;" /> 
           <span style="font-size: 13.5px; font-weight: 700; color: var(--text);">${title}</span>
         `;
         planClassSelect.appendChild(label);

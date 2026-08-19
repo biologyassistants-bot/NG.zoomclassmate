@@ -293,14 +293,15 @@
     </div>
   </div>
 
-  <!-- Study Plan Modal -->
+ <!-- Study Plan Modal -->
   <div id="planModal" class="modal hidden">
     <div class="modal-card">
       <div class="modal-head">
         <h2>📅 Your Study Plan</h2>
         <button id="closePlanModal" class="close">✕</button>
       </div>
-      <div id="planBody" class="modal-body" style="padding: 20px 22px; overflow-y: auto;">
+      <!-- ADDED: flex: 1; min-height: 0; and increased bottom padding to 30px -->
+      <div id="planBody" class="modal-body" style="padding: 20px 22px 30px; overflow-y: auto; flex: 1; min-height: 0;">
         
         <!-- Input Form (Shown first) -->
         <div id="planSetup">
@@ -324,7 +325,7 @@
             </label>
           </div>
 
-          <label class="fld" style="margin-bottom: 16px; display: block;">
+          <label class="fld" style="display: block;">
             <span style="font-weight: 800; font-size: 13px; display: block; margin-bottom: 6px;">Study Focus</span>
             <select id="planFocus" style="width: 100%; padding: 11px 13px; border-radius: 11px; border: 1.5px solid var(--line); background: var(--panel2); font-weight: 600;">
               <option value="First-time learning">First-time learning</option>

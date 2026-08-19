@@ -1,27 +1,5 @@
 const API = "";
 let state = { name: "", recordings: [], current: null, passcode: "", token: "" };
-// ---------- Auto-Login Check ----------
-document.addEventListener("DOMContentLoaded", async () => {
-  const savedStudentToken = localStorage.getItem("ng_studentToken");
-  const savedStudentName = localStorage.getItem("ng_studentName");
-  const savedTeacherPasscode = localStorage.getItem("ng_teacherPasscode");
-
-  if (savedTeacherPasscode) {
-    // Auto-login teacher
-    teacherLogin(savedTeacherPasscode);
-  } else if (savedStudentToken) {
-    // Auto-login student
-    state.token = savedStudentToken;
-    state.name = savedStudentName || "Student";
-    
-    if(el("whoName")) el("whoName").textContent = state.name;
-    if(el("dashName")) el("dashName").textContent = state.name;
-    
-    show("main");
-    await loadRecordings();
-    switchStudentTab("Dash");
-  }
-});
 
 // Local tracking for student dashboard stats
 let studentStats = JSON.parse(localStorage.getItem('studentStats_NGClassMate') || '{"questions":0, "quizzes":0}');
@@ -58,6 +36,34 @@ function saveStudentStats() {
   localStorage.setItem('studentStats_NGClassMate', JSON.stringify(studentStats));
 }
 
+// ---------- Auto-Login Check on Refresh ----------
+document.addEventListener("DOMContentLoaded", async () => {
+  const savedStudentToken = localStorage.getItem("ng_studentToken");
+  const savedStudentName = localStorage.getItem("ng_studentName");
+  const savedTeacherPasscode = localStorage.getItem("ng_teacherPasscode");
+
+  if (savedTeacherPasscode) {
+    // Auto-login teacher
+    teacherLogin(savedTeacherPasscode);
+  } else if (savedStudentToken) {
+    // Auto-login student
+    state.token = savedStudentToken;
+    state.name = savedStudentName || "Student";
+    
+    if(el("whoName")) el("whoName").textContent = state.name;
+    if(el("dashName")) el("dashName").textContent = state.name;
+    
+    show("main");
+    try {
+      await loadRecordings();
+      switchStudentTab("Dash");
+    } catch (e) {
+      // If token expired or server error, clean up and go to landing
+      signOut();
+    }
+  }
+});
+
 // ---------- landing / role nav ----------
 el("roleStudent").addEventListener("click", () => { show("gate"); el("emailInput").focus(); });
 el("roleTeacher").addEventListener("click", () => { show("teacherGate"); el("passInput").focus(); });
@@ -80,7 +86,6 @@ async function enter() {
     state.name = data.name;
     state.token = data.token;
     
-    // SAVE TO LOCAL STORAGE
     localStorage.setItem("ng_studentToken", data.token);
     localStorage.setItem("ng_studentName", data.name);
     
@@ -96,13 +101,25 @@ async function enter() {
     errEl.classList.remove("hidden");
   }
 }
+el("enterBtn").addEventListener("click", enter);
+el("emailInput").addEventListener("keydown", e => { if (e.key === "Enter") el("passwordInput").focus(); });
+el("passwordInput").addEventListener("keydown", e => { if (e.key === "Enter") enter(); });
 
 // ---------- teacher gate ----------
-async function teacherLogin(savedPasscode = null) {
+async function teacherLogin(passcodeOverride = null) {
   const btn = el("passBtn");
   const errEl = el("passErr");
-  const p = savedPasscode || el("passInput").value.trim();
-  if (!p) { errEl.textContent = "Please type your passcode."; errEl.classList.remove("hidden"); return; }
+  const passInputEl = el("passInput");
+  
+  const p = passcodeOverride || (passInputEl ? passInputEl.value.trim() : "");
+  
+  if (!p) { 
+    if(errEl) {
+      errEl.textContent = "Please type your passcode."; 
+      errEl.classList.remove("hidden"); 
+    }
+    return; 
+  }
 
   if(btn) {
     btn.disabled = true;
@@ -119,16 +136,13 @@ async function teacherLogin(savedPasscode = null) {
     
     if (res.ok && data.ok) {
       state.passcode = p;
-      
-      // SAVE TO LOCAL STORAGE
       localStorage.setItem("ng_teacherPasscode", p);
       
       if(errEl) errEl.classList.add("hidden");
       show("teacher");
       loadTeacherRecordings();
     } else {
-      // If auto-login fails (e.g., changed passcode), clear it
-      if (savedPasscode) localStorage.removeItem("ng_teacherPasscode");
+      if (passcodeOverride) localStorage.removeItem("ng_teacherPasscode");
       
       if(errEl) {
         errEl.textContent = res.status === 401 ? "Wrong passcode. The default is teach123." : `Login failed (server responded ${res.status}).`;
@@ -147,6 +161,8 @@ async function teacherLogin(savedPasscode = null) {
     }
   }
 }
+el("passBtn").addEventListener("click", () => teacherLogin());
+el("passInput").addEventListener("keydown", e => { if (e.key === "Enter") teacherLogin(); });
 
 // ================= STUDENT TABS & DASHBOARD =================
 el("tabStudentDash").addEventListener("click", () => switchStudentTab("Dash"));
@@ -179,7 +195,6 @@ function renderStudentDashboard() {
   const planPct = calculatePlanProgress();
   const statsBar = el("studentStatsBar");
   
-  // Calculate unique courses enrolled based on visible recordings
   const courses = new Set(state.recordings.map(r => r.unit || "Unassigned"));
   
   const cards = [
@@ -309,7 +324,6 @@ el("quizBtn").addEventListener("click", generateQuiz);
 
 async function generateQuiz() {
   if (!state.current) return;
-  // Use existing quizModal styling, ensure it opens over the whole screen
   el("quizModal").classList.remove("hidden");
   el("submitQuiz").classList.add("hidden"); el("retryQuiz").classList.add("hidden");
   el("quizBody").innerHTML = '<div class="typing">Creating your quiz from the recording <span class="dot">●</span><span class="dot">●</span><span class="dot">●</span></div>';
@@ -323,7 +337,6 @@ async function generateQuiz() {
     quizData = data.questions; 
     renderQuiz();
     
-    // Log stat
     studentStats.quizzes++;
     saveStudentStats();
   } catch (e) { el("quizBody").innerHTML = '<p>Could not reach the server. Please try again.</p>'; }
@@ -388,7 +401,7 @@ const planEmptyState = document.getElementById('planEmptyState');
 const planResult = document.getElementById('planResult');
 
 function initPlanner() {
-  // Populate the classes list based on what the student currently has available
+  if (!planClassSelect) return;
   planClassSelect.innerHTML = '';
   if (state.recordings.length === 0) {
     planClassSelect.innerHTML = '<p class="meta">No classes available.</p>';
@@ -401,7 +414,6 @@ function initPlanner() {
       label.style.marginBottom = '8px';
       label.style.cursor = 'pointer';
       
-      // Default to unselected
       label.innerHTML = `
         <input type="checkbox" value="${r.id}" style="transform: scale(1.2); margin-top: 2px;" /> 
         <span style="font-size: 13.5px; font-weight: 700; color: var(--text);">${escapeHtml(r.title)}</span>
@@ -410,22 +422,22 @@ function initPlanner() {
     });
   }
 
-  // Toggle UI based on whether they have an active plan
-  const formEls = document.getElementById('planSetup').querySelectorAll('input, select');
+  const setupDiv = document.getElementById('planSetup');
+  const formEls = setupDiv ? setupDiv.querySelectorAll('input, select') : [];
   
   if (currentStudyPlan) {
     formEls.forEach(el => el.disabled = true);
-    generatePlanBtn.classList.add('hidden');
-    resetPlanBtn.classList.remove('hidden');
-    planEmptyState.classList.add('hidden');
-    planResult.classList.remove('hidden');
+    if(generatePlanBtn) generatePlanBtn.classList.add('hidden');
+    if(resetPlanBtn) resetPlanBtn.classList.remove('hidden');
+    if(planEmptyState) planEmptyState.classList.add('hidden');
+    if(planResult) planResult.classList.remove('hidden');
     renderPlan();
   } else {
     formEls.forEach(el => el.disabled = false);
-    generatePlanBtn.classList.remove('hidden');
-    resetPlanBtn.classList.add('hidden');
-    planEmptyState.classList.remove('hidden');
-    planResult.classList.add('hidden');
+    if(generatePlanBtn) generatePlanBtn.classList.remove('hidden');
+    if(resetPlanBtn) resetPlanBtn.classList.add('hidden');
+    if(planEmptyState) planEmptyState.classList.remove('hidden');
+    if(planResult) planResult.classList.add('hidden');
   }
 }
 
@@ -469,7 +481,7 @@ if (generatePlanBtn) {
       currentStudyPlan = data.plan;
       localStorage.setItem('studyPlan_NGClassMate', JSON.stringify(currentStudyPlan));
       
-      initPlanner(); // Re-initialize the view to swap to active mode
+      initPlanner();
 
     } catch (err) {
       alert(err.message);
@@ -481,6 +493,7 @@ if (generatePlanBtn) {
 }
 
 function renderPlan() {
+  if (!planResult) return;
   planResult.innerHTML = '';
   let totalTasks = 0;
   let completedTasks = 0;
@@ -958,7 +971,6 @@ async function loadTeacherRecordings() {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ passcode: state.passcode })
   });
   const data = await res.json();
-  // remember original array order as "date added" (Zoom ingest appends newest last)
   teacherRecordings = (data.recordings || []).map((r, i) => ({ ...r, _order: i }));
   populateCourseFilter(teacherRecordings);
   applyRecFilters();
@@ -970,7 +982,6 @@ function populateCourseFilter(list) {
   const units = Array.from(new Set(list.map(r => r.unit || "Unassigned"))).sort();
   sel.innerHTML = '<option value="">All courses</option>' +
     units.map(u => `<option value="${escapeHtml(u)}">${escapeHtml(u)}</option>`).join("");
-  // keep the previous selection if it still exists
   if (current && units.includes(current)) sel.value = current;
 }
 
@@ -1068,7 +1079,6 @@ function renderTeacherRecordings(list) {
     const deleteBtn = row.querySelector(".delete-btn");
     let visible = r.visible;
 
-    // generate / regenerate summary + topics
     summaryBtn.addEventListener("click", async () => {
       if (summaryBtn.disabled) return;
       summaryBtn.disabled = true;
@@ -1091,7 +1101,6 @@ function renderTeacherRecordings(list) {
       finally { summaryBtn.disabled = false; }
     });
 
-    // delete single recording
     deleteBtn.addEventListener("click", async () => {
       if (!confirm(`Permanently delete "${r.title}"? This cannot be undone.`)) return;
       deleteBtn.disabled = true;
@@ -1109,7 +1118,6 @@ function renderTeacherRecordings(list) {
       } catch (e) { toast("Network error during delete.", "error"); deleteBtn.disabled = false; }
     });
 
-    // ---- teacher notes: render + attach-from-library + upload + detach ----
     const notesList = row.querySelector(".notes-list");
     const noteFile = row.querySelector(".note-file");
     const noteUploadBtn = row.querySelector(".note-upload-btn");
@@ -1145,7 +1153,6 @@ function renderTeacherRecordings(list) {
     }
     renderNotes(r.notes);
 
-    // populate the library dropdown (notes not already attached here)
     async function refreshLibDropdown() {
       try {
         const res = await fetch(`${API}/api/teacher/notes/library`, {
@@ -1250,7 +1257,6 @@ function renderTeacherRecordings(list) {
         body: JSON.stringify({ passcode: state.passcode, id: r.id, display_title: titleIn.value, unit: unitIn.value, visible })
       }).then(() => {
         flash.classList.add("show"); setTimeout(() => flash.classList.remove("show"), 1200);
-        // keep local state in sync so filters/sort stay accurate
         const cached = teacherRecordings.find(x => x.id === r.id);
         if (cached) { cached.title = titleIn.value; cached.unit = unitIn.value; cached.visible = visible; }
         populateCourseFilter(teacherRecordings);
@@ -1298,7 +1304,6 @@ el("savePass").addEventListener("click", async () => {
 function signOut() {
   state.name = ""; state.token = ""; state.passcode = ""; state.current = null; state.recordings = [];
   
-  // CLEAR LOCAL STORAGE
   localStorage.removeItem("ng_studentToken");
   localStorage.removeItem("ng_studentName");
   localStorage.removeItem("ng_teacherPasscode");
@@ -1308,6 +1313,8 @@ function signOut() {
   const pw = el("passwordInput"); if (pw) pw.value = "";
   show("landing");
 }
+el("studentSignOut").addEventListener("click", signOut);
+el("teacherSignOut").addEventListener("click", signOut);
 
 // ---------- logo upload ----------
 el("saveLogo").addEventListener("click", async () => {
@@ -1324,7 +1331,6 @@ el("saveLogo").addEventListener("click", async () => {
     if (!res.ok || data.error) { err.textContent = data.error || "Upload failed."; err.classList.remove("hidden"); return; }
     ok.classList.remove("hidden"); setTimeout(() => ok.classList.add("hidden"), 2500);
     fileInput.value = "";
-    // cache-bust so the new logo shows immediately everywhere
     applyLogo(data.logo + "?t=" + Date.now());
   } catch (e) {
     err.textContent = "Couldn't reach the server. Try again.";
@@ -1352,7 +1358,7 @@ async function loadBranding() {
     const res = await fetch(`${API}/api/branding`);
     const data = await res.json();
     if (data.logo) applyLogo(data.logo + "?t=" + Date.now());
-  } catch (e) { /* ignore — keep emoji fallback */ }
+  } catch (e) { /* ignore */ }
 }
 loadBranding();
 

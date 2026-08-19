@@ -1863,7 +1863,7 @@ async def generate_study_plan(body: StudyPlanBody):
         rec = REC_BY_ID.get(rid)
         if rec:
             est_minutes = 90  # Fixed estimate for every recording
-            selected_recs.append(f"- ID: {rec['id']} | Title: {rec.get('display_title') or rec.get('topic')} | Length: {est_minutes} mins")
+            selected_recs.append(f"- Title: {rec.get('display_title') or rec.get('topic')} | Length: {est_minutes} mins")
 
     if not selected_recs:
         return JSONResponse({"error": "Selected recordings not found."}, status_code=404)
@@ -1871,10 +1871,10 @@ async def generate_study_plan(body: StudyPlanBody):
     recs_text = "\n".join(selected_recs)
     
     system = (
-        "You are an encouraging, expert academic coach for Cambridge IGCSE and A-Level Biology students. "
+        "You are an encouraging, expert academic coach for Biology students. "
         "Your task is to create a balanced, day-by-day study plan based on the student's available time and selected classes. "
-        "Return STRICT JSON only, no markdown, no prose. "
-        "Schema: {\"plan\":[{\"day\":int,\"quote\":str,\"tasks\":[{\"recording_id\":str,\"title\":str,\"description\":str,\"est_minutes\":int}]}]}. "
+        "Return STRICT JSON only. "
+        "Schema: {\"plan\":[{\"day\":int,\"quote\":str,\"tasks\":[{\"title\":str,\"description\":str,\"est_minutes\":int}]}]}. "
         "Rules:\n"
         "1. 'quote' must be a short, biology-themed motivational sentence for that day.\n"
         "2. Break down longer recordings into smaller tasks if needed.\n"
@@ -1893,24 +1893,28 @@ async def generate_study_plan(body: StudyPlanBody):
         raw = await llm(
             [{"role": "system", "content": system}, {"role": "user", "content": user}],
             max_tokens=2500,
-            temperature=0.4, # slightly higher temperature for creative motivational quotes
+            temperature=0.4, 
         )
     except (LLMConfigError, LLMUpstreamError) as e:
         return JSONResponse({"error": str(e)}, status_code=503)
 
-    # Extract JSON safely
+    # Extract JSON safely, stripping any markdown the AI might have added
     data = None
-    import re
-    import json as _json
+    txt = (raw or "").strip()
+    
+    if txt.startswith("```"):
+        txt = txt.strip("`")
+        if "\n" in txt:
+            txt = txt.split("\n", 1)[-1]
+            
     try:
-        data = _json.loads(raw)
-    except Exception:
-        m = re.search(r"\{.*\}", raw, re.DOTALL)
-        if m:
-            try:
-                data = _json.loads(m.group(0))
-            except Exception:
-                pass
+        start = txt.find("{")
+        end = txt.rfind("}")
+        if start != -1 and end != -1:
+            data = json.loads(txt[start:end+1])
+    except Exception as e:
+        print(f"[Study Plan Error] Could not parse JSON: {e}")
+        print(f"[Raw AI Output] {raw}")
                 
     if not data or "plan" not in data:
         return JSONResponse({"error": "Could not generate the plan. Please try again.", "raw": raw[:500]}, status_code=500)

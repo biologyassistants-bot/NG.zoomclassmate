@@ -81,7 +81,6 @@ button{font-family:inherit;cursor:pointer;border:none}
 .hint{color:var(--muted);font-size:12.5px;margin-top:16px;font-weight:600}
 .hint code,.setting-card code{background:var(--bg2);padding:2px 7px;border-radius:6px;color:var(--brand-d);font-weight:800}
 #pinInput{letter-spacing:8px;text-align:center;font-size:20px;font-weight:800}
-/* logo image support (drop an <img> inside .logo or .logo-sm) */
 .logo img{width:100%;height:100%;object-fit:contain;border-radius:16px}
 .logo-sm img{width:100%;height:100%;object-fit:contain;border-radius:10px}
 
@@ -413,22 +412,23 @@ button{font-family:inherit;cursor:pointer;border:none}
 .import-one-bar .filter-input{flex:1;min-width:320px}
 #importOneStatus{font-size:12.5px;color:var(--muted);font-weight:700}
 
+
 /* =========================================================
    Responsive Design for Mobile, Tablet, and iPad
    ========================================================= */
 
 @media (max-width: 1024px) {
-  /* Tablet / iPad adjustments */
+  /* Tablet / iPad / Mobile layout split */
   .layout { flex-direction: column; }
   .sidebar {
     width: 100%;
-    height: auto;
-    max-height: 35vh; /* Takes up top portion of screen instead of covering it */
+    height: 35vh; /* Strict height constraint */
+    flex: 0 0 35vh; /* Force mobile browsers to respect the height */
     border-right: none;
     border-bottom: 1px solid var(--line);
   }
-  .content { flex: 1; }
-  .t-rec { grid-template-columns: 1fr; } /* Stack teacher recording controls */
+  .content { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+  .t-rec { grid-template-columns: 1fr; }
 }
 
 @media (max-width: 820px) {

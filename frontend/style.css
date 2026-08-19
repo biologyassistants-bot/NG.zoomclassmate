@@ -485,6 +485,14 @@ html, body {
   html, body {
     overflow-x: hidden !important;
     width: 100%;
+    height: auto;
+    overflow: auto;
+  }
+
+  #app {
+    height: auto;
+    display: flex;
+    flex-direction: column;
   }
 
   /* Stack the topbar elements cleanly on phones */
@@ -500,7 +508,7 @@ html, body {
     width: 100%;
   }
 
-  /* Make the student navigation buttons scroll smoothly horizontally if they don't fit */
+  /* Make the student navigation buttons scroll smoothly horizontally */
   .topbar .who {
     display: flex;
     overflow-x: auto;
@@ -511,7 +519,6 @@ html, body {
     -webkit-overflow-scrolling: touch;
   }
 
-  /* Hide scrollbars for a clean app-like look on mobile */
   .topbar .who::-webkit-scrollbar {
     display: none;
   }
@@ -521,5 +528,38 @@ html, body {
     flex-shrink: 0;
     font-size: 13px;
     padding: 6px 10px;
+  }
+
+  /* =========================================================
+     AI TUTOR MOBILE STACKING FIX
+     ========================================================= */
+  #studentTutorPane {
+    flex-direction: column !important;
+    height: auto !important;
+    overflow: visible !important;
+  }
+
+  /* Sidebar takes full width on mobile */
+  #studentTutorPane .sidebar {
+    width: 100% !important;
+    max-height: 280px; /* Compact scrollable list so it doesn't take the whole screen */
+    border-right: none;
+    border-bottom: 2px solid var(--line);
+  }
+
+  /* Chat workspace stacks underneath naturally */
+  #studentTutorPane .content {
+    width: 100% !important;
+    height: auto !important;
+    min-height: 500px;
+  }
+
+  /* Planner stack fix */
+  .planner-layout { 
+    flex-direction: column; 
+  }
+  .planner-setup { 
+    width: 100%; 
+    position: static; 
   }
 }

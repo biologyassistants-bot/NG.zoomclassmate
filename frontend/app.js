@@ -1,5 +1,27 @@
 const API = "";
 let state = { name: "", recordings: [], current: null, passcode: "", token: "" };
+// ---------- Auto-Login Check ----------
+document.addEventListener("DOMContentLoaded", async () => {
+  const savedStudentToken = localStorage.getItem("ng_studentToken");
+  const savedStudentName = localStorage.getItem("ng_studentName");
+  const savedTeacherPasscode = localStorage.getItem("ng_teacherPasscode");
+
+  if (savedTeacherPasscode) {
+    // Auto-login teacher
+    teacherLogin(savedTeacherPasscode);
+  } else if (savedStudentToken) {
+    // Auto-login student
+    state.token = savedStudentToken;
+    state.name = savedStudentName || "Student";
+    
+    if(el("whoName")) el("whoName").textContent = state.name;
+    if(el("dashName")) el("dashName").textContent = state.name;
+    
+    show("main");
+    await loadRecordings();
+    switchStudentTab("Dash");
+  }
+});
 
 // Local tracking for student dashboard stats
 let studentStats = JSON.parse(localStorage.getItem('studentStats_NGClassMate') || '{"questions":0, "quizzes":0}');
@@ -54,39 +76,39 @@ async function enter() {
     });
     const data = await res.json();
     if (!res.ok || !data.ok) { errEl.textContent = data.error || "Login failed."; errEl.classList.remove("hidden"); return; }
+    
     state.name = data.name;
     state.token = data.token;
     
-    // Set names in header and dashboard
+    // SAVE TO LOCAL STORAGE
+    localStorage.setItem("ng_studentToken", data.token);
+    localStorage.setItem("ng_studentName", data.name);
+    
     if(el("whoName")) el("whoName").textContent = data.name;
     if(el("dashName")) el("dashName").textContent = data.name;
     
     el("passwordInput").value = "";
     show("main");
     await loadRecordings();
-    
-    // Default to dashboard tab on login
     switchStudentTab("Dash");
   } catch (e) {
     errEl.textContent = "Couldn't reach the server. Try again.";
     errEl.classList.remove("hidden");
   }
 }
-el("enterBtn").addEventListener("click", enter);
-el("emailInput").addEventListener("keydown", e => { if (e.key === "Enter") el("passwordInput").focus(); });
-el("passwordInput").addEventListener("keydown", e => { if (e.key === "Enter") enter(); });
 
 // ---------- teacher gate ----------
-async function teacherLogin() {
+async function teacherLogin(savedPasscode = null) {
   const btn = el("passBtn");
   const errEl = el("passErr");
-  const p = el("passInput").value.trim();
+  const p = savedPasscode || el("passInput").value.trim();
   if (!p) { errEl.textContent = "Please type your passcode."; errEl.classList.remove("hidden"); return; }
 
-  const originalLabel = btn.textContent;
-  btn.disabled = true;
-  btn.textContent = "Connecting… (server may be waking up)";
-  errEl.classList.add("hidden");
+  if(btn) {
+    btn.disabled = true;
+    btn.textContent = "Connecting… (server may be waking up)";
+  }
+  if(errEl) errEl.classList.add("hidden");
 
   try {
     const res = await fetch(`${API}/api/teacher/login`, {
@@ -94,28 +116,37 @@ async function teacherLogin() {
     });
     let data = {};
     try { data = await res.json(); } catch (e) { /* non-JSON response */ }
+    
     if (res.ok && data.ok) {
       state.passcode = p;
-      errEl.classList.add("hidden");
+      
+      // SAVE TO LOCAL STORAGE
+      localStorage.setItem("ng_teacherPasscode", p);
+      
+      if(errEl) errEl.classList.add("hidden");
       show("teacher");
       loadTeacherRecordings();
-    } else if (res.status === 401) {
-      errEl.textContent = "Wrong passcode. The default is teach123.";
-      errEl.classList.remove("hidden");
     } else {
-      errEl.textContent = `Login failed (server responded ${res.status}). Please try again.`;
-      errEl.classList.remove("hidden");
+      // If auto-login fails (e.g., changed passcode), clear it
+      if (savedPasscode) localStorage.removeItem("ng_teacherPasscode");
+      
+      if(errEl) {
+        errEl.textContent = res.status === 401 ? "Wrong passcode. The default is teach123." : `Login failed (server responded ${res.status}).`;
+        errEl.classList.remove("hidden");
+      }
     }
   } catch (e) {
-    errEl.textContent = "Couldn't reach the server. It may be waking up — wait ~30s and try again, or check your connection.";
-    errEl.classList.remove("hidden");
+    if(errEl) {
+      errEl.textContent = "Couldn't reach the server. It may be waking up — wait ~30s and try again.";
+      errEl.classList.remove("hidden");
+    }
   } finally {
-    btn.disabled = false;
-    btn.textContent = originalLabel;
+    if(btn) {
+      btn.disabled = false;
+      btn.textContent = "Unlock →";
+    }
   }
 }
-el("passBtn").addEventListener("click", teacherLogin);
-el("passInput").addEventListener("keydown", e => { if (e.key === "Enter") teacherLogin(); });
 
 // ================= STUDENT TABS & DASHBOARD =================
 el("tabStudentDash").addEventListener("click", () => switchStudentTab("Dash"));
@@ -1266,13 +1297,17 @@ el("savePass").addEventListener("click", async () => {
 // ---------- sign out ----------
 function signOut() {
   state.name = ""; state.token = ""; state.passcode = ""; state.current = null; state.recordings = [];
+  
+  // CLEAR LOCAL STORAGE
+  localStorage.removeItem("ng_studentToken");
+  localStorage.removeItem("ng_studentName");
+  localStorage.removeItem("ng_teacherPasscode");
+  
   const p = el("passInput"); if (p) p.value = "";
   const em = el("emailInput"); if (em) em.value = "";
   const pw = el("passwordInput"); if (pw) pw.value = "";
   show("landing");
 }
-el("studentSignOut").addEventListener("click", signOut);
-el("teacherSignOut").addEventListener("click", signOut);
 
 // ---------- logo upload ----------
 el("saveLogo").addEventListener("click", async () => {

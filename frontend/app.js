@@ -1,6 +1,9 @@
 const API = "";
 let state = { name: "", recordings: [], current: null, passcode: "", token: "" };
 
+// Local tracking for student dashboard stats
+let studentStats = JSON.parse(localStorage.getItem('studentStats_NGClassMate') || '{"questions":0, "quizzes":0}');
+
 function el(id) { return document.getElementById(id); }
 function escapeHtml(s) { return (s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
 
@@ -29,6 +32,10 @@ function renderBotText(text) {
   return html;
 }
 
+function saveStudentStats() {
+  localStorage.setItem('studentStats_NGClassMate', JSON.stringify(studentStats));
+}
+
 // ---------- landing / role nav ----------
 el("roleStudent").addEventListener("click", () => { show("gate"); el("emailInput").focus(); });
 el("roleTeacher").addEventListener("click", () => { show("teacherGate"); el("passInput").focus(); });
@@ -49,10 +56,17 @@ async function enter() {
     if (!res.ok || !data.ok) { errEl.textContent = data.error || "Login failed."; errEl.classList.remove("hidden"); return; }
     state.name = data.name;
     state.token = data.token;
-    el("whoName").textContent = data.name;
+    
+    // Set names in header and dashboard
+    if(el("whoName")) el("whoName").textContent = data.name;
+    if(el("dashName")) el("dashName").textContent = data.name;
+    
     el("passwordInput").value = "";
     show("main");
-    loadRecordings();
+    await loadRecordings();
+    
+    // Default to dashboard tab on login
+    switchStudentTab("Dash");
   } catch (e) {
     errEl.textContent = "Couldn't reach the server. Try again.";
     errEl.classList.remove("hidden");
@@ -69,7 +83,6 @@ async function teacherLogin() {
   const p = el("passInput").value.trim();
   if (!p) { errEl.textContent = "Please type your passcode."; errEl.classList.remove("hidden"); return; }
 
-  // visible feedback so a slow/asleep server never looks "frozen"
   const originalLabel = btn.textContent;
   btn.disabled = true;
   btn.textContent = "Connecting… (server may be waking up)";
@@ -77,14 +90,10 @@ async function teacherLogin() {
 
   try {
     const res = await fetch(`${API}/api/teacher/login`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ passcode: p })
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ passcode: p })
     });
-
     let data = {};
     try { data = await res.json(); } catch (e) { /* non-JSON response */ }
-
     if (res.ok && data.ok) {
       state.passcode = p;
       errEl.classList.add("hidden");
@@ -98,7 +107,6 @@ async function teacherLogin() {
       errEl.classList.remove("hidden");
     }
   } catch (e) {
-    // network error, CORS, timeout, or server still asleep
     errEl.textContent = "Couldn't reach the server. It may be waking up — wait ~30s and try again, or check your connection.";
     errEl.classList.remove("hidden");
   } finally {
@@ -109,7 +117,58 @@ async function teacherLogin() {
 el("passBtn").addEventListener("click", teacherLogin);
 el("passInput").addEventListener("keydown", e => { if (e.key === "Enter") teacherLogin(); });
 
-// ================= STUDENT VIEW =================
+// ================= STUDENT TABS & DASHBOARD =================
+el("tabStudentDash").addEventListener("click", () => switchStudentTab("Dash"));
+el("tabStudentTutor").addEventListener("click", () => switchStudentTab("Tutor"));
+el("tabStudentPlanner").addEventListener("click", () => switchStudentTab("Planner"));
+
+function switchStudentTab(name) {
+  el("tabStudentDash").classList.toggle("active", name === "Dash");
+  el("tabStudentTutor").classList.toggle("active", name === "Tutor");
+  el("tabStudentPlanner").classList.toggle("active", name === "Planner");
+  
+  el("studentDashPane").classList.toggle("hidden", name !== "Dash");
+  el("studentTutorPane").classList.toggle("hidden", name !== "Tutor");
+  el("studentPlannerPane").classList.toggle("hidden", name !== "Planner");
+
+  if (name === "Dash") renderStudentDashboard();
+  if (name === "Planner") initPlanner();
+}
+
+function calculatePlanProgress() {
+  if (!currentStudyPlan) return 0;
+  let tot = 0, comp = 0;
+  currentStudyPlan.forEach(d => {
+    d.tasks.forEach(t => { tot++; if(t.completed) comp++; });
+  });
+  return tot === 0 ? 0 : Math.round((comp/tot)*100);
+}
+
+function renderStudentDashboard() {
+  const planPct = calculatePlanProgress();
+  const statsBar = el("studentStatsBar");
+  
+  // Calculate unique courses enrolled based on visible recordings
+  const courses = new Set(state.recordings.map(r => r.unit || "Unassigned"));
+  
+  const cards = [
+    { label: "Enrolled Courses", value: courses.size },
+    { label: "Classes Available", value: state.recordings.length },
+    { label: "Study Plan Progress", value: `${planPct}%`, sub: planPct === 100 ? "Completed! 🎉" : (currentStudyPlan ? "In progress" : "No active plan") },
+    { label: "AI Questions Asked", value: studentStats.questions },
+    { label: "Quizzes Generated", value: studentStats.quizzes }
+  ];
+  
+  statsBar.innerHTML = cards.map(c => 
+    `<div class="stat-card">
+      <div class="stat-value">${escapeHtml(String(c.value))}</div>
+      <div class="stat-label">${escapeHtml(c.label)}</div>
+      ${c.sub ? `<div class="stat-sub">${escapeHtml(c.sub)}</div>` : ''}
+    </div>`
+  ).join("");
+}
+
+// ================= STUDENT AI TUTOR =================
 async function loadRecordings() {
   const res = await fetch(`${API}/api/recordings`, {
     method: "POST", headers: { "Content-Type": "application/json" },
@@ -149,7 +208,6 @@ function renderRecList(list) {
   const box = el("recList");
   box.innerHTML = "";
   if (!list.length) { box.innerHTML = '<div class="rec-item"><div class="d">No recordings available yet.</div></div>'; return; }
-  // group by unit
   const groups = {};
   list.forEach(r => { const u = r.unit || "Unassigned"; (groups[u] = groups[u] || []).push(r); });
   Object.keys(groups).sort().forEach(unit => {
@@ -169,9 +227,7 @@ function renderRecList(list) {
 }
 
 el("search").addEventListener("input", applyStudentFilters);
-document.addEventListener("change", e => {
-  if (e.target.id === "studentCourseFilter") applyStudentFilters();
-});
+document.addEventListener("change", e => { if (e.target.id === "studentCourseFilter") applyStudentFilters(); });
 
 function selectRecording(r) {
   state.current = r;
@@ -182,9 +238,7 @@ function selectRecording(r) {
   el("wsMeta").innerHTML = `${escapeHtml(r.unit)} · ${escapeHtml(r.date || "")} · ${r.segments} transcript lines` +
     (r.has_notes ? ` · <span class="notes-flag">📎 includes extra class notes</span>` : "");
   el("chat").innerHTML = "";
-  const notesLine = r.has_notes
-    ? " This class also has extra notes from your teacher that I can draw on."
-    : "";
+  const notesLine = r.has_notes ? " This class also has extra notes from your teacher that I can draw on." : "";
   addBot(`Hi ${state.name}! Ask me anything about **${r.title}**. I'll answer using only what was said in this recording (with timestamps).${notesLine} 😊`);
 }
 
@@ -209,7 +263,11 @@ el("askForm").addEventListener("submit", async e => {
     const data = await res.json();
     removeTyping();
     if (data.error) addBot("Sorry, something went wrong: " + data.error);
-    else addBot(data.answer);
+    else {
+      addBot(data.answer);
+      studentStats.questions++;
+      saveStudentStats();
+    }
   } catch (err) { removeTyping(); addBot("Sorry, I couldn't reach the server. Please try again."); }
   el("askBtn").disabled = false; el("questionInput").focus();
 });
@@ -217,11 +275,10 @@ el("askForm").addEventListener("submit", async e => {
 // ---------- quiz ----------
 let quizData = null;
 el("quizBtn").addEventListener("click", generateQuiz);
-el("closeQuiz").addEventListener("click", () => el("quizModal").classList.add("hidden"));
-el("retryQuiz").addEventListener("click", generateQuiz);
 
 async function generateQuiz() {
   if (!state.current) return;
+  // Use existing quizModal styling, ensure it opens over the whole screen
   el("quizModal").classList.remove("hidden");
   el("submitQuiz").classList.add("hidden"); el("retryQuiz").classList.add("hidden");
   el("quizBody").innerHTML = '<div class="typing">Creating your quiz from the recording <span class="dot">●</span><span class="dot">●</span><span class="dot">●</span></div>';
@@ -232,9 +289,17 @@ async function generateQuiz() {
     });
     const data = await res.json();
     if (data.error || !data.questions) { el("quizBody").innerHTML = '<p>Sorry, I could not build a quiz for this recording. Try another one.</p>'; return; }
-    quizData = data.questions; renderQuiz();
+    quizData = data.questions; 
+    renderQuiz();
+    
+    // Log stat
+    studentStats.quizzes++;
+    saveStudentStats();
   } catch (e) { el("quizBody").innerHTML = '<p>Could not reach the server. Please try again.</p>'; }
 }
+
+if(el("closeQuiz")) el("closeQuiz").addEventListener("click", () => el("quizModal").classList.add("hidden"));
+if(el("retryQuiz")) el("retryQuiz").addEventListener("click", generateQuiz);
 
 function renderQuiz() {
   const body = el("quizBody"); body.innerHTML = "";
@@ -253,28 +318,215 @@ function renderQuiz() {
   el("submitQuiz").classList.remove("hidden"); el("retryQuiz").classList.add("hidden");
 }
 
-el("submitQuiz").addEventListener("click", () => {
-  let score = 0;
-  quizData.forEach((q, qi) => {
-    const chosen = document.querySelector(`input[name="q${qi}"]:checked`);
-    const ci = chosen ? parseInt(chosen.value) : -1;
-    document.querySelectorAll(`.opt[data-q="${qi}"]`).forEach((lab, oi) => {
-      lab.style.pointerEvents = "none";
-      if (oi === q.answer_index) lab.classList.add("correct");
-      else if (oi === ci) lab.classList.add("wrong");
+if(el("submitQuiz")) {
+  el("submitQuiz").addEventListener("click", () => {
+    let score = 0;
+    quizData.forEach((q, qi) => {
+      const chosen = document.querySelector(`input[name="q${qi}"]:checked`);
+      const ci = chosen ? parseInt(chosen.value) : -1;
+      document.querySelectorAll(`.opt[data-q="${qi}"]`).forEach((lab, oi) => {
+        lab.style.pointerEvents = "none";
+        if (oi === q.answer_index) lab.classList.add("correct");
+        else if (oi === ci) lab.classList.add("wrong");
+      });
+      if (ci === q.answer_index) score++;
+      const exp = el(`exp${qi}`);
+      const ts = q.timestamp ? `<span class="ts-chip">⏱ ${escapeHtml(q.timestamp)}</span>` : "";
+      exp.innerHTML = `✅ <strong>Answer:</strong> ${escapeHtml(q.options[q.answer_index])} ${ts}<br>${escapeHtml(q.explanation || "")}`;
+      exp.classList.remove("hidden");
     });
-    if (ci === q.answer_index) score++;
-    const exp = el(`exp${qi}`);
-    const ts = q.timestamp ? `<span class="ts-chip">⏱ ${escapeHtml(q.timestamp)}</span>` : "";
-    exp.innerHTML = `✅ <strong>Answer:</strong> ${escapeHtml(q.options[q.answer_index])} ${ts}<br>${escapeHtml(q.explanation || "")}`;
-    exp.classList.remove("hidden");
+    const head = document.createElement("div"); head.className = "score";
+    const pct = Math.round(100 * score / quizData.length);
+    head.textContent = `You scored ${score} / ${quizData.length}  (${pct}%) ${pct >= 80 ? "🎉" : pct >= 50 ? "👍" : "📖 keep reviewing!"}`;
+    el("quizBody").prepend(head);
+    el("submitQuiz").classList.add("hidden"); el("retryQuiz").classList.remove("hidden");
   });
-  const head = document.createElement("div"); head.className = "score";
-  const pct = Math.round(100 * score / quizData.length);
-  head.textContent = `You scored ${score} / ${quizData.length}  (${pct}%) ${pct >= 80 ? "🎉" : pct >= 50 ? "👍" : "📖 keep reviewing!"}`;
-  el("quizBody").prepend(head);
-  el("submitQuiz").classList.add("hidden"); el("retryQuiz").classList.remove("hidden");
-});
+}
+
+
+/* =========================================================
+   STUDY PLAN FEATURE (DEDICATED PANE)
+   ========================================================= */
+
+let currentStudyPlan = JSON.parse(localStorage.getItem('studyPlan_NGClassMate') || 'null');
+
+const planClassSelect = document.getElementById('planClassSelect');
+const generatePlanBtn = document.getElementById('generatePlanBtn');
+const resetPlanBtn = document.getElementById('resetPlanBtn');
+const planEmptyState = document.getElementById('planEmptyState');
+const planResult = document.getElementById('planResult');
+
+function initPlanner() {
+  // Populate the classes list based on what the student currently has available
+  planClassSelect.innerHTML = '';
+  if (state.recordings.length === 0) {
+    planClassSelect.innerHTML = '<p class="meta">No classes available.</p>';
+  } else {
+    state.recordings.forEach(r => {
+      const label = document.createElement('label');
+      label.style.display = 'flex';
+      label.style.alignItems = 'center';
+      label.style.gap = '8px';
+      label.style.marginBottom = '8px';
+      label.style.cursor = 'pointer';
+      
+      // Default to unselected
+      label.innerHTML = `
+        <input type="checkbox" value="${r.id}" style="transform: scale(1.2); margin-top: 2px;" /> 
+        <span style="font-size: 13.5px; font-weight: 700; color: var(--text);">${escapeHtml(r.title)}</span>
+      `;
+      planClassSelect.appendChild(label);
+    });
+  }
+
+  // Toggle UI based on whether they have an active plan
+  const formEls = document.getElementById('planSetup').querySelectorAll('input, select');
+  
+  if (currentStudyPlan) {
+    formEls.forEach(el => el.disabled = true);
+    generatePlanBtn.classList.add('hidden');
+    resetPlanBtn.classList.remove('hidden');
+    planEmptyState.classList.add('hidden');
+    planResult.classList.remove('hidden');
+    renderPlan();
+  } else {
+    formEls.forEach(el => el.disabled = false);
+    generatePlanBtn.classList.remove('hidden');
+    resetPlanBtn.classList.add('hidden');
+    planEmptyState.classList.remove('hidden');
+    planResult.classList.add('hidden');
+  }
+}
+
+if (generatePlanBtn) {
+  generatePlanBtn.addEventListener('click', async () => {
+    const selectedIds = Array.from(planClassSelect.querySelectorAll('input:checked')).map(cb => cb.value);
+    
+    if (selectedIds.length === 0) {
+      alert("Please select at least one class to review.");
+      return;
+    }
+
+    const days = document.getElementById('planDays').value;
+    const hours = document.getElementById('planHours').value;
+    const focus = document.getElementById('planFocus').value;
+
+    const btnOrig = generatePlanBtn.innerText;
+    generatePlanBtn.innerText = "⏳ Building your schedule...";
+    generatePlanBtn.disabled = true;
+
+    try {
+      const res = await fetch(`${API}/api/student/plan`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          recording_ids: selectedIds,
+          days: parseInt(days),
+          hours_per_day: parseFloat(hours),
+          focus: focus,
+          token: state.token
+        })
+      });
+
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to generate plan");
+
+      data.plan.forEach(day => {
+        day.tasks.forEach(task => task.completed = false);
+      });
+
+      currentStudyPlan = data.plan;
+      localStorage.setItem('studyPlan_NGClassMate', JSON.stringify(currentStudyPlan));
+      
+      initPlanner(); // Re-initialize the view to swap to active mode
+
+    } catch (err) {
+      alert(err.message);
+    } finally {
+      generatePlanBtn.innerText = btnOrig;
+      generatePlanBtn.disabled = false;
+    }
+  });
+}
+
+function renderPlan() {
+  planResult.innerHTML = '';
+  let totalTasks = 0;
+  let completedTasks = 0;
+
+  const planContainer = document.createElement('div');
+  planContainer.style.display = 'flex';
+  planContainer.style.flexDirection = 'column';
+  planContainer.style.gap = '16px';
+
+  currentStudyPlan.forEach((day, dIdx) => {
+    const dayCard = document.createElement('div');
+    dayCard.className = 'q-block'; 
+    
+    const quoteHtml = day.quote ? `
+      <div class="explain" style="margin-top:0; margin-bottom:12px; border-left: 3px solid var(--brand); font-style: italic; color: var(--brand-d);">
+        💡 "${escapeHtml(day.quote)}"
+      </div>` : '';
+
+    let tasksHtml = '';
+    day.tasks.forEach((task, tIdx) => {
+      totalTasks++;
+      if (task.completed) completedTasks++;
+      
+      tasksHtml += `
+        <label style="display: flex; align-items: flex-start; gap: 12px; padding: 12px; background: var(--panel); border: 1.5px solid var(--line); border-radius: 12px; margin-bottom: 8px; cursor: pointer; transition: 0.15s; opacity: ${task.completed ? '0.55' : '1'};">
+          <input type="checkbox" style="margin-top: 3px; transform: scale(1.3);" onchange="togglePlanTask(${dIdx}, ${tIdx})" ${task.completed ? 'checked' : ''} />
+          <div>
+            <strong style="display:block; font-size: 14.5px; margin-bottom: 3px; color: ${task.completed ? 'var(--muted)' : 'var(--text)'};">
+              ${escapeHtml(task.title)} <span class="meta" style="font-weight:800; color: var(--brand-d);">(${task.est_minutes}m)</span>
+            </strong>
+            <span style="font-size: 13px; color: var(--muted); font-weight:600; line-height: 1.4; display: block;">${escapeHtml(task.description)}</span>
+          </div>
+        </label>
+      `;
+    });
+
+    dayCard.innerHTML = `
+      <div class="q-title"><span class="q-num" style="padding: 4px 12px; font-size: 13px;">Day ${day.day}</span></div>
+      ${quoteHtml}
+      ${tasksHtml}
+    `;
+    planContainer.appendChild(dayCard);
+  });
+
+  const pct = totalTasks === 0 ? 0 : Math.round((completedTasks / totalTasks) * 100);
+  const progressHtml = `
+    <div style="margin-bottom: 20px; background: var(--panel); border: 1px solid var(--line); padding: 16px; border-radius: 14px; box-shadow: var(--shadow-sm);">
+      <div style="display: flex; justify-content: space-between; font-weight: 900; font-size: 15px; margin-bottom: 10px;">
+        <span>Plan Progress</span>
+        <span style="color: var(--brand-d);">${pct}% Completed</span>
+      </div>
+      <div class="bulk-bar" style="max-width: 100%; height: 14px; background: var(--bg2);">
+        <div class="bulk-bar-fill" style="width: ${pct}%; border-radius: 20px;"></div>
+      </div>
+    </div>
+  `;
+
+  planResult.innerHTML = progressHtml;
+  planResult.appendChild(planContainer);
+}
+
+window.togglePlanTask = function(dIdx, tIdx) {
+  currentStudyPlan[dIdx].tasks[tIdx].completed = !currentStudyPlan[dIdx].tasks[tIdx].completed;
+  localStorage.setItem('studyPlan_NGClassMate', JSON.stringify(currentStudyPlan));
+  renderPlan(); 
+};
+
+if (resetPlanBtn) {
+  resetPlanBtn.addEventListener('click', () => {
+    if(confirm("Are you sure you want to delete your current plan and start over?")) {
+      currentStudyPlan = null;
+      localStorage.removeItem('studyPlan_NGClassMate');
+      initPlanner(); 
+    }
+  });
+}
+
 
 // ================= TEACHER VIEW =================
 el("tabRecordings").addEventListener("click", () => switchTab("Recordings"));
@@ -1045,16 +1297,12 @@ el("saveLogo").addEventListener("click", async () => {
   }
 });
 
-// ---------- branding (apply custom logo if one was uploaded) ----------
-// Remember the original emoji in each logo slot so we can restore it if the
-// custom logo image fails to load (e.g. not yet uploaded on a fresh deploy).
 function applyLogo(url) {
   if (!url) return;
   document.querySelectorAll(".logo, .logo-sm").forEach(node => {
     if (node.dataset.emoji === undefined) node.dataset.emoji = node.innerHTML;
     const img = document.createElement("img");
     img.alt = "logo";
-    // if the image can't load, fall back to the original emoji instead of a broken icon
     img.addEventListener("error", () => { node.innerHTML = node.dataset.emoji; });
     img.src = url;
     node.innerHTML = "";
@@ -1068,23 +1316,15 @@ async function loadBranding() {
   try {
     const res = await fetch(`${API}/api/branding`);
     const data = await res.json();
-    // cache-bust so a re-uploaded logo refreshes, and so a stale broken URL isn't reused
     if (data.logo) applyLogo(data.logo + "?t=" + Date.now());
   } catch (e) { /* ignore — keep emoji fallback */ }
 }
 loadBranding();
-// ---------- Import existing Zoom cloud recordings (backfill) ----------
-// Adds a button to the Recordings pane that pulls recordings already stored in
-// Zoom cloud (meetings + webinars) into the app via POST /api/teacher/backfill.
-// Self-contained + CSP-safe (no inline handlers). Injects its own button so it
-// works regardless of small differences in index.html markup.
+
 (function setupImportRecordings() {
   function injectImportButton() {
     const pane = el("teacherRecordings");
     if (!pane) return;
-
-    // If the button already exists in the HTML markup, just bind the handler
-    // once and stop (don't create a duplicate).
     let btn = el("importRecBtn");
     if (btn) {
       if (!btn._backfillBound) {
@@ -1093,29 +1333,22 @@ loadBranding();
       }
       return;
     }
-
-    // Otherwise create the button + status span dynamically (fallback).
     const head = pane.querySelector(".pane-head") || pane;
-
     const bar = document.createElement("div");
     bar.className = "import-rec-bar";
     bar.style.cssText = "display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:12px;";
-
     btn = document.createElement("button");
     btn.id = "importRecBtn";
     btn.className = "primary";
     btn.type = "button";
     btn.textContent = "⬇️ Import cloud recordings";
-
     const status = document.createElement("span");
     status.id = "importRecStatus";
     status.className = "meta";
     status.style.cssText = "font-size:0.9em;color:#555;";
-
     bar.appendChild(btn);
     bar.appendChild(status);
     head.appendChild(bar);
-
     btn.addEventListener("click", runBackfill);
     btn._backfillBound = true;
   }
@@ -1125,16 +1358,13 @@ loadBranding();
     const status = el("importRecStatus");
     if (!btn) return;
     if (!state.passcode) { if (status) status.textContent = "Please sign in as teacher first."; return; }
-
     btn.disabled = true;
     const original = btn.textContent;
     btn.textContent = "Importing…";
     if (status) status.textContent = "Contacting Zoom and importing recordings — this can take a minute…";
-
     try {
       const res = await fetch(`${API}/api/teacher/backfill`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
+        method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ passcode: state.passcode }),
       });
       const data = await res.json();
@@ -1159,224 +1389,8 @@ loadBranding();
       btn.textContent = original;
     }
   }
-
   const tabRec = el("tabRecordings");
   if (tabRec) tabRec.addEventListener("click", () => setTimeout(injectImportButton, 0));
   document.addEventListener("DOMContentLoaded", injectImportButton);
   injectImportButton();
 })();
-
-/* =========================================================
-   STUDY PLAN FEATURE
-   ========================================================= */
-
-let currentStudyPlan = JSON.parse(localStorage.getItem('studyPlan_NGClassMate') || 'null');
-
-const planModal = document.getElementById('planModal');
-const openPlanModalBtn = document.getElementById('openPlanModalBtn');
-const closePlanModal = document.getElementById('closePlanModal');
-const planSetup = document.getElementById('planSetup');
-const planResult = document.getElementById('planResult');
-const planClassSelect = document.getElementById('planClassSelect');
-const generatePlanBtn = document.getElementById('generatePlanBtn');
-const resetPlanBtn = document.getElementById('resetPlanBtn');
-
-// 1. Open modal and dynamically load the student's available classes
-if (openPlanModalBtn) {
-  openPlanModalBtn.addEventListener('click', () => {
-    // Grab the classes currently visible in the student's sidebar
-    const recElements = document.querySelectorAll('.rec-item');
-    planClassSelect.innerHTML = '';
-    
-    if (recElements.length === 0) {
-      planClassSelect.innerHTML = '<p class="meta">No classes available to select.</p>';
-    } else {
-      recElements.forEach(el => {
-        const id = el.dataset.id || el.querySelector('.t').innerText; 
-        const title = el.querySelector('.t').innerText;
-        
-        // Find the actual ID from the state.recordings list
-        const recObj = state.recordings.find(r => (r.title + (r.has_notes ? ' 📎' : '')) === title || r.title === title);
-        const actualId = recObj ? recObj.id : id;
-
-        const label = document.createElement('label');
-        label.style.display = 'flex';
-        label.style.alignItems = 'center';
-        label.style.gap = '8px';
-        label.style.marginBottom = '8px';
-        label.style.cursor = 'pointer';
-        
-        // Build the checkbox (Removed "checked" so they default to unselected)
-        label.innerHTML = `
-          <input type="checkbox" value="${actualId}" style="transform: scale(1.2); margin-top: 2px;" /> 
-          <span style="font-size: 13.5px; font-weight: 700; color: var(--text);">${title}</span>
-        `;
-        planClassSelect.appendChild(label);
-      });
-    }
-
-    // If they already have a plan saved, show it. Otherwise, show the setup form.
-    if (currentStudyPlan) {
-      renderPlan();
-    } else {
-      planSetup.classList.remove('hidden');
-      planResult.classList.add('hidden');
-      resetPlanBtn.classList.add('hidden');
-      generatePlanBtn.classList.remove('hidden');
-    }
-    
-    planModal.classList.remove('hidden');
-  });
-}
-
-if (closePlanModal) {
-  closePlanModal.addEventListener('click', () => planModal.classList.add('hidden'));
-}
-
-// 2. Generate Plan (Talk to the backend AI)
-if (generatePlanBtn) {
-  generatePlanBtn.addEventListener('click', async () => {
-    const selectedIds = Array.from(planClassSelect.querySelectorAll('input:checked')).map(cb => cb.value);
-    
-    if (selectedIds.length === 0) {
-      alert("Please select at least one class to review.");
-      return;
-    }
-
-    const days = document.getElementById('planDays').value;
-    const hours = document.getElementById('planHours').value;
-    const focus = document.getElementById('planFocus').value;
-
-    const btnOrig = generatePlanBtn.innerText;
-    generatePlanBtn.innerText = "⏳ Building your schedule...";
-    generatePlanBtn.disabled = true;
-
-    try {
-      const res = await fetch(`${API}/api/student/plan`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          recording_ids: selectedIds,
-          days: parseInt(days),
-          hours_per_day: parseFloat(hours),
-          focus: focus,
-          token: state.token
-        })
-      });
-
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Failed to generate plan");
-
-      // Inject a 'completed' boolean into every task so we can track checkboxes
-      data.plan.forEach(day => {
-        day.tasks.forEach(task => task.completed = false);
-      });
-
-      // Save to memory and browser storage
-      currentStudyPlan = data.plan;
-      localStorage.setItem('studyPlan_NGClassMate', JSON.stringify(currentStudyPlan));
-      
-      renderPlan();
-
-    } catch (err) {
-      alert(err.message);
-    } finally {
-      generatePlanBtn.innerText = btnOrig;
-      generatePlanBtn.disabled = false;
-    }
-  });
-}
-
-// 3. Render the Plan and Checklists
-function renderPlan() {
-  planSetup.classList.add('hidden');
-  generatePlanBtn.classList.add('hidden');
-  planResult.classList.remove('hidden');
-  resetPlanBtn.classList.remove('hidden');
-
-  planResult.innerHTML = '';
-
-  let totalTasks = 0;
-  let completedTasks = 0;
-
-  const planContainer = document.createElement('div');
-  planContainer.style.display = 'flex';
-  planContainer.style.flexDirection = 'column';
-  planContainer.style.gap = '16px';
-
-  currentStudyPlan.forEach((day, dIdx) => {
-    const dayCard = document.createElement('div');
-    dayCard.className = 'q-block'; // Reusing your nice border box styling
-    
-    // The AI's motivational quote
-    const quoteHtml = day.quote ? `
-      <div class="explain" style="margin-top:0; margin-bottom:12px; border-left: 3px solid var(--brand); font-style: italic; color: var(--brand-d);">
-        💡 "${escapeHtml(day.quote)}"
-      </div>` : '';
-
-    // The Tasks
-    let tasksHtml = '';
-    day.tasks.forEach((task, tIdx) => {
-      totalTasks++;
-      if (task.completed) completedTasks++;
-      
-      tasksHtml += `
-        <label style="display: flex; align-items: flex-start; gap: 12px; padding: 12px; background: var(--panel); border: 1.5px solid var(--line); border-radius: 12px; margin-bottom: 8px; cursor: pointer; transition: 0.15s; opacity: ${task.completed ? '0.55' : '1'};">
-          <input type="checkbox" style="margin-top: 3px; transform: scale(1.3);" onchange="togglePlanTask(${dIdx}, ${tIdx})" ${task.completed ? 'checked' : ''} />
-          <div>
-            <strong style="display:block; font-size: 14.5px; margin-bottom: 3px; color: ${task.completed ? 'var(--muted)' : 'var(--text)'};">
-              ${escapeHtml(task.title)} <span class="meta" style="font-weight:800; color: var(--brand-d);">(${task.est_minutes}m)</span>
-            </strong>
-            <span style="font-size: 13px; color: var(--muted); font-weight:600; line-height: 1.4; display: block;">${escapeHtml(task.description)}</span>
-          </div>
-        </label>
-      `;
-    });
-
-    dayCard.innerHTML = `
-      <div class="q-title"><span class="q-num" style="padding: 4px 12px; font-size: 13px;">Day ${day.day}</span></div>
-      ${quoteHtml}
-      ${tasksHtml}
-    `;
-    planContainer.appendChild(dayCard);
-  });
-
-  // Calculate and draw the Progress Bar
-  const pct = totalTasks === 0 ? 0 : Math.round((completedTasks / totalTasks) * 100);
-  const progressHtml = `
-    <div style="margin-bottom: 20px; background: var(--panel); border: 1px solid var(--line); padding: 16px; border-radius: 14px; box-shadow: var(--shadow-sm);">
-      <div style="display: flex; justify-content: space-between; font-weight: 900; font-size: 15px; margin-bottom: 10px;">
-        <span>Plan Progress</span>
-        <span style="color: var(--brand-d);">${pct}% Completed</span>
-      </div>
-      <div class="bulk-bar" style="max-width: 100%; height: 14px; background: var(--bg2);">
-        <div class="bulk-bar-fill" style="width: ${pct}%; border-radius: 20px;"></div>
-      </div>
-    </div>
-  `;
-
-  planResult.innerHTML = progressHtml;
-  planResult.appendChild(planContainer);
-}
-
-// 4. Toggle a checkbox and save progress
-window.togglePlanTask = function(dIdx, tIdx) {
-  currentStudyPlan[dIdx].tasks[tIdx].completed = !currentStudyPlan[dIdx].tasks[tIdx].completed;
-  localStorage.setItem('studyPlan_NGClassMate', JSON.stringify(currentStudyPlan));
-  renderPlan(); // Re-render to update the progress bar and fade the checked item
-};
-
-// 5. Delete the plan and start over
-if (resetPlanBtn) {
-  resetPlanBtn.addEventListener('click', () => {
-    if(confirm("Are you sure you want to delete your current plan and start over?")) {
-      currentStudyPlan = null;
-      localStorage.removeItem('studyPlan_NGClassMate');
-      
-      planSetup.classList.remove('hidden');
-      planResult.classList.add('hidden');
-      resetPlanBtn.classList.add('hidden');
-      generatePlanBtn.classList.remove('hidden');
-    }
-  });
-}

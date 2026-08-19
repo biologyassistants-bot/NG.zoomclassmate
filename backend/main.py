@@ -1841,6 +1841,83 @@ async def quiz(body: QuizBody):
     return data
 
 
+# ---------- study plan generation ----------
+class StudyPlanBody(BaseModel):
+    recording_ids: list[str]
+    days: int
+    hours_per_day: float
+    focus: str
+    token: str | None = None
+
+@app.post("/api/student/plan")
+async def generate_study_plan(body: StudyPlanBody):
+    if not valid_session(body.token):
+        return JSONResponse({"error": "Your session has expired. Please log in again."}, status_code=401)
+    
+    if not body.recording_ids:
+        return JSONResponse({"error": "Please select at least one class to study."}, status_code=400)
+
+    # Gather the requested recordings and use a fixed 90-minute estimate for all classes
+    selected_recs = []
+    for rid in body.recording_ids:
+        rec = REC_BY_ID.get(rid)
+        if rec:
+            est_minutes = 90  # Fixed estimate for every recording
+            selected_recs.append(f"- ID: {rec['id']} | Title: {rec.get('display_title') or rec.get('topic')} | Length: {est_minutes} mins")
+
+    if not selected_recs:
+        return JSONResponse({"error": "Selected recordings not found."}, status_code=404)
+
+    recs_text = "\n".join(selected_recs)
+    
+    system = (
+        "You are an encouraging, expert academic coach for Cambridge IGCSE and A-Level Biology students. "
+        "Your task is to create a balanced, day-by-day study plan based on the student's available time and selected classes. "
+        "Return STRICT JSON only, no markdown, no prose. "
+        "Schema: {\"plan\":[{\"day\":int,\"quote\":str,\"tasks\":[{\"recording_id\":str,\"title\":str,\"description\":str,\"est_minutes\":int}]}]}. "
+        "Rules:\n"
+        "1. 'quote' must be a short, biology-themed motivational sentence for that day.\n"
+        "2. Break down longer recordings into smaller tasks if needed.\n"
+        "3. Include active recall tasks based on the student's focus.\n"
+        "4. Do not exceed the student's daily time limit."
+    )
+    
+    user = (
+        f"Create a {body.days}-day study plan.\n"
+        f"Time available: {body.hours_per_day} hours per day.\n"
+        f"Student's Goal/Focus: {body.focus}\n\n"
+        f"Classes to cover:\n{recs_text}"
+    )
+
+    try:
+        raw = await llm(
+            [{"role": "system", "content": system}, {"role": "user", "content": user}],
+            max_tokens=2500,
+            temperature=0.4, # slightly higher temperature for creative motivational quotes
+        )
+    except (LLMConfigError, LLMUpstreamError) as e:
+        return JSONResponse({"error": str(e)}, status_code=503)
+
+    # Extract JSON safely
+    data = None
+    import re
+    import json as _json
+    try:
+        data = _json.loads(raw)
+    except Exception:
+        m = re.search(r"\{.*\}", raw, re.DOTALL)
+        if m:
+            try:
+                data = _json.loads(m.group(0))
+            except Exception:
+                pass
+                
+    if not data or "plan" not in data:
+        return JSONResponse({"error": "Could not generate the plan. Please try again.", "raw": raw[:500]}, status_code=500)
+        
+    return data
+
+
 # ---------- Zoom webhook ----------
 @app.post("/api/zoom/webhook")
 async def zoom_webhook(request: Request, background_tasks: BackgroundTasks):

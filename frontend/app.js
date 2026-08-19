@@ -188,7 +188,13 @@ function switchStudentTab(name) {
   if(el("studentPlannerPane")) el("studentPlannerPane").classList.toggle("hidden", name !== "Planner");
 
   if (name === "Dash") renderStudentDashboard();
-  if (name === "Planner") initPlanner();
+  if (name === "Planner") {
+    if (state.recordings.length === 0) {
+      loadRecordings().then(() => initPlanner());
+    } else {
+      initPlanner();
+    }
+  }
 }
 
 function calculatePlanProgress() {
@@ -439,39 +445,104 @@ function initPlanner() {
   planClassSelect.innerHTML = '';
   
   if (state.recordings.length === 0) {
-    planClassSelect.innerHTML = '<p class="meta">No classes available.</p>';
+    planClassSelect.innerHTML = '<p class="meta" style="padding: 8px;">No classes available.</p>';
   } else {
-    // Group recordings by course (unit)
+    // 1. Group recordings by course (unit)
     const courseGroups = {};
     state.recordings.forEach(r => {
-      const courseName = r.unit || "Unassigned";
+      const courseName = (r.unit && r.unit.trim() !== "") ? r.unit.trim() : "Unassigned Course";
       if (!courseGroups[courseName]) courseGroups[courseName] = [];
       courseGroups[courseName].push(r);
     });
 
-    // Render categorized by course
-    Object.keys(courseGroups).sort().forEach(courseName => {
-      const groupDiv = document.createElement('div');
-      groupDiv.style.marginBottom = '12px';
-      
-      const courseHeader = document.createElement('div');
-      courseHeader.style.cssText = 'font-weight: 800; font-size: 13px; color: var(--brand-d); margin-bottom: 6px; border-bottom: 1px solid var(--line); padding-bottom: 3px;';
-      courseHeader.textContent = `📚 ${courseName}`;
-      groupDiv.appendChild(courseHeader);
+    // 2. Container for Course Selection checkboxes
+    const courseSelectContainer = document.createElement('div');
+    courseSelectContainer.style.cssText = 'margin-bottom: 12px; padding-bottom: 10px; border-bottom: 1.5px solid var(--line);';
+    
+    const courseTitle = document.createElement('div');
+    courseTitle.style.cssText = 'font-weight: 800; font-size: 13px; color: var(--brand-d); margin-bottom: 8px;';
+    courseTitle.textContent = '1️⃣ Select Courses to Include:';
+    courseSelectContainer.appendChild(courseTitle);
 
-      courseGroups[courseName].forEach(r => {
-        const label = document.createElement('label');
-        label.style.cssText = 'display: flex; align-items: center; gap: 8px; margin-bottom: 6px; cursor: pointer; padding-left: 8px;';
-        
-        label.innerHTML = `
-          <input type="checkbox" value="${r.id}" style="transform: scale(1.2); margin-top: 2px; cursor: pointer;" /> 
-          <span style="font-size: 13px; font-weight: 600; color: var(--text);">${escapeHtml(r.title)}</span>
-        `;
-        groupDiv.appendChild(label);
+    // 3. Container for Classes Selection (filtered dynamically)
+    const classesSelectContainer = document.createElement('div');
+    
+    const classesTitle = document.createElement('div');
+    classesTitle.style.cssText = 'font-weight: 800; font-size: 13px; color: var(--brand-d); margin-bottom: 8px;';
+    classesTitle.textContent = '2️⃣ Select Classes to Review:';
+    classesSelectContainer.appendChild(classesTitle);
+
+    const classesListDiv = document.createElement('div');
+    classesListDiv.style.cssText = 'max-height: 180px; overflow-y: auto;';
+    classesSelectContainer.appendChild(classesListDiv);
+
+    // Function to re-render the classes list based on checked courses
+    const updateClassesList = () => {
+      classesListDiv.innerHTML = '';
+      const selectedCourses = Array.from(courseSelectContainer.querySelectorAll('input[type="checkbox"]:checked'))
+        .map(cb => cb.value);
+
+      if (selectedCourses.length === 0) {
+        classesListDiv.innerHTML = '<p class="meta" style="font-size: 12px; font-style: italic;">Select a course above to see its classes.</p>';
+        return;
+      }
+
+      let hasClasses = false;
+      selectedCourses.forEach(courseName => {
+        const recs = courseGroups[courseName] || [];
+        recs.forEach(r => {
+          hasClasses = true;
+          const label = document.createElement('label');
+          label.style.cssText = 'display: flex; align-items: center; gap: 8px; margin-bottom: 6px; cursor: pointer;';
+          
+          const checkbox = document.createElement('input');
+          checkbox.type = 'checkbox';
+          checkbox.value = r.id;
+          checkbox.className = 'class-checkbox';
+          checkbox.style.cssText = 'transform: scale(1.1); cursor: pointer;';
+
+          const span = document.createElement('span');
+          span.style.cssText = 'font-size: 12.5px; font-weight: 600; color: var(--text);';
+          span.textContent = `${courseName} — ${r.title}`;
+
+          label.appendChild(checkbox);
+          label.appendChild(span);
+          classesListDiv.appendChild(label);
+        });
       });
 
-      planClassSelect.appendChild(groupDiv);
+      if (!hasClasses) {
+        classesListDiv.innerHTML = '<p class="meta" style="font-size: 12px;">No classes found in selected courses.</p>';
+      }
+    };
+
+    // Build course checkboxes
+    Object.keys(courseGroups).sort().forEach(courseName => {
+      const label = document.createElement('label');
+      label.style.cssText = 'display: flex; align-items: center; gap: 8px; margin-bottom: 6px; cursor: pointer;';
+      
+      const checkbox = document.createElement('input');
+      checkbox.type = 'checkbox';
+      checkbox.value = courseName;
+      checkbox.style.cssText = 'transform: scale(1.2); cursor: pointer;';
+      
+      // When course selection changes, update the classes list below
+      checkbox.addEventListener('change', updateClassesList);
+
+      const span = document.createElement('span');
+      span.style.cssText = 'font-size: 13px; font-weight: 700; color: var(--text);';
+      span.textContent = courseName;
+
+      label.appendChild(checkbox);
+      label.appendChild(span);
+      courseSelectContainer.appendChild(label);
     });
+
+    planClassSelect.appendChild(courseSelectContainer);
+    planClassSelect.appendChild(classesSelectContainer);
+    
+    // Initial call to show empty state
+    updateClassesList();
   }
 
   const setupDiv = document.getElementById('planSetup');
@@ -495,7 +566,7 @@ function initPlanner() {
 
 if (generatePlanBtn) {
   generatePlanBtn.addEventListener('click', async () => {
-    const selectedIds = Array.from(planClassSelect.querySelectorAll('input:checked')).map(cb => cb.value);
+    const selectedIds = Array.from(planClassSelect.querySelectorAll('.class-checkbox:checked')).map(cb => cb.value);
     
     if (selectedIds.length === 0) {
       alert("Please select at least one class to review.");

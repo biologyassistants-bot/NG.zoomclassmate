@@ -8,7 +8,7 @@ import time
 import hashlib
 import hmac
 from collections import Counter
-from fastapi import FastAPI, UploadFile, File, Form, Request, Query
+from fastapi import FastAPI, UploadFile, File, Form, Request, Query, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -1843,48 +1843,49 @@ async def quiz(body: QuizBody):
 
 # ---------- Zoom webhook ----------
 @app.post("/api/zoom/webhook")
-async def zoom_webhook(request: Request):
+async def zoom_webhook(request: Request, background_tasks: BackgroundTasks):
     body = await request.body()
     payload = await request.json()
+    
     # 1) Zoom URL validation handshake
     if payload.get("event") == "endpoint.url_validation":
         plain = payload["payload"]["plainToken"]
         sig = hmac.new(ZOOM_WEBHOOK_SECRET.encode(), plain.encode(), hashlib.sha256).hexdigest()
         return {"plainToken": plain, "encryptedToken": sig}
+        
     # 2) Verify the signature of real events
     ts = request.headers.get("x-zm-request-timestamp", "")
     got = request.headers.get("x-zm-signature", "")
     message = f"v0:{ts}:{body.decode('utf-8')}".encode()
     expected = "v0=" + hmac.new(ZOOM_WEBHOOK_SECRET.encode(), message, hashlib.sha256).hexdigest()
+    
     if not hmac.compare_digest(expected, got):
         return JSONResponse({"error": "bad signature"}, status_code=401)
-    # 3) Handle recording completed — for BOTH meetings and webinars.
-    #    Zoom sends different event names depending on the source, e.g.:
-    #      meeting: recording.completed / recording.transcript_completed
-    #      webinar: webinar.recording_completed (and some accounts still use
-    #               recording.completed with a webinar-type object)
-    #    We accept any event that ends in a recording-completed variant so a
-    #    webinar recording is never silently dropped.
+        
+    # 3) Handle recording completed
     event = payload.get("event", "")
     print(f"[zoom webhook] received event: {event}")  # visible in Render logs
+    
     recording_events = {
         "recording.completed",
         "recording.transcript_completed",
         "webinar.recording_completed",
         "webinar.recording_transcript_completed",
     }
+    
     is_recording_event = (
         event in recording_events
         or ("recording" in event and ("completed" in event or "transcript" in event))
     )
+    
     if is_recording_event:
         obj = payload.get("payload", {}).get("object", {})
-        try:
-            added = await ingest_zoom_meeting(obj)
-            print(f"[zoom webhook] ingest for '{obj.get('topic')}' "
-                  f"(type={obj.get('type')}, source={_detect_source(obj)}) -> added={added}")
-        except Exception as e:
-            print("Zoom ingest error:", e)
+        
+        # Use BackgroundTasks to tell Zoom we received the file instantly, 
+        # preventing Zoom from timing out and canceling the import!
+        background_tasks.add_task(ingest_zoom_meeting, obj)
+        print(f"[zoom webhook] queued background ingest for '{obj.get('topic')}'")
+        
     return {"ok": True}
 
 

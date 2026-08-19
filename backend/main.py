@@ -1764,7 +1764,7 @@ async def ask(body: AskBody):
     except (LLMConfigError, LLMUpstreamError) as e:
         return JSONResponse({"error": str(e)}, status_code=503)
     
-    # log the student question for the teacher
+    # log the student question and AI answer for the teacher
     try:
         from datetime import datetime
         from zoneinfo import ZoneInfo
@@ -1775,6 +1775,7 @@ async def ask(body: AskBody):
             "recording_title": rec.get("display_title") or rec.get("topic"),
             "unit": rec.get("unit") or "Unassigned",
             "question": body.question,
+            "answer": answer,  # AI answer saved for teacher review
             "time": datetime.now(ZoneInfo("Africa/Cairo")).strftime("%Y-%m-%d %H:%M"),
         })
         save_qlog(log[-1000:])
@@ -2006,7 +2007,7 @@ async def _list_cloud_recordings(from_date: str, to_date: str):
                 if next_token:
                     params["next_page_token"] = next_token
                 r = await client.get(
-                    "https://api.zoom.us/v2/users/me/recordings",
+                    "[https://api.zoom.us/v2/users/me/recordings](https://api.zoom.us/v2/users/me/recordings)",
                     headers={"Authorization": f"Bearer {token}"},
                     params=params,
                 )

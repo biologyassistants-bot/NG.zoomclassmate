@@ -417,12 +417,32 @@ button{font-family:inherit;cursor:pointer;border:none}
    Responsive Design for Mobile, Tablet, and iPad
    ========================================================= */
 
-/* ---------- student 3-tab layout ---------- */
+/* ---------- student 3-tab layout & fixed viewport fix ---------- */
+html, body {
+  height: 100%;
+  overflow: hidden; /* Lock the outer window from scrolling */
+}
+
+#app {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
 .student-pane {
   flex: 1;
   display: flex;
   flex-direction: column;
   min-height: 0;
+  overflow-y: auto;
+}
+
+/* Fix the AI Tutor pane to lock perfectly inside the screen height */
+#studentTutorPane {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .planner-layout {
@@ -449,72 +469,10 @@ button{font-family:inherit;cursor:pointer;border:none}
   border-radius: 16px;
 }
 
-/* Make sure topbar scroll works for students on mobile too */
 @media (max-width: 820px) {
+  html, body { overflow: auto; } /* Allow normal scrolling on mobile devices */
+  #app { height: auto; }
+  #studentTutorPane { flex-direction: column; overflow: visible; }
   .planner-layout { flex-direction: column; }
   .planner-setup { width: 100%; position: static; }
-}
-
-@media (max-width: 1024px) {
-  /* Tablet / iPad / Mobile layout split */
-  .layout { flex-direction: column; }
-  .sidebar {
-    width: 100%;
-    height: 35vh; /* Strict height constraint */
-    flex: 0 0 35vh; /* Force mobile browsers to respect the height */
-    border-right: none;
-    border-bottom: 1px solid var(--line);
-  }
-  .content { flex: 1; display: flex; flex-direction: column; min-height: 0; }
-  .t-rec { grid-template-columns: 1fr; }
-}
-
-@media (max-width: 820px) {
-  /* Mobile adjustments */
-  .topbar {
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 12px;
-  }
-  .who {
-    width: 100%;
-    overflow-x: auto;
-    padding-bottom: 6px;
-    -webkit-overflow-scrolling: touch; /* Smooth horizontal scroll for iOS */
-  }
-  .teacher-pane { padding: 16px; }
-  .stats-bar { grid-template-columns: repeat(2, 1fr); }
-  .add-student { flex-direction: column; }
-  .add-student input, .add-student button { width: 100%; }
-  .import-one-bar .filter-input { min-width: 100%; }
-  .student-row { grid-template-columns: 1fr; }
-
-  /* Modals */
-  .modal { padding: 12px; }
-  .modal-card { max-height: 95vh; }
-  .modal-head, .modal-foot { padding: 14px 16px; }
-  .modal-body { padding: 14px 16px; }
-  .student-edit-foot { flex-wrap: wrap; justify-content: stretch; }
-  .student-edit-foot button { flex: 1; }
-
-  /* Student workspace */
-  .ws-head { padding: 14px 16px; flex-direction: column; }
-  .chat { padding: 16px; }
-  .msg { max-width: 90%; }
-  .ask-bar { padding: 12px 16px; flex-wrap: wrap; }
-  .ask-bar input { width: 100%; }
-  .ask-bar button { width: 100%; }
-
-  /* Filters */
-  .rec-filters { flex-direction: column; align-items: stretch; }
-  .rec-filters .filter-select { width: 100%; }
-  .rec-filters .rec-count { margin-left: 0; margin-top: 8px; }
-}
-
-@media (max-width: 480px) {
-  /* Small mobile phones */
-  .stats-bar { grid-template-columns: 1fr; }
-  .gate-card { padding: 30px 20px; }
-  .gate-card h1 { font-size: 24px; }
-  .empty-emoji { font-size: 40px; }
 }

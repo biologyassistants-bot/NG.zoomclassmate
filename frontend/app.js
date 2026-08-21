@@ -7,6 +7,9 @@ let studentStats = JSON.parse(localStorage.getItem('studentStats_NGClassMate') |
 // Unique declaration for Study Plan
 let currentStudyPlan = JSON.parse(localStorage.getItem('studyPlan_NGClassMate') || 'null');
 
+// Global cache for teacher roster search
+let teacherStudentsCache = [];
+
 function el(id) { return document.getElementById(id); }
 function escapeHtml(s) { return (s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
 
@@ -76,7 +79,7 @@ if(el("roleStudent")) el("roleStudent").addEventListener("click", () => { show("
 if(el("roleTeacher")) el("roleTeacher").addEventListener("click", () => { show("teacherGate"); if(el("passInput")) el("passInput").focus(); });
 document.querySelectorAll("[data-back]").forEach(b => b.addEventListener("click", () => show(b.dataset.back)));
 
-// ---------- student gate (email + password against roster) ----------
+// ---------- student gate ----------
 async function enter() {
   const email = el("emailInput").value.trim();
   const password = el("passwordInput").value;
@@ -596,7 +599,6 @@ function renderPlan() {
       checkbox.style.cssText = 'margin-top: 3px; transform: scale(1.3); cursor: pointer;';
       checkbox.checked = task.completed;
       
-      // Mobile touch/click handler
       checkbox.addEventListener('change', (e) => {
         e.stopPropagation();
         togglePlanTask(dIdx, tIdx);
@@ -918,20 +920,21 @@ if(el("deleteUnassignedBtn")) {
   });
 }
 
-// ---------- roster management ----------
+// ---------- roster management & student search ----------
 async function loadStudents() {
   const res = await fetch(`${API}/api/teacher/students`, {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ passcode: state.passcode })
   });
   const data = await res.json();
-  renderStudents(data.students || []);
+  teacherStudentsCache = data.students || [];
+  renderStudents(teacherStudentsCache);
 }
 
 function renderStudents(list) {
   const box = el("studentList"); 
   if(!box) return;
   box.innerHTML = "";
-  if (!list.length) { box.innerHTML = '<div class="roster-empty">No students yet. Import a sheet or add one above.</div>'; return; }
+  if (!list.length) { box.innerHTML = '<div class="roster-empty">No students found matching your search.</div>'; return; }
   list.forEach(s => {
     const row = document.createElement("div"); row.className = "student-row";
     const courses = (s.courses && s.courses.length) ? s.courses.join(", ") : "— no course —";
@@ -948,6 +951,18 @@ function renderStudents(list) {
       <button class="s-btn edit-btn">✏️ Edit</button>`;
     row.querySelector(".edit-btn").addEventListener("click", () => openStudentEditor(s));
     box.appendChild(row);
+  });
+}
+
+// Student Search input handler
+if (el("studentSearchInput")) {
+  el("studentSearchInput").addEventListener("input", (e) => {
+    const query = e.target.value.toLowerCase().trim();
+    const filtered = teacherStudentsCache.filter(s => 
+      (s.name || "").toLowerCase().includes(query) || 
+      (s.email || "").toLowerCase().includes(query)
+    );
+    renderStudents(filtered);
   });
 }
 

@@ -920,7 +920,7 @@ if(el("deleteUnassignedBtn")) {
   });
 }
 
-// ---------- roster management & search ----------
+// ---------- roster management & student search ----------
 async function loadStudents() {
   try {
     const res = await fetch(`${API}/api/teacher/students`, {
@@ -929,6 +929,23 @@ async function loadStudents() {
     const data = await res.json();
     teacherStudentsCache = data.students || [];
     renderStudents(teacherStudentsCache);
+
+    const studentSearchInput = el("studentSearchInput");
+    if (studentSearchInput && !studentSearchInput.dataset.bound) {
+      studentSearchInput.dataset.bound = "true";
+      studentSearchInput.addEventListener("input", (e) => {
+        const query = (e.target.value || "").toLowerCase().trim();
+        if (!query) {
+          renderStudents(teacherStudentsCache);
+          return;
+        }
+        const filtered = teacherStudentsCache.filter(s => 
+          (s.name || "").toLowerCase().includes(query) || 
+          (s.email || "").toLowerCase().includes(query)
+        );
+        renderStudents(filtered);
+      });
+    }
   } catch (e) {
     const box = el("studentList");
     if(box) box.innerHTML = '<div class="roster-empty">Could not load students.</div>';
@@ -956,22 +973,6 @@ function renderStudents(list) {
       <button class="s-btn edit-btn">✏️ Edit</button>`;
     row.querySelector(".edit-btn").addEventListener("click", () => openStudentEditor(s));
     box.appendChild(row);
-  });
-}
-
-const studentSearchInput = el("studentSearchInput");
-if (studentSearchInput) {
-  studentSearchInput.addEventListener("input", (e) => {
-    const query = (e.target.value || "").toLowerCase().trim();
-    if (!query) {
-      renderStudents(teacherStudentsCache);
-      return;
-    }
-    const filtered = teacherStudentsCache.filter(s => 
-      (s.name || "").toLowerCase().includes(query) || 
-      (s.email || "").toLowerCase().includes(query)
-    );
-    renderStudents(filtered);
   });
 }
 

@@ -271,6 +271,38 @@
         <p id="importMsg" class="ok-msg hidden"></p>
         <p id="importErr" class="err hidden"></p>
       </div>
+      <div id="teacherStudents" class="teacher-pane hidden">
+      <div class="pane-head">
+        <h2>Class roster</h2>
+        <p class="meta">Only students on this list can sign in. Import a sheet of students, or add one manually. Each student sees only the recordings for their assigned course(s).</p>
+      </div>
+      <div class="add-student">
+        <input id="newStudentName" type="text" placeholder="Student name" />
+        <input id="newStudentEmail" type="text" placeholder="Email" />
+        <input id="newStudentPassword" type="text" placeholder="Password" />
+        <input id="newStudentCourses" type="text" placeholder="Courses (separate with ;)" />
+        <button id="addStudentBtn" class="primary">+ Add student</button>
+      </div>
+      <p id="addStudentErr" class="err hidden"></p>
+      <div class="export-bar" style="margin-top:6px;gap:10px;">
+        <button id="exportRosterCsv" type="button" class="ghost">⬇️ Export roster (CSV)</button>
+        <button id="dedupeBtn" type="button" class="ghost">🔎 Merge duplicate accounts</button>
+      </div>
+      <div class="import-box" style="margin-top:14px;padding:12px;border:1px dashed #bbb;border-radius:10px;">
+        <strong>📥 Import students from Excel</strong>
+        <p class="meta">Columns: <code>email</code>, <code>password</code>, <code>name</code> (optional), <code>courses</code> (separate multiple with <code>;</code>). Course names must match the unit you assign to recordings.</p>
+        <input type="file" id="excelFile" accept=".xlsx" />
+        <button id="importBtn" class="primary">Upload &amp; import</button>
+        <p id="importMsg" class="ok-msg hidden"></p>
+        <p id="importErr" class="err hidden"></p>
+      </div>
+
+      <!-- 👇 ADD THIS SEARCH BAR HERE 👇 -->
+      <div style="margin-top: 20px; margin-bottom: 12px;">
+        <input id="studentSearchInput" type="text" class="filter-input" placeholder="🔍 Search students by name or email…" style="width: 100%;" />
+      </div>
+      <!-- 👆 END OF SEARCH BAR 👆 -->
+
       <div id="studentList" class="student-list"></div>
     </div>
 

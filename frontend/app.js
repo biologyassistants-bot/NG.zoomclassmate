@@ -79,7 +79,7 @@ if(el("roleStudent")) el("roleStudent").addEventListener("click", () => { show("
 if(el("roleTeacher")) el("roleTeacher").addEventListener("click", () => { show("teacherGate"); if(el("passInput")) el("passInput").focus(); });
 document.querySelectorAll("[data-back]").forEach(b => b.addEventListener("click", () => show(b.dataset.back)));
 
-// ---------- student gate ----------
+// ---------- student gate (email + password against roster) ----------
 async function enter() {
   const email = el("emailInput").value.trim();
   const password = el("passwordInput").value;
@@ -920,14 +920,19 @@ if(el("deleteUnassignedBtn")) {
   });
 }
 
-// ---------- roster management & student search ----------
+// ---------- roster management & search ----------
 async function loadStudents() {
-  const res = await fetch(`${API}/api/teacher/students`, {
-    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ passcode: state.passcode })
-  });
-  const data = await res.json();
-  teacherStudentsCache = data.students || [];
-  renderStudents(teacherStudentsCache);
+  try {
+    const res = await fetch(`${API}/api/teacher/students`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ passcode: state.passcode })
+    });
+    const data = await res.json();
+    teacherStudentsCache = data.students || [];
+    renderStudents(teacherStudentsCache);
+  } catch (e) {
+    const box = el("studentList");
+    if(box) box.innerHTML = '<div class="roster-empty">Could not load students.</div>';
+  }
 }
 
 function renderStudents(list) {
@@ -954,10 +959,14 @@ function renderStudents(list) {
   });
 }
 
-// Student Search input handler
-if (el("studentSearchInput")) {
-  el("studentSearchInput").addEventListener("input", (e) => {
-    const query = e.target.value.toLowerCase().trim();
+const studentSearchInput = el("studentSearchInput");
+if (studentSearchInput) {
+  studentSearchInput.addEventListener("input", (e) => {
+    const query = (e.target.value || "").toLowerCase().trim();
+    if (!query) {
+      renderStudents(teacherStudentsCache);
+      return;
+    }
     const filtered = teacherStudentsCache.filter(s => 
       (s.name || "").toLowerCase().includes(query) || 
       (s.email || "").toLowerCase().includes(query)

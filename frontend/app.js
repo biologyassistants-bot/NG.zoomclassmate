@@ -44,6 +44,38 @@ function renderBotText(text) {
 
 function saveStudentStats() {
   localStorage.setItem('studentStats_NGClassMate', JSON.stringify(studentStats));
+  saveServerProfile(); // Sync stats across devices
+}
+
+// ---------- Cross-Device Sync Helpers ----------
+async function fetchServerProfile() {
+  if (!state.token) return;
+  try {
+    const res = await fetch(`${API}/api/student/profile`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token: state.token })
+    });
+    const data = await res.json();
+    if (res.ok) {
+      if (data.study_plan !== undefined && data.study_plan !== null) {
+        currentStudyPlan = data.study_plan;
+      }
+      if (data.student_stats) {
+        studentStats = data.student_stats;
+        localStorage.setItem('studentStats_NGClassMate', JSON.stringify(studentStats));
+      }
+    }
+  } catch (e) {}
+}
+
+async function saveServerProfile() {
+  if (!state.token) return;
+  try {
+    await fetch(`${API}/api/student/sync`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token: state.token, study_plan: currentStudyPlan, student_stats: studentStats })
+    });
+  } catch (e) {}
 }
 
 // ---------- Safe Auto-Login Check on Refresh ----------
@@ -63,10 +95,12 @@ document.addEventListener("DOMContentLoaded", () => {
       if(el("dashName")) el("dashName").textContent = state.name;
       
       show("main");
-      loadRecordings().then(() => {
-        switchStudentTab("Dash");
-      }).catch(err => {
-        signOut();
+      fetchServerProfile().then(() => {
+        loadRecordings().then(() => {
+          switchStudentTab("Dash");
+        }).catch(err => {
+          signOut();
+        });
       });
     }
   } catch (e) {
@@ -104,6 +138,7 @@ async function enter() {
     
     if(el("passwordInput")) el("passwordInput").value = "";
     show("main");
+    await fetchServerProfile();
     await loadRecordings();
     switchStudentTab("Dash");
   } catch (e) {
@@ -128,7 +163,7 @@ async function teacherLogin(passcodeOverride = null) {
   if (!p) { 
     if(errEl) {
       errEl.textContent = "Please type your passcode."; 
-      errEl.classList.remove("hidden"); 
+      errEl.classList.add("hidden"); 
     }
     return; 
   }
@@ -446,7 +481,6 @@ if(el("submitQuiz")) {
   });
 }
 
-
 // ---------- active recall flashcards ----------
 let currentFlashcards = [];
 let currentCardIndex = 0;
@@ -464,7 +498,6 @@ if (flashcardBtn) {
     if (!state.current) return;
     flashcardModal.classList.remove("hidden");
     flashcardBody.innerHTML = '<div class="typing">Crafting your flashcards <span class="dot">●</span><span class="dot">●</span><span class="dot">●</span></div>';
-    
     try {
       const res = await fetch(`${API}/api/flashcards`, {
         method: "POST", headers: { "Content-Type": "application/json" },
@@ -490,7 +523,6 @@ function renderCurrentCard() {
   if (!currentFlashcards.length) return;
   const card = currentFlashcards[currentCardIndex];
   cardCountIndicator.textContent = `${currentCardIndex + 1} / ${currentFlashcards.length}`;
-  
   let isFlipped = false;
   flashcardBody.innerHTML = `
     <div id="activeFlashcard" style="width: 100%; height: 200px; background: var(--panel2); border: 2px solid var(--line); border-radius: 16px; display: flex; align-items: center; justify-content: center; padding: 20px; cursor: pointer; text-align: center; box-shadow: var(--shadow-sm); transition: 0.2s;">
@@ -499,10 +531,8 @@ function renderCurrentCard() {
       </div>
     </div>
   `;
-
   const cardElem = el("activeFlashcard");
   const textElem = el("cardTextContent");
-  
   cardElem.addEventListener("click", () => {
     isFlipped = !isFlipped;
     if (isFlipped) {
@@ -517,17 +547,8 @@ function renderCurrentCard() {
   });
 }
 
-if (prevCardBtn) {
-  prevCardBtn.addEventListener("click", () => {
-    if (currentCardIndex > 0) { currentCardIndex--; renderCurrentCard(); }
-  });
-}
-if (nextCardBtn) {
-  nextCardBtn.addEventListener("click", () => {
-    if (currentCardIndex < currentFlashcards.length - 1) { currentCardIndex++; renderCurrentCard(); }
-  });
-}
-
+if (prevCardBtn) prevCardBtn.addEventListener("click", () => { if (currentCardIndex > 0) { currentCardIndex--; renderCurrentCard(); } });
+if (nextCardBtn) nextCardBtn.addEventListener("click", () => { if (currentCardIndex < currentFlashcards.length - 1) { currentCardIndex++; renderCurrentCard(); } });
 
 /* =========================================================
    STUDY PLAN FEATURE (DEDICATED PANE)
@@ -542,11 +563,9 @@ const planResult = document.getElementById('planResult');
 function initPlanner() {
   if (!planClassSelect) return;
   planClassSelect.innerHTML = '';
-  
   if (state.recordings.length === 0) {
     planClassSelect.innerHTML = '<p class="meta" style="padding: 8px;">No classes available.</p>';
   } else {
-    // 1. Group recordings by course (unit)
     const courseGroups = {};
     state.recordings.forEach(r => {
       const courseName = (r.unit && r.unit.trim() !== "") ? r.unit.trim() : "Unassigned Course";
@@ -554,7 +573,6 @@ function initPlanner() {
       courseGroups[courseName].push(r);
     });
 
-    // 2. Render each course as a clean, organized group with checkboxes
     Object.keys(courseGroups).sort().forEach(courseName => {
       const courseSection = document.createElement('div');
       courseSection.style.cssText = 'margin-bottom: 16px; background: var(--panel2); padding: 12px; border-radius: 10px; border: 1.5px solid var(--line);';
@@ -613,7 +631,6 @@ function initPlanner() {
 if (generatePlanBtn) {
   generatePlanBtn.addEventListener('click', async () => {
     const selectedIds = Array.from(planClassSelect.querySelectorAll('.class-checkbox:checked')).map(cb => cb.value);
-    
     if (selectedIds.length === 0) {
       alert("Please select at least one class to review.");
       return;
@@ -648,10 +665,8 @@ if (generatePlanBtn) {
       });
 
       currentStudyPlan = data.plan;
-      localStorage.setItem('studyPlan_NGClassMate', JSON.stringify(currentStudyPlan));
-      
+      await saveServerProfile();
       initPlanner();
-
     } catch (err) {
       alert(err.message);
     } finally {
@@ -695,9 +710,9 @@ function renderPlan() {
       checkbox.style.cssText = 'margin-top: 3px; transform: scale(1.3); cursor: pointer;';
       checkbox.checked = task.completed;
       
-      checkbox.addEventListener('change', (e) => {
+      checkbox.addEventListener('change', async (e) => {
         e.stopPropagation();
-        togglePlanTask(dIdx, tIdx);
+        await togglePlanTask(dIdx, tIdx);
       });
 
       const textDiv = document.createElement('div');
@@ -745,32 +760,31 @@ function renderPlan() {
 
   const finishBtn = document.getElementById('finishPlanBtn');
   if (finishBtn && isComplete) {
-    finishBtn.addEventListener('click', () => {
+    finishBtn.addEventListener('click', async () => {
       if (confirm("Congratulations on completing your study plan! 🎉 Would you like to wrap this up and clear it so you can start a new one?")) {
         currentStudyPlan = null;
-        localStorage.removeItem('studyPlan_NGClassMate');
+        await saveServerProfile();
         initPlanner();
       }
     });
   }
 }
 
-window.togglePlanTask = function(dIdx, tIdx) {
+async function togglePlanTask(dIdx, tIdx) {
   currentStudyPlan[dIdx].tasks[tIdx].completed = !currentStudyPlan[dIdx].tasks[tIdx].completed;
-  localStorage.setItem('studyPlan_NGClassMate', JSON.stringify(currentStudyPlan));
+  await saveServerProfile();
   renderPlan(); 
-};
+}
 
 if (resetPlanBtn) {
-  resetPlanBtn.addEventListener('click', () => {
+  resetPlanBtn.addEventListener('click', async () => {
     if(confirm("Are you sure you want to delete your current plan and start over?")) {
       currentStudyPlan = null;
-      localStorage.removeItem('studyPlan_NGClassMate');
+      await saveServerProfile();
       initPlanner(); 
     }
   });
 }
-
 
 // ================= TEACHER VIEW =================
 if(el("tabRecordings")) el("tabRecordings").addEventListener("click", () => switchTab("Recordings"));
@@ -798,7 +812,6 @@ function switchTab(name) {
   if (name === "Analytics") loadAnalytics();
 }
 
-// ---------- toast notifications ----------
 function toast(msg, kind = "info", ms = 3200) {
   const host = el("toastHost");
   if (!host) return;
@@ -810,7 +823,6 @@ function toast(msg, kind = "info", ms = 3200) {
   setTimeout(() => { t.classList.remove("show"); setTimeout(() => t.remove(), 300); }, ms);
 }
 
-// ---------- dashboard stats ----------
 async function loadStats() {
   const bar = el("statsBar");
   if (!bar) return;
@@ -835,7 +847,6 @@ async function loadStats() {
   } catch (e) {}
 }
 
-// ---------- question analytics ----------
 async function loadAnalytics() {
   const box = el("analyticsBody");
   if(!box) return;
@@ -871,7 +882,6 @@ async function loadAnalytics() {
   } catch (e) { box.innerHTML = '<div class="q-empty">Network error loading analytics.</div>'; }
 }
 
-// ---------- exports ----------
 function downloadUrl(path) {
   const url = `${API}${path}${path.includes("?") ? "&" : "?"}passcode=${encodeURIComponent(state.passcode)}`;
   const a = document.createElement("a");
@@ -881,142 +891,6 @@ if(el("exportQCsv")) el("exportQCsv").addEventListener("click", () => { download
 if(el("exportQPdf")) el("exportQPdf").addEventListener("click", () => { downloadUrl("/api/teacher/export/questions.pdf"); toast("Downloading questions PDF…", "info"); });
 if(el("exportRosterCsv")) el("exportRosterCsv").addEventListener("click", () => { downloadUrl("/api/teacher/export/roster.csv"); toast("Downloading roster CSV…", "info"); });
 
-// ---------- merge duplicate accounts ----------
-if(el("dedupeBtn")) {
-  el("dedupeBtn").addEventListener("click", async () => {
-    const body = el("dedupeBody");
-    if(el("dedupeApply")) el("dedupeApply").classList.add("hidden");
-    if(body) body.innerHTML = '<p class="meta">Scanning for duplicate emails…</p>';
-    if(el("dedupeModal")) el("dedupeModal").classList.remove("hidden");
-    try {
-      const res = await fetch(`${API}/api/teacher/students/dedupe-preview`, {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ passcode: state.passcode })
-      });
-      const data = await res.json();
-      if (!res.ok) { if(body) body.innerHTML = `<p class="ed-status err">${escapeHtml(data.error || "Could not scan.")}</p>`; return; }
-      if (!data.groups || !data.groups.length) {
-        if(body) body.innerHTML = '<p class="dedupe-clean">✅ No duplicate accounts found — every email is unique.</p>';
-        return;
-      }
-      let html = `<p class="meta">Found <strong>${data.duplicate_emails}</strong> email(s) with duplicates. `
-        + `Merging keeps the <strong>oldest</strong> account, combines all courses into it, and deletes `
-        + `<strong>${data.accounts_to_delete}</strong> extra account(s).</p>`;
-      data.groups.forEach(g => {
-        html += `<div class="dedupe-group">
-          <div class="dg-email">📧 ${escapeHtml(g.email)} <span class="dg-count">${g.duplicate_count} accounts</span></div>
-          <div class="dg-line"><strong>Keep:</strong> ${escapeHtml(g.keep.name || "(no name)")} ${g.keep.has_password ? "🔑" : "⚠️ no pw"}</div>
-          <div class="dg-line"><strong>Delete:</strong> ${g.will_delete.map(d => escapeHtml(d.name || "(no name)")).join(", ")}</div>
-          <div class="dg-line"><strong>Final courses:</strong> ${g.merged_courses.length ? g.merged_courses.map(c => `<span class="course-chip">${escapeHtml(c)}</span>`).join(" ") : "— none —"}</div>
-        </div>`;
-      });
-      if(body) body.innerHTML = html;
-      if(el("dedupeApply")) el("dedupeApply").classList.remove("hidden");
-    } catch (e) { if(body) body.innerHTML = '<p class="ed-status err">Network error while scanning.</p>'; }
-  });
-}
-if(el("closeDedupe")) el("closeDedupe").addEventListener("click", () => el("dedupeModal").classList.add("hidden"));
-if(el("dedupeCancel")) el("dedupeCancel").addEventListener("click", () => el("dedupeModal").classList.add("hidden"));
-if(el("dedupeApply")) {
-  el("dedupeApply").addEventListener("click", async () => {
-    el("dedupeApply").disabled = true;
-    try {
-      const res = await fetch(`${API}/api/teacher/students/dedupe-apply`, {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ passcode: state.passcode })
-      });
-      const data = await res.json();
-      if (res.ok) {
-        toast(`Merged ${data.merged_emails} email(s), deleted ${data.deleted_accounts} duplicate account(s).`, "success", 6000);
-        if(el("dedupeModal")) el("dedupeModal").classList.add("hidden");
-        loadStudents(); loadStats();
-      } else { toast(data.error || "Merge failed.", "error"); }
-    } catch (e) { toast("Network error during merge.", "error"); }
-    finally { el("dedupeApply").disabled = false; }
-  });
-}
-
-// ---------- bulk: transcribe all missing ----------
-if(el("transcribeAllBtn")) {
-  el("transcribeAllBtn").addEventListener("click", async () => {
-    const missing = teacherRecordings.filter(r => !r.segments);
-    if (!missing.length) { toast("All recordings already have transcripts 🎉", "success"); return; }
-    if (!confirm(`Generate transcripts for ${missing.length} recording(s) with none? This runs one at a time and can take several minutes.`)) return;
-    const btn = el("transcribeAllBtn");
-    btn.disabled = true;
-    const prog = el("bulkProgress"), fill = el("bulkBarFill"), txt = el("bulkProgressText");
-    if(prog) prog.classList.remove("hidden");
-    let done = 0, ok = 0, failed = 0;
-    for (const r of missing) {
-      if(txt) txt.textContent = `Transcribing ${done + 1} of ${missing.length}: ${r.title}…`;
-      try {
-        const res = await fetch(`${API}/api/teacher/transcribe`, {
-          method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ passcode: state.passcode, id: r.id })
-        });
-        if (res.ok) ok++; else failed++;
-      } catch (e) { failed++; }
-      done++;
-      if(fill) fill.style.width = `${Math.round(done / missing.length * 100)}%`;
-    }
-    if(txt) txt.textContent = `Finished: ${ok} transcribed, ${failed} failed.`;
-    toast(`Transcribe-all done: ${ok} succeeded${failed ? `, ${failed} failed` : ""}.`, failed ? "error" : "success", 5000);
-    btn.disabled = false;
-    if(prog) setTimeout(() => prog.classList.add("hidden"), 4000);
-    await loadTeacherRecordings(); loadStats();
-  });
-}
-
-// ---------- import one specific recording ----------
-if(el("importOneBtn")) {
-  el("importOneBtn").addEventListener("click", async () => {
-    const inputRef = el("importOneInput");
-    const status = el("importOneStatus");
-    if(!inputRef) return;
-    const ref = inputRef.value.trim();
-    if (!ref) { if(status) status.textContent = "Paste a Zoom Meeting ID/UUID or a recording link first."; return; }
-    const btn = el("importOneBtn");
-    btn.disabled = true;
-    if(status) status.textContent = "Contacting Zoom and importing…";
-    try {
-      const res = await fetch(`${API}/api/teacher/import-one`, {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ passcode: state.passcode, ref })
-      });
-      const data = await res.json();
-      if (!res.ok) { if(status) status.textContent = ""; toast(data.error || "Import failed.", "error", 5000); }
-      else {
-        if(status) status.textContent = "";
-        const t = data.recording ? data.recording.title : "recording";
-        const note = data.has_transcript ? "with its Zoom transcript" : "— no Zoom transcript, use “Generate transcript”";
-        toast(`Imported “${t}” ${note}. It starts hidden until you assign a course & make it visible.`, "success", 6000);
-        inputRef.value = "";
-        await loadTeacherRecordings(); loadStats();
-      }
-    } catch (e) { if(status) status.textContent = ""; toast("Network error during import.", "error"); }
-    finally { btn.disabled = false; }
-  });
-  if(el("importOneInput")) el("importOneInput").addEventListener("keydown", e => { if (e.key === "Enter") el("importOneBtn").click(); });
-}
-
-// ---------- bulk: delete unassigned ----------
-if(el("deleteUnassignedBtn")) {
-  el("deleteUnassignedBtn").addEventListener("click", async () => {
-    const unassigned = teacherRecordings.filter(r => (r.unit || "Unassigned") === "Unassigned");
-    if (!unassigned.length) { toast("There are no unassigned recordings.", "info"); return; }
-    if (!confirm(`Permanently delete ${unassigned.length} unassigned recording(s)? This cannot be undone.`)) return;
-    try {
-      const res = await fetch(`${API}/api/teacher/recordings/delete-unassigned`, {
-        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ passcode: state.passcode })
-      });
-      const data = await res.json();
-      if (res.ok) { toast(`Deleted ${data.deleted} unassigned recording(s).`, "success"); await loadTeacherRecordings(); loadStats(); }
-      else toast(data.error || "Delete failed.", "error");
-    } catch (e) { toast("Network error during delete.", "error"); }
-  });
-}
-
-// ---------- roster management & student search ----------
 async function loadStudents() {
   try {
     const res = await fetch(`${API}/api/teacher/students`, {
@@ -1072,7 +946,6 @@ function renderStudents(list) {
   });
 }
 
-// ---------- student editor modal ----------
 let editingStudent = null;
 let editCourses = [];
 
@@ -1209,7 +1082,6 @@ if(el("addStudentBtn")) {
   });
 }
 
-// ---------- Excel import ----------
 if(el("importBtn")) {
   el("importBtn").addEventListener("click", async () => {
     const fileInput = el("excelFile");
@@ -1610,14 +1482,11 @@ if(el("savePass")) {
   });
 }
 
-// ---------- sign out ----------
 function signOut() {
   state.name = ""; state.token = ""; state.passcode = ""; state.current = null; state.recordings = [];
-  
   localStorage.removeItem("ng_studentToken");
   localStorage.removeItem("ng_studentName");
   localStorage.removeItem("ng_teacherPasscode");
-  
   const p = el("passInput"); if (p) p.value = "";
   const em = el("emailInput"); if (em) em.value = "";
   const pw = el("passwordInput"); if (pw) pw.value = "";
@@ -1626,7 +1495,6 @@ function signOut() {
 if(el("studentSignOut")) el("studentSignOut").addEventListener("click", signOut);
 if(el("teacherSignOut")) el("teacherSignOut").addEventListener("click", signOut);
 
-// ---------- logo upload ----------
 if(el("saveLogo")) {
   el("saveLogo").addEventListener("click", async () => {
     const fileInput = el("logoFile");
@@ -1656,7 +1524,7 @@ if(el("saveLogo")) {
   });
 }
 
-function applyLogo(url) {
+fn applyLogo(url) {
   if (!url) return;
   document.querySelectorAll(".logo, .logo-sm").forEach(node => {
     if (node.dataset.emoji === undefined) node.dataset.emoji = node.innerHTML;

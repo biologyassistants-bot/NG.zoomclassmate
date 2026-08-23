@@ -2641,37 +2641,3 @@ if os.path.isdir(FRONTEND_DIR):
     def index():
         return FileResponse(os.path.join(FRONTEND_DIR, "index.html"))
     app.mount("/", StaticFiles(directory=FRONTEND_DIR), name="static")
-
-class StudentSyncBody(BaseModel):
-    token: str
-    study_plan: list | None = None
-    student_stats: dict | None = None
-
-@app.post("/api/student/sync")
-def sync_student_data(body: StudentSyncBody):
-    sess = valid_session(body.token)
-    if not sess:
-        return JSONResponse({"error": "Unauthorized"}, status_code=401)
-    roster = load_roster()
-    student = next((s for s in roster if s["id"] == sess["student_id"]), None)
-    if student:
-        if body.study_plan is not None:
-            student["study_plan"] = body.study_plan
-        if body.student_stats is not None:
-            student["student_stats"] = body.student_stats
-        save_roster(roster)
-    return {"ok": True}
-
-@app.post("/api/student/profile")
-def get_student_profile(body: RecListBody):
-    sess = valid_session(body.token)
-    if not sess:
-        return JSONResponse({"error": "Unauthorized"}, status_code=401)
-    roster = load_roster()
-    student = next((s for s in roster if s["id"] == sess["student_id"]), None)
-    if not student:
-        return JSONResponse({"error": "Student not found"}, status_code=404)
-    return {
-        "study_plan": student.get("study_plan"),
-        "student_stats": student.get("student_stats")
-    }

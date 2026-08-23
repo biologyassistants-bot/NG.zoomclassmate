@@ -120,6 +120,7 @@
             </div>
             <div class="ws-actions">
               <span class="lang-note">🇬🇧 Answers in English</span>
+              <button id="flashcardBtn" class="ghost">🃏 Generate Flashcards</button>
               <button id="quizBtn" class="ghost">📝 Generate quiz</button>
             </div>
           </div>
@@ -384,6 +385,24 @@
       <div class="modal-foot">
         <button id="submitQuiz" class="primary hidden">Check my answers</button>
         <button id="retryQuiz" class="ghost hidden">Try another quiz</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Flashcard modal -->
+  <div id="flashcardModal" class="modal hidden">
+    <div class="modal-card" style="max-width: 500px; text-align: center;">
+      <div class="modal-head">
+        <h2>🃏 Active Recall Flashcards</h2>
+        <button id="closeFlashcards" class="close">✕</button>
+      </div>
+      <div id="flashcardBody" style="padding: 30px 20px; min-height: 180px; display: flex; align-items: center; justify-content: center;">
+        <!-- Flashcard card flipper injected by JS -->
+      </div>
+      <div class="modal-foot" style="justify-content: center; gap: 12px;">
+        <button id="prevCardBtn" class="ghost">← Previous</button>
+        <span id="cardCountIndicator" class="meta" style="font-weight: 800;">1 / 6</span>
+        <button id="nextCardBtn" class="ghost">Next →</button>
       </div>
     </div>
   </div>

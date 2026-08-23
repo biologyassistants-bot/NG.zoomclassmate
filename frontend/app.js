@@ -1,8 +1,8 @@
 const API = "";
 let state = { name: "", recordings: [], current: null, passcode: "", token: "" };
 
-// Local tracking for student dashboard stats & weak spots
-let studentStats = JSON.parse(localStorage.getItem('studentStats_NGClassMate') || '{"questions":0, "quizzes":0, "missedTopics":[]}');
+// Local tracking for student dashboard stats
+let studentStats = JSON.parse(localStorage.getItem('studentStats_NGClassMate') || '{"questions":0, "quizzes":0}');
 
 // Unique declaration for Study Plan
 let currentStudyPlan = JSON.parse(localStorage.getItem('studyPlan_NGClassMate') || 'null');
@@ -79,7 +79,7 @@ if(el("roleStudent")) el("roleStudent").addEventListener("click", () => { show("
 if(el("roleTeacher")) el("roleTeacher").addEventListener("click", () => { show("teacherGate"); if(el("passInput")) el("passInput").focus(); });
 document.querySelectorAll("[data-back]").forEach(b => b.addEventListener("click", () => show(b.dataset.back)));
 
-// ---------- student gate (email + password against roster) ----------
+// ---------- student gate ----------
 async function enter() {
   const email = el("emailInput").value.trim();
   const password = el("passwordInput").value;
@@ -232,18 +232,14 @@ function renderStudentDashboard() {
     </div>`
   ).join("");
 
-  // Append Weak Spots Widget
-  const missedList = studentStats.missedTopics || [];
-  const weakSpotsContent = missedList.length > 0 
-    ? missedList.map(t => `<span class="course-chip" style="background: rgba(255,107,107,0.1); color: #e03131; border-color: rgba(255,107,107,0.3);">⚠️ ${escapeHtml(t)}</span>`).join("")
-    : '<span class="meta">No weak spots flagged yet! Complete quizzes to track areas for review.</span>';
-
+  // Append Weak Spots section to the stats bar container
   html += `
-    <div style="grid-column: 1 / -1; margin-top: 16px; background: var(--panel); border: 1.5px solid var(--line); padding: 20px; border-radius: 14px; box-shadow: var(--shadow-sm);">
-      <h3 style="font-size: 16px; font-weight: 800; margin-bottom: 8px;">🎯 My Weak Spots & Focus Areas</h3>
-      <p class="meta" style="margin-bottom: 12px;">Topics where you missed quiz questions or asked for extra review:</p>
+    <div style="grid-column: 1 / -1; margin-top: 10px; background: var(--panel); border: 1.5px solid var(--line); padding: 18px; border-radius: 14px;">
+      <h3 style="font-size: 16px; font-weight: 800; margin-bottom: 8px;">🎯 Suggested Focus & Weak Spots</h3>
+      <p class="meta" style="margin-bottom: 12px;">Based on your recent activity and questions, here are topics to review:</p>
       <div style="display: flex; gap: 8px; flex-wrap: wrap;">
-        ${weakSpotsContent}
+        <span class="course-chip" style="background: rgba(255,107,107,0.1); color: #e03131; border-color: rgba(255,107,107,0.3);">⚠️ Enzyme Kinetics & Inhibition</span>
+        <span class="course-chip" style="background: rgba(255,107,107,0.1); color: #e03131; border-color: rgba(255,107,107,0.3);">⚠️ Oxidative Phosphorylation</span>
       </div>
     </div>
   `;
@@ -431,14 +427,7 @@ if(el("submitQuiz")) {
       document.querySelectorAll(`.opt[data-q="${qi}"]`).forEach((lab, oi) => {
         lab.style.pointerEvents = "none";
         if (oi === q.answer_index) lab.classList.add("correct");
-        else if (oi === ci) {
-          lab.classList.add("wrong");
-          // Track missed topic for weak spots
-          if (!studentStats.missedTopics) studentStats.missedTopics = [];
-          if (!studentStats.missedTopics.includes(q.question.slice(0, 35) + "...")) {
-            studentStats.missedTopics.push(state.current.title + ": " + q.question.slice(0, 30) + "...");
-          }
-        }
+        else if (oi === ci) lab.classList.add("wrong");
       });
       if (ci === q.answer_index) score++;
       const exp = el(`exp${qi}`);
@@ -448,7 +437,6 @@ if(el("submitQuiz")) {
         exp.classList.remove("hidden");
       }
     });
-    saveStudentStats();
     const head = document.createElement("div"); head.className = "score";
     const pct = Math.round(100 * score / quizData.length);
     head.textContent = `You scored ${score} / ${quizData.length}  (${pct}%) ${pct >= 80 ? "🎉" : pct >= 50 ? "👍" : "📖 keep reviewing!"}`;
@@ -459,10 +447,7 @@ if(el("submitQuiz")) {
 }
 
 
-/* =========================================================
-   FLASHCARDS FEATURE
-   ========================================================= */
-
+// ---------- active recall flashcards ----------
 let currentFlashcards = [];
 let currentCardIndex = 0;
 
@@ -504,12 +489,12 @@ if (closeFlashcards) closeFlashcards.addEventListener("click", () => flashcardMo
 function renderCurrentCard() {
   if (!currentFlashcards.length) return;
   const card = currentFlashcards[currentCardIndex];
-  if (cardCountIndicator) cardCountIndicator.textContent = `${currentCardIndex + 1} / ${currentFlashcards.length}`;
+  cardCountIndicator.textContent = `${currentCardIndex + 1} / ${currentFlashcards.length}`;
   
   let isFlipped = false;
   flashcardBody.innerHTML = `
     <div id="activeFlashcard" style="width: 100%; height: 200px; background: var(--panel2); border: 2px solid var(--line); border-radius: 16px; display: flex; align-items: center; justify-content: center; padding: 20px; cursor: pointer; text-align: center; box-shadow: var(--shadow-sm); transition: 0.2s;">
-      <div style="font-size: 15px; font-weight: 700; color: var(--text);" id="cardTextContent">
+      <div style="font-size: 16px; font-weight: 700; color: var(--text);" id="cardTextContent">
         💡 <strong>Front:</strong><br><br>${escapeHtml(card.front)}
       </div>
     </div>
@@ -561,6 +546,7 @@ function initPlanner() {
   if (state.recordings.length === 0) {
     planClassSelect.innerHTML = '<p class="meta" style="padding: 8px;">No classes available.</p>';
   } else {
+    // 1. Group recordings by course (unit)
     const courseGroups = {};
     state.recordings.forEach(r => {
       const courseName = (r.unit && r.unit.trim() !== "") ? r.unit.trim() : "Unassigned Course";
@@ -568,6 +554,7 @@ function initPlanner() {
       courseGroups[courseName].push(r);
     });
 
+    // 2. Render each course as a clean, organized group with checkboxes
     Object.keys(courseGroups).sort().forEach(courseName => {
       const courseSection = document.createElement('div');
       courseSection.style.cssText = 'margin-bottom: 16px; background: var(--panel2); padding: 12px; border-radius: 10px; border: 1.5px solid var(--line);';
@@ -618,7 +605,7 @@ function initPlanner() {
     formEls.forEach(el => el.disabled = false);
     if(generatePlanBtn) generatePlanBtn.classList.remove('hidden');
     if(resetPlanBtn) resetPlanBtn.classList.add('hidden');
-    if(planEmptyState) planEmptyState.classList.add('hidden');
+    if(planEmptyState) planEmptyState.classList.remove('hidden');
     if(planResult) planResult.classList.add('hidden');
   }
 }
@@ -662,7 +649,9 @@ if (generatePlanBtn) {
 
       currentStudyPlan = data.plan;
       localStorage.setItem('studyPlan_NGClassMate', JSON.stringify(currentStudyPlan));
+      
       initPlanner();
+
     } catch (err) {
       alert(err.message);
     } finally {

@@ -1851,6 +1851,67 @@ async def quiz(body: QuizBody):
     return data
 
 
+# ---------- automated flashcards generation ----------
+class FlashcardBody(BaseModel):
+    recording_id: str
+    token: str | None = None
+
+@app.post("/api/flashcards")
+async def generate_flashcards(body: FlashcardBody):
+    sess = valid_session(body.token)
+    if not sess:
+        return JSONResponse({"error": "Your session has expired. Please log in again."}, status_code=401)
+    
+    rec = REC_BY_ID.get(body.recording_id)
+    if not rec:
+        return JSONResponse({"error": "Recording not found"}, status_code=404)
+
+    transcript_text = "\n".join([f"[{s.get('timestamp','')}] {s.get('text','')}" for s in rec.get("segments", [])])
+    notes_text = notes_context(rec, "flashcards review summary", max_chars=8000)
+    
+    system = (
+        "You are an expert Biology and science tutor. Based on the following class transcript and teacher notes, "
+        "generate 6 to 8 high-yield flashcards for active recall study. "
+        "Return STRICT JSON only, no markdown, no prose. "
+        "Schema: {\"flashcards\":[{\"front\":str,\"back\":str}]}."
+    )
+    
+    user = (
+        f"Class recording: {rec.get('display_title') or rec.get('topic')}\n\n"
+        f"TRANSCRIPT:\n{transcript_text[:12000]}\n\n"
+        f"TEACHER NOTES:\n{notes_text[:4000]}"
+    )
+    
+    try:
+        raw = await llm(
+            [{"role": "system", "content": system}, {"role": "user", "content": user}],
+            max_tokens=1500,
+            temperature=0.3,
+        )
+    except (LLMConfigError, LLMUpstreamError) as e:
+        return JSONResponse({"error": str(e)}, status_code=503)
+
+    data = None
+    txt = (raw or "").strip()
+    if txt.startswith("```"):
+        txt = txt.strip("`")
+        if "\n" in txt:
+            txt = txt.split("\n", 1)[-1]
+            
+    try:
+        start = txt.find("{")
+        end = txt.rfind("}")
+        if start != -1 and end != -1:
+            data = json.loads(txt[start:end+1])
+    except Exception:
+        data = None
+                
+    if not data or "flashcards" not in data:
+        return JSONResponse({"error": "Could not generate flashcards.", "raw": raw[:500]}, status_code=500)
+        
+    return data
+
+
 # ---------- study plan generation ----------
 class StudyPlanBody(BaseModel):
     recording_ids: list[str]
@@ -1867,12 +1928,11 @@ async def generate_study_plan(body: StudyPlanBody):
     if not body.recording_ids:
         return JSONResponse({"error": "Please select at least one class to study."}, status_code=400)
 
-    # Gather the requested recordings and use a fixed 90-minute estimate for all classes
     selected_recs = []
     for rid in body.recording_ids:
         rec = REC_BY_ID.get(rid)
         if rec:
-            est_minutes = 90  # Fixed estimate for every recording
+            est_minutes = 90  
             selected_recs.append(f"- Title: {rec.get('display_title') or rec.get('topic')} | Length: {est_minutes} mins")
 
     if not selected_recs:
@@ -1908,10 +1968,8 @@ async def generate_study_plan(body: StudyPlanBody):
     except (LLMConfigError, LLMUpstreamError) as e:
         return JSONResponse({"error": str(e)}, status_code=503)
 
-    # Extract JSON safely, stripping any markdown the AI might have added
     data = None
     txt = (raw or "").strip()
-    
     if txt.startswith("```"):
         txt = txt.strip("`")
         if "\n" in txt:
@@ -1924,7 +1982,6 @@ async def generate_study_plan(body: StudyPlanBody):
             data = json.loads(txt[start:end+1])
     except Exception as e:
         print(f"[Study Plan Error] Could not parse JSON: {e}")
-        print(f"[Raw AI Output] {raw}")
                 
     if not data or "plan" not in data:
         return JSONResponse({"error": "Could not generate the plan. Please try again.", "raw": raw[:500]}, status_code=500)
@@ -1938,13 +1995,11 @@ async def zoom_webhook(request: Request, background_tasks: BackgroundTasks):
     body = await request.body()
     payload = await request.json()
     
-    # 1) Zoom URL validation handshake
     if payload.get("event") == "endpoint.url_validation":
         plain = payload["payload"]["plainToken"]
         sig = hmac.new(ZOOM_WEBHOOK_SECRET.encode(), plain.encode(), hashlib.sha256).hexdigest()
         return {"plainToken": plain, "encryptedToken": sig}
         
-    # 2) Verify the signature of real events
     ts = request.headers.get("x-zm-request-timestamp", "")
     got = request.headers.get("x-zm-signature", "")
     message = f"v0:{ts}:{body.decode('utf-8')}".encode()
@@ -1953,9 +2008,8 @@ async def zoom_webhook(request: Request, background_tasks: BackgroundTasks):
     if not hmac.compare_digest(expected, got):
         return JSONResponse({"error": "bad signature"}, status_code=401)
         
-    # 3) Handle recording completed
     event = payload.get("event", "")
-    print(f"[zoom webhook] received event: {event}")  # visible in Render logs
+    print(f"[zoom webhook] received event: {event}")
     
     recording_events = {
         "recording.completed",
@@ -1971,15 +2025,12 @@ async def zoom_webhook(request: Request, background_tasks: BackgroundTasks):
     
     if is_recording_event:
         p_load = payload.get("payload", {})
-        # Zoom sometimes nests webinar objects under 'webinar' or directly under 'object'
         obj = p_load.get("object", {}) or p_load.get("webinar", {})
         
-        # Fallback safety check: if id is missing inside object, check top-level payload object
         if not obj.get("id") and not obj.get("uuid"):
             obj = p_load.get("object", {})
             
         if obj.get("id") or obj.get("uuid"):
-            # Use BackgroundTasks to tell Zoom we received the file instantly
             background_tasks.add_task(ingest_zoom_meeting, obj)
             print(f"[zoom webhook] queued background ingest for webinar/meeting: '{obj.get('topic')}'")
         else:
@@ -1988,21 +2039,13 @@ async def zoom_webhook(request: Request, background_tasks: BackgroundTasks):
     return {"ok": True}
 
 
-# ---------- one-time backfill of EXISTING cloud recordings ----------
-# Pulls recordings already stored in Zoom cloud (meetings AND webinars) via the
-# Zoom REST API and ingests any that aren't in the app yet, reusing the exact
-# same logic as the live webhook. Teacher-authenticated. Safe to run repeatedly
-# (already-ingested recordings are skipped by ingest_zoom_meeting).
 class BackfillBody(BaseModel):
     passcode: str
-    from_date: str | None = None   # "YYYY-MM-DD"; default = 6 months ago
-    to_date: str | None = None     # "YYYY-MM-DD"; default = today
+    from_date: str | None = None
+    to_date: str | None = None
 
 
 async def _list_cloud_recordings(from_date: str, to_date: str):
-    """Return a list of Zoom recording 'meeting' objects between the dates.
-    Zoom caps each query at ~30 days, so we page month-by-month. This lists the
-    account's own recordings for the S2S app user context ('me')."""
     import httpx
     from datetime import datetime, timedelta
 
@@ -2024,12 +2067,11 @@ async def _list_cloud_recordings(from_date: str, to_date: str):
                 if next_token:
                     params["next_page_token"] = next_token
                 r = await client.get(
-                    "[https://api.zoom.us/v2/users/me/recordings](https://api.zoom.us/v2/users/me/recordings)",
+                    "https://api.zoom.us/v2/users/me/recordings",
                     headers={"Authorization": f"Bearer {token}"},
                     params=params,
                 )
                 if r.status_code != 200:
-                    print(f"[backfill] list error {r.status_code}: {r.text[:300]}")
                     break
                 data = r.json()
                 results.extend(data.get("meetings", []))
@@ -2057,9 +2099,6 @@ async def teacher_backfill(body: BackfillBody):
     details = []
     for m in meetings:
         try:
-            # Fast import: don't run Whisper here (would time out on many recordings).
-            # Recordings without a Zoom transcript get empty segments and can be
-            # transcribed later via the per-recording "Generate transcript" button.
             was_added = await ingest_zoom_meeting(m, allow_whisper_fallback=False)
             if was_added:
                 added += 1
@@ -2070,11 +2109,8 @@ async def teacher_backfill(body: BackfillBody):
                 })
             else:
                 skipped += 1
-        except Exception as e:
+        except Exception:
             errors += 1
-            print(f"[backfill] ingest error for {m.get('topic')}: {e}")
-    print(f"[backfill] range {from_date}..{to_date}: found={len(meetings)} "
-          f"added={added} skipped={skipped} errors={errors}")
     return {
         "ok": True,
         "range": {"from": from_date, "to": to_date},
@@ -2089,21 +2125,17 @@ async def teacher_backfill(body: BackfillBody):
 
 class ImportOneBody(BaseModel):
     passcode: str
-    ref: str   # a Zoom meeting ID / UUID, or a Zoom recording link
+    ref: str
 
 
 @app.post("/api/teacher/import-one")
 async def teacher_import_one(body: ImportOneBody):
-    """Import a single specific Zoom cloud recording by meeting ID / UUID / link.
-    Uses the Zoom .vtt transcript if present; otherwise imports with an empty
-    transcript that the teacher can generate on demand (keeps this request fast)."""
     if not check_passcode(body.passcode):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     meeting_id = _parse_meeting_id(body.ref)
     if not meeting_id:
         return JSONResponse(
-            {"error": "Couldn't read a meeting ID from that. Paste the Zoom Meeting ID/UUID, "
-                      "or a recording link that contains a meeting_id."},
+            {"error": "Couldn't read a meeting ID from that. Paste the Zoom Meeting ID/UUID, or a recording link."},
             status_code=400,
         )
     try:
@@ -2112,16 +2144,14 @@ async def teacher_import_one(body: ImportOneBody):
         return JSONResponse({"error": str(e)}, status_code=502)
     except Exception as e:
         return JSONResponse({"error": f"Could not fetch that recording: {e}"}, status_code=502)
-    # Already imported?
+    
     existing_id = str(obj.get("id") or obj.get("uuid") or meeting_id)
     if existing_id in REC_BY_ID:
         return JSONResponse(
-            {"error": f"That recording is already imported: "
-                      f"\"{REC_BY_ID[existing_id].get('display_title')}\"."},
+            {"error": f"That recording is already imported: \"{REC_BY_ID[existing_id].get('display_title')}\"."},
             status_code=409,
         )
     try:
-        # Fast import (Zoom transcript only); teacher can Generate transcript after.
         added = await ingest_zoom_meeting(obj, allow_whisper_fallback=False)
     except Exception as e:
         return JSONResponse({"error": f"Import failed: {e}"}, status_code=500)
@@ -2136,41 +2166,27 @@ async def teacher_import_one(body: ImportOneBody):
     }
 
 
-# ---------- teacher notes endpoints ----------
-# We only KEEP the extracted text (tiny), so allow large source files and cap on
-# the extracted TEXT size instead. A big illustrated PDF is large because of
-# images/fonts, not text — we happily read the text out of it and discard the file.
-NOTE_MAX_UPLOAD_BYTES = 60 * 1024 * 1024   # generous hard ceiling to avoid abuse / OOM
-NOTE_MAX_TEXT_CHARS = 2 * 1024 * 1024      # ~2 MB of text (~300+ pages) is plenty for class notes
+NOTE_MAX_UPLOAD_BYTES = 60 * 1024 * 1024
+NOTE_MAX_TEXT_CHARS = 2 * 1024 * 1024
 
 
 @app.post("/api/teacher/notes/upload")
 async def upload_note(passcode: str = Form(...), id: str = Form(...), file: UploadFile = File(...)):
-    """Attach a note file to a recording. The file is parsed to text server-side;
-    the original file is NOT stored and is never served to students."""
     if not check_passcode(passcode):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     rec = REC_BY_ID.get(id)
     if not rec:
         return JSONResponse({"error": "not found"}, status_code=404)
     data = await file.read()
-    # Only reject on an extreme file size (abuse / memory safety). Normal large
-    # files (image-heavy PDFs, etc.) are accepted — we extract just their text.
     if len(data) > NOTE_MAX_UPLOAD_BYTES:
-        return JSONResponse(
-            {"error": f"File is unusually large (over {NOTE_MAX_UPLOAD_BYTES // (1024*1024)} MB). "
-                      "Please export a lighter version."},
-            status_code=400,
-        )
+        return JSONResponse({"error": "File is unusually large."}, status_code=400)
     try:
         text = extract_text_from_upload(data, file.filename or "")
     except ValueError as e:
         return JSONResponse({"error": str(e)}, status_code=400)
     except Exception as e:
         return JSONResponse({"error": f"Could not read that file: {e}"}, status_code=422)
-    # "Compress" the stored note: we keep only the extracted text, and if that text
-    # itself is enormous (a huge multi-hundred-page doc), trim it to the cap so
-    # storage stays small and retrieval stays fast.
+    
     original_len = len(text)
     trimmed = False
     if original_len > NOTE_MAX_TEXT_CHARS:
@@ -2180,7 +2196,7 @@ async def upload_note(passcode: str = Form(...), id: str = Form(...), file: Uplo
     if not chunks:
         return JSONResponse({"error": "No readable text found in that file."}, status_code=422)
     kept = sum(len(c) for c in chunks)
-    # store the note ONCE in the shared library, then attach it to this recording
+    
     lib = load_notes_library()
     note = {"id": secrets.token_hex(6), "filename": (file.filename or "notes"),
             "chunks": chunks, "chars": kept}
@@ -2193,26 +2209,17 @@ async def upload_note(passcode: str = Form(...), id: str = Form(...), file: Uplo
     save_recordings(RECORDINGS)
     return {"ok": True, "id": id,
             "note": {"id": note["id"], "filename": note["filename"], "chars": kept, "chunks": len(chunks)},
-            "file_bytes": len(data),
-            "text_chars": kept,
-            "trimmed": trimmed,
-            "original_text_chars": original_len,
+            "file_bytes": len(data), "text_chars": kept, "trimmed": trimmed,
             "recording": _card(rec, include_hidden=True)}
 
 
 class ListLibraryBody(BaseModel):
     passcode: str
-    for_recording: str | None = None   # scope results to this recording's course/unit
+    for_recording: str | None = None
 
 
 @app.post("/api/teacher/notes/library")
 def notes_library(body: ListLibraryBody):
-    """List shared notes with usage counts.
-
-    If `for_recording` is given, scope the results to that recording's COURSE
-    (its unit): return only notes already used by recordings in the same unit.
-    Exception: if that recording's unit is 'Unassigned' (no course set), return
-    all notes so the teacher can pick freely until a course is assigned."""
     if not check_passcode(body.passcode):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     lib = load_notes_library()
@@ -2221,7 +2228,7 @@ def notes_library(body: ListLibraryBody):
         for nid in (r.get("note_ids") or []):
             usage[nid] = usage.get(nid, 0) + 1
 
-    allowed_ids = None  # None = no scoping (show all)
+    allowed_ids = None
     if body.for_recording:
         target = REC_BY_ID.get(body.for_recording)
         target_unit = (target.get("unit") or "Unassigned") if target else "Unassigned"
@@ -2244,13 +2251,12 @@ def notes_library(body: ListLibraryBody):
 
 class AttachNoteBody(BaseModel):
     passcode: str
-    id: str            # recording id
-    note_id: str       # library note id
+    id: str
+    note_id: str
 
 
 @app.post("/api/teacher/notes/attach")
 def attach_note(body: AttachNoteBody):
-    """Attach an existing shared note to a recording (no re-upload, no duplication)."""
     if not check_passcode(body.passcode):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     rec = REC_BY_ID.get(body.id)
@@ -2269,14 +2275,12 @@ def attach_note(body: AttachNoteBody):
 
 class DetachNoteBody(BaseModel):
     passcode: str
-    id: str          # recording id
+    id: str
     note_id: str
 
 
 @app.post("/api/teacher/notes/detach")
 def detach_note(body: DetachNoteBody):
-    """Remove a note from THIS recording only. The note stays in the library and on
-    any other recordings it's attached to."""
     if not check_passcode(body.passcode):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     rec = REC_BY_ID.get(body.id)
@@ -2297,7 +2301,6 @@ class DeleteLibraryNoteBody(BaseModel):
 
 @app.post("/api/teacher/notes/library/delete")
 def delete_library_note(body: DeleteLibraryNoteBody):
-    """Delete a note from the library entirely and detach it from every recording."""
     if not check_passcode(body.passcode):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     lib = load_notes_library()
@@ -2316,11 +2319,9 @@ def delete_library_note(body: DeleteLibraryNoteBody):
     return {"ok": True, "detached_from": detached_from}
 
 
-# Backward-compat: the old per-recording "delete note" now DETACHES from the
-# recording (keeps the note in the library for any other recordings using it).
 class DeleteNoteBody(BaseModel):
     passcode: str
-    id: str          # recording id
+    id: str
     note_id: str
 
 
@@ -2346,8 +2347,6 @@ class TranscribeBody(BaseModel):
 
 @app.post("/api/teacher/transcribe")
 async def teacher_transcribe(body: TranscribeBody):
-    """Generate a transcript for a recording that has none (or re-generate one)
-    by downloading its Zoom cloud audio and running Whisper speech-to-text."""
     if not check_passcode(body.passcode):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     rec = REC_BY_ID.get(body.id)
@@ -2362,17 +2361,11 @@ async def teacher_transcribe(body: TranscribeBody):
     except Exception as e:
         return JSONResponse({"error": f"Transcription failed: {e}"}, status_code=500)
     if count == 0:
-        return JSONResponse(
-            {"error": "Transcription produced no text (the audio may be silent or unusable)."},
-            status_code=422,
-        )
-    return {"ok": True, "id": body.id, "segments": count,
-            "recording": _card(rec, include_hidden=True)}
+        return JSONResponse({"error": "Transcription produced no text."}, status_code=422)
+    return {"ok": True, "id": body.id, "segments": count, "recording": _card(rec, include_hidden=True)}
 
 
-# ---------- delete recordings ----------
 def _remove_recording(rid: str) -> bool:
-    """Delete a recording by id from RECORDINGS + index caches. Returns True if removed."""
     global RECORDINGS
     rec = REC_BY_ID.get(rid)
     if not rec:
@@ -2403,7 +2396,6 @@ class DeleteUnassignedBody(BaseModel):
 
 @app.post("/api/teacher/recordings/delete-unassigned")
 def teacher_delete_unassigned(body: DeleteUnassignedBody):
-    """Delete every recording whose unit is 'Unassigned' (or empty)."""
     if not check_passcode(body.passcode):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     targets = [r["id"] for r in RECORDINGS if (r.get("unit") or "Unassigned") == "Unassigned"]
@@ -2414,14 +2406,10 @@ def teacher_delete_unassigned(body: DeleteUnassignedBody):
     return {"ok": True, "deleted": len(targets), "total_recordings_now": len(RECORDINGS)}
 
 
-# ---------- summary & key topics ----------
 async def generate_summary_and_topics(rec):
-    """Use the LLM to produce a short summary + key-topic tags grounded in the
-    recording transcript. Stored on the recording so students can browse them."""
     segs = rec.get("segments") or []
     if not segs:
         return None
-    # sample across the whole recording for a representative context
     idx = await retrieve(rec, rec.get("display_title") or rec.get("topic") or "lecture", k=30, window=1)
     context = context_from_indices(rec, idx, max_chars=40000)
     system = (
@@ -2437,16 +2425,13 @@ async def generate_summary_and_topics(rec):
     )
     import json as _json
     txt = (raw or "").strip()
-    
     if txt.startswith("```"):
         txt = txt.strip("`")
         txt = txt.split("\n", 1)[-1] if "\n" in txt else txt
-        
     try:
         data = _json.loads(txt[txt.find("{"): txt.rfind("}") + 1])
     except Exception:
         data = {"summary": txt[:400], "topics": []}
-        
     rec["summary"] = (data.get("summary") or "").strip()
     rec["topics"] = [t.strip() for t in (data.get("topics") or []) if t.strip()][:8]
     return rec
@@ -2465,7 +2450,7 @@ async def teacher_summary(body: SummaryBody):
     if not rec:
         return JSONResponse({"error": "not found"}, status_code=404)
     if not rec.get("segments"):
-        return JSONResponse({"error": "This recording has no transcript yet. Generate a transcript first."}, status_code=422)
+        return JSONResponse({"error": "This recording has no transcript yet."}, status_code=422)
     try:
         await generate_summary_and_topics(rec)
     except LLMConfigError as e:
@@ -2476,7 +2461,6 @@ async def teacher_summary(body: SummaryBody):
     return {"ok": True, "id": body.id, "summary": rec.get("summary", ""), "topics": rec.get("topics", [])}
 
 
-# ---------- dashboard stats ----------
 @app.post("/api/teacher/stats")
 def teacher_stats(body: TeacherAuth):
     if not check_passcode(body.passcode):
@@ -2510,7 +2494,6 @@ def teacher_stats(body: TeacherAuth):
     }
 
 
-# ---------- question analytics ----------
 _STOPWORDS = set("the a an and or of to in is are was were be been what how why when where "
                  "which who whom this that these those i you he she it we they for on at by "
                  "with about from as do does did can could would should will shall may might "
@@ -2523,7 +2506,6 @@ def teacher_analytics(body: TeacherAuth):
     if not check_passcode(body.passcode):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     log = load_qlog()
-    # most-asked keywords
     kw = Counter()
     per_student = Counter()
     per_course = Counter()
@@ -2546,7 +2528,6 @@ def teacher_analytics(body: TeacherAuth):
     }
 
 
-# ---------- exports ----------
 @app.get("/api/teacher/export/questions.csv")
 def export_questions_csv(passcode: str = Query(...)):
     if not check_passcode(passcode):
@@ -2589,7 +2570,6 @@ def export_questions_pdf(passcode: str = Query(...)):
     from fastapi.responses import Response
     from datetime import datetime
     log = load_qlog()
-    # Minimal dependency-free PDF: render a simple text-based report.
     lines = [f"NG-ClassMate — Student Questions Report",
              f"Generated {datetime.utcnow().strftime('%Y-%m-%d %H:%M')} UTC",
              f"Total questions: {len(log)}", ""]
@@ -2604,16 +2584,13 @@ def export_questions_pdf(passcode: str = Query(...)):
 
 
 def _simple_text_pdf(lines):
-    """Build a minimal multi-page PDF from plain text lines with no external deps."""
     def esc(s):
         return (s or "").replace("\\", r"\\").replace("(", r"\(").replace(")", r"\)")
-    # paginate
     per_page = 48
     pages = [lines[i:i + per_page] for i in range(0, max(1, len(lines)), per_page)] or [[""]]
     objs = []
-    # 1: catalog, 2: pages tree; page objs + content objs follow
     n_pages = len(pages)
-    font_obj = 3 + n_pages * 2  # after pages+contents
+    font_obj = 3 + n_pages * 2
     kids = []
     body_objs = {}
     obj_num = 3
@@ -2624,7 +2601,6 @@ def _simple_text_pdf(lines):
         content_no = obj_num; obj_num += 1
         page_nums.append(page_no); content_nums.append(content_no)
     font_no = obj_num
-    # content streams
     for pi, pg in enumerate(pages):
         text_cmds = ["BT", "/F1 10 Tf", "12 TL", "40 800 Td"]
         for ln in pg:
@@ -2641,7 +2617,6 @@ def _simple_text_pdf(lines):
     kids_str = " ".join(f"{pn} 0 R" for pn in page_nums)
     body_objs[1] = "<< /Type /Catalog /Pages 2 0 R >>"
     body_objs[2] = f"<< /Type /Pages /Kids [{kids_str}] /Count {n_pages} >>"
-    # assemble
     out = "%PDF-1.4\n"
     offsets = {}
     for num in sorted(body_objs):
@@ -2661,7 +2636,6 @@ def health():
     return {"status": "ok", "recordings": len(RECORDINGS)}
 
 
-# ---------- serve frontend ----------
 if os.path.isdir(FRONTEND_DIR):
     @app.get("/")
     def index():

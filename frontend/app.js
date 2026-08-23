@@ -1,8 +1,8 @@
 const API = "";
 let state = { name: "", recordings: [], current: null, passcode: "", token: "" };
 
-// Local tracking for student dashboard stats
-let studentStats = JSON.parse(localStorage.getItem('studentStats_NGClassMate') || '{"questions":0, "quizzes":0}');
+// Local tracking for student dashboard stats & weak spots
+let studentStats = JSON.parse(localStorage.getItem('studentStats_NGClassMate') || '{"questions":0, "quizzes":0, "missedTopics":[]}');
 
 // Unique declaration for Study Plan
 let currentStudyPlan = JSON.parse(localStorage.getItem('studyPlan_NGClassMate') || 'null');
@@ -224,13 +224,31 @@ function renderStudentDashboard() {
     { label: "Quizzes Generated", value: studentStats.quizzes }
   ];
   
-  statsBar.innerHTML = cards.map(c => 
+  let html = cards.map(c => 
     `<div class="stat-card">
       <div class="stat-value">${escapeHtml(String(c.value))}</div>
       <div class="stat-label">${escapeHtml(c.label)}</div>
       ${c.sub ? `<div class="stat-sub">${escapeHtml(c.sub)}</div>` : ''}
     </div>`
   ).join("");
+
+  // Append Weak Spots Widget
+  const missedList = studentStats.missedTopics || [];
+  const weakSpotsContent = missedList.length > 0 
+    ? missedList.map(t => `<span class="course-chip" style="background: rgba(255,107,107,0.1); color: #e03131; border-color: rgba(255,107,107,0.3);">⚠️ ${escapeHtml(t)}</span>`).join("")
+    : '<span class="meta">No weak spots flagged yet! Complete quizzes to track areas for review.</span>';
+
+  html += `
+    <div style="grid-column: 1 / -1; margin-top: 16px; background: var(--panel); border: 1.5px solid var(--line); padding: 20px; border-radius: 14px; box-shadow: var(--shadow-sm);">
+      <h3 style="font-size: 16px; font-weight: 800; margin-bottom: 8px;">🎯 My Weak Spots & Focus Areas</h3>
+      <p class="meta" style="margin-bottom: 12px;">Topics where you missed quiz questions or asked for extra review:</p>
+      <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+        ${weakSpotsContent}
+      </div>
+    </div>
+  `;
+
+  statsBar.innerHTML = html;
 }
 
 // ================= STUDENT AI TUTOR =================
@@ -413,7 +431,14 @@ if(el("submitQuiz")) {
       document.querySelectorAll(`.opt[data-q="${qi}"]`).forEach((lab, oi) => {
         lab.style.pointerEvents = "none";
         if (oi === q.answer_index) lab.classList.add("correct");
-        else if (oi === ci) lab.classList.add("wrong");
+        else if (oi === ci) {
+          lab.classList.add("wrong");
+          // Track missed topic for weak spots
+          if (!studentStats.missedTopics) studentStats.missedTopics = [];
+          if (!studentStats.missedTopics.includes(q.question.slice(0, 35) + "...")) {
+            studentStats.missedTopics.push(state.current.title + ": " + q.question.slice(0, 30) + "...");
+          }
+        }
       });
       if (ci === q.answer_index) score++;
       const exp = el(`exp${qi}`);
@@ -423,12 +448,98 @@ if(el("submitQuiz")) {
         exp.classList.remove("hidden");
       }
     });
+    saveStudentStats();
     const head = document.createElement("div"); head.className = "score";
     const pct = Math.round(100 * score / quizData.length);
     head.textContent = `You scored ${score} / ${quizData.length}  (${pct}%) ${pct >= 80 ? "🎉" : pct >= 50 ? "👍" : "📖 keep reviewing!"}`;
     if(el("quizBody")) el("quizBody").prepend(head);
     if(el("submitQuiz")) el("submitQuiz").classList.add("hidden"); 
     if(el("retryQuiz")) el("retryQuiz").classList.remove("hidden");
+  });
+}
+
+
+/* =========================================================
+   FLASHCARDS FEATURE
+   ========================================================= */
+
+let currentFlashcards = [];
+let currentCardIndex = 0;
+
+const flashcardBtn = el("flashcardBtn");
+const flashcardModal = el("flashcardModal");
+const closeFlashcards = el("closeFlashcards");
+const flashcardBody = el("flashcardBody");
+const prevCardBtn = el("prevCardBtn");
+const nextCardBtn = el("nextCardBtn");
+const cardCountIndicator = el("cardCountIndicator");
+
+if (flashcardBtn) {
+  flashcardBtn.addEventListener("click", async () => {
+    if (!state.current) return;
+    flashcardModal.classList.remove("hidden");
+    flashcardBody.innerHTML = '<div class="typing">Crafting your flashcards <span class="dot">●</span><span class="dot">●</span><span class="dot">●</span></div>';
+    
+    try {
+      const res = await fetch(`${API}/api/flashcards`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ recording_id: state.current.id, token: state.token })
+      });
+      const data = await res.json();
+      if (data.error || !data.flashcards) {
+        flashcardBody.innerHTML = '<p>Could not generate flashcards for this recording.</p>';
+        return;
+      }
+      currentFlashcards = data.flashcards;
+      currentCardIndex = 0;
+      renderCurrentCard();
+    } catch (e) {
+      flashcardBody.innerHTML = '<p>Network error generating flashcards.</p>';
+    }
+  });
+}
+
+if (closeFlashcards) closeFlashcards.addEventListener("click", () => flashcardModal.classList.add("hidden"));
+
+function renderCurrentCard() {
+  if (!currentFlashcards.length) return;
+  const card = currentFlashcards[currentCardIndex];
+  if (cardCountIndicator) cardCountIndicator.textContent = `${currentCardIndex + 1} / ${currentFlashcards.length}`;
+  
+  let isFlipped = false;
+  flashcardBody.innerHTML = `
+    <div id="activeFlashcard" style="width: 100%; height: 200px; background: var(--panel2); border: 2px solid var(--line); border-radius: 16px; display: flex; align-items: center; justify-content: center; padding: 20px; cursor: pointer; text-align: center; box-shadow: var(--shadow-sm); transition: 0.2s;">
+      <div style="font-size: 15px; font-weight: 700; color: var(--text);" id="cardTextContent">
+        💡 <strong>Front:</strong><br><br>${escapeHtml(card.front)}
+      </div>
+    </div>
+  `;
+
+  const cardElem = el("activeFlashcard");
+  const textElem = el("cardTextContent");
+  
+  cardElem.addEventListener("click", () => {
+    isFlipped = !isFlipped;
+    if (isFlipped) {
+      cardElem.style.background = 'rgba(11,191,191,0.08)';
+      cardElem.style.borderColor = 'var(--brand)';
+      textElem.innerHTML = `✅ <strong>Back (Answer):</strong><br><br>${escapeHtml(card.back)}`;
+    } else {
+      cardElem.style.background = 'var(--panel2)';
+      cardElem.style.borderColor = 'var(--line)';
+      textElem.innerHTML = `💡 <strong>Front:</strong><br><br>${escapeHtml(card.front)}`;
+    }
+  });
+}
+
+if (prevCardBtn) {
+  prevCardBtn.addEventListener("click", () => {
+    if (currentCardIndex > 0) { currentCardIndex--; renderCurrentCard(); }
+  });
+}
+if (nextCardBtn) {
+  nextCardBtn.addEventListener("click", () => {
+    if (currentCardIndex < currentFlashcards.length - 1) { currentCardIndex++; renderCurrentCard(); }
   });
 }
 
@@ -450,7 +561,6 @@ function initPlanner() {
   if (state.recordings.length === 0) {
     planClassSelect.innerHTML = '<p class="meta" style="padding: 8px;">No classes available.</p>';
   } else {
-    // 1. Group recordings by course (unit)
     const courseGroups = {};
     state.recordings.forEach(r => {
       const courseName = (r.unit && r.unit.trim() !== "") ? r.unit.trim() : "Unassigned Course";
@@ -458,7 +568,6 @@ function initPlanner() {
       courseGroups[courseName].push(r);
     });
 
-    // 2. Render each course as a clean, organized group with checkboxes
     Object.keys(courseGroups).sort().forEach(courseName => {
       const courseSection = document.createElement('div');
       courseSection.style.cssText = 'margin-bottom: 16px; background: var(--panel2); padding: 12px; border-radius: 10px; border: 1.5px solid var(--line);';
@@ -509,7 +618,7 @@ function initPlanner() {
     formEls.forEach(el => el.disabled = false);
     if(generatePlanBtn) generatePlanBtn.classList.remove('hidden');
     if(resetPlanBtn) resetPlanBtn.classList.add('hidden');
-    if(planEmptyState) planEmptyState.classList.remove('hidden');
+    if(planEmptyState) planEmptyState.classList.add('hidden');
     if(planResult) planResult.classList.add('hidden');
   }
 }
@@ -553,9 +662,7 @@ if (generatePlanBtn) {
 
       currentStudyPlan = data.plan;
       localStorage.setItem('studyPlan_NGClassMate', JSON.stringify(currentStudyPlan));
-      
       initPlanner();
-
     } catch (err) {
       alert(err.message);
     } finally {

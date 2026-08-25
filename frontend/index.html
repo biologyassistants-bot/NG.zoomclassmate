@@ -7,16 +7,6 @@
 <link rel="stylesheet" href="/style.css?v=2" />
 </head>
 <body>
-<!--
-  ========== ADD YOUR LOGO ==========
-  1. Put your logo image in the "frontend" folder, e.g. frontend/logo.png
-  2. Replace the emoji inside <div class="logo" id="brandLogo">🎓</div> below with:
-        <img src="/logo.png" alt="logo" />
-  3. And in the two top bars, replace <span class="logo-sm">🎓</span> with:
-        <span class="logo-sm"><img src="/logo.png" alt="logo" /></span>
-  The CSS already sizes images inside .logo / .logo-sm automatically.
-  ===================================
--->
 <div id="app">
 
   <!-- Role landing -->
@@ -68,14 +58,15 @@
     </div>
   </section>
 
- <!-- Student app -->
+  <!-- Student app -->
   <section id="main" class="main hidden">
     <header class="topbar">
       <div class="brand"><span class="logo-sm">🎓</span> NG-ClassMate</div>
       <div class="who">
         <button id="tabStudentDash" class="tab active">Dashboard</button>
-        <button id="tabStudentTutor" class="tab">AI Tutor & Quizzes</button>
+        <button id="tabStudentTutor" class="tab">AI Tutor</button>
         <button id="tabStudentPlanner" class="tab">Study Planner</button>
+        <button id="tabStudentAlerts" class="tab">🔔 Alerts <span id="navAlertBadge" class="badge-count hidden" style="background: #e03131; color: #fff; font-size: 10px; padding: 2px 7px; border-radius: 10px; margin-left: 4px; font-weight: 800;">0</span></button>
         <button class="link" id="studentSignOut" style="margin-left: 12px;">Sign out</button>
       </div>
     </header>
@@ -90,12 +81,10 @@
       </div>
       
       <h3 style="margin-bottom: 12px; font-size: 18px; font-weight: 800;">Your Learning Overview</h3>
-      <div id="studentStatsBar" class="stats-bar" style="max-width: 900px;">
-        <!-- Stats injected by JS -->
-      </div>
+      <div id="studentStatsBar" class="stats-bar" style="max-width: 900px;"></div>
     </div>
 
-    <!-- Pane 2: AI Tutor & Quizzes -->
+    <!-- Pane 2: AI Tutor -->
     <div id="studentTutorPane" class="layout hidden">
       <aside class="sidebar">
         <div class="sidebar-head">
@@ -151,9 +140,7 @@
                   <button type="button" class="ghost-sm" style="font-size: 11px; padding: 2px 8px;" onclick="toggleAllClasses(false)">Deselect All</button>
                 </div>
               </div>
-              <div id="planClassSelect" style="max-height: 220px; overflow-y: auto; background: var(--panel2); border: 1.5px solid var(--line); border-radius: 11px; padding: 10px; margin-top: 6px;">
-                <!-- Checkboxes injected by JS -->
-              </div>
+              <div id="planClassSelect" style="max-height: 220px; overflow-y: auto; background: var(--panel2); border: 1.5px solid var(--line); border-radius: 11px; padding: 10px; margin-top: 6px;"></div>
             </label>
             <div style="display: flex; gap: 12px; margin-bottom: 12px;">
               <label class="fld" style="flex: 1;">
@@ -187,11 +174,19 @@
             <div class="empty-emoji">🗓️</div>
             <p>No active plan. Select your classes and time limit on the left to generate one!</p>
           </div>
-          <div id="planResult" class="hidden">
-            <!-- Checklist injected here -->
-          </div>
+          <div id="planResult" class="hidden"></div>
         </div>
       </div>
+    </div>
+
+    <!-- Pane 4: Alerts & Reminders -->
+    <div id="studentAlertsPane" class="student-pane hidden" style="padding: 26px 30px; overflow-y: auto;">
+      <div class="pane-head" style="margin-bottom: 20px;">
+        <h2>🔔 Alerts & Study Reminders</h2>
+        <p class="meta">Review scheduled spaced repetition cards and stay ahead of your memory decay.</p>
+      </div>
+
+      <div id="alertsContainer" style="max-width: 850px; display: flex; flex-direction: column; gap: 14px;"></div>
     </div>
   </section>
 
@@ -280,7 +275,6 @@
         <p id="importErr" class="err hidden"></p>
       </div>
       
-      <!-- Student Search Bar -->
       <div style="margin-top: 20px; margin-bottom: 12px;">
         <input id="studentSearchInput" type="text" class="filter-input" placeholder="🔍 Search students by name or email…" style="width: 100%;" />
       </div>
@@ -365,7 +359,7 @@
     </div>
   </div>
 
-  <!-- Dedupe (merge duplicates) modal -->
+  <!-- Dedupe modal -->
   <div id="dedupeModal" class="modal hidden">
     <div class="modal-card">
       <div class="modal-head">
@@ -407,9 +401,7 @@
         <span id="srsStatusText" class="meta" style="font-weight: 700; color: var(--brand-d);">Due Cards: 0</span>
         <button id="genFreshCardsBtn" class="ghost-sm" style="font-size: 11.5px; padding: 4px 10px;">✨ Generate New Cards</button>
       </div>
-      <div id="flashcardBody" style="padding: 18px 20px; min-height: 190px; display: flex; align-items: center; justify-content: center;">
-        <!-- Card flipper injected by JS -->
-      </div>
+      <div id="flashcardBody" style="padding: 18px 20px; min-height: 190px; display: flex; align-items: center; justify-content: center;"></div>
       <!-- Rating options for Spaced Repetition -->
       <div id="srsRatingControls" class="modal-foot hidden" style="justify-content: center; gap: 8px; flex-wrap: wrap;">
         <button id="srsAgainBtn" class="ghost-sm danger-btn" style="flex: 1; padding: 8px 4px; font-weight: 800;">🔴 Again (1d)</button>

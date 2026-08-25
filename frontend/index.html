@@ -119,8 +119,8 @@
               <p id="wsMeta" class="meta"></p>
             </div>
             <div class="ws-actions">
-              <span class="lang-note">🇬🇧 Answers in English</span>
-              <button id="flashcardBtn" class="ghost">🃏 Generate Flashcards</button>
+              <button id="clearChatBtn" class="ghost-sm" title="Clear chat history for this class">🗑️ Clear Chat</button>
+              <button id="flashcardBtn" class="ghost">🃏 Flashcards (SRS)</button>
               <button id="quizBtn" class="ghost">📝 Generate quiz</button>
             </div>
           </div>
@@ -210,7 +210,6 @@
     </header>
 
     <div id="teacherRecordings" class="teacher-pane">
-      <!-- dashboard stats -->
       <div id="statsBar" class="stats-bar"></div>
 
       <div class="pane-head">
@@ -397,19 +396,30 @@
     </div>
   </div>
 
-  <!-- Flashcard modal -->
+  <!-- Flashcard (Spaced Repetition SRS) modal -->
   <div id="flashcardModal" class="modal hidden">
-    <div class="modal-card" style="max-width: 500px; text-align: center;">
+    <div class="modal-card" style="max-width: 550px; text-align: center;">
       <div class="modal-head">
-        <h2>🃏 Active Recall Flashcards</h2>
+        <h2>🃏 Spaced Repetition Flashcards</h2>
         <button id="closeFlashcards" class="close">✕</button>
       </div>
-      <div id="flashcardBody" style="padding: 30px 20px; min-height: 180px; display: flex; align-items: center; justify-content: center;">
-        <!-- Flashcard card flipper injected by JS -->
+      <div style="display: flex; justify-content: space-between; align-items: center; padding: 4px 16px; margin-top: 6px;">
+        <span id="srsStatusText" class="meta" style="font-weight: 700; color: var(--brand-d);">Due Cards: 0</span>
+        <button id="genFreshCardsBtn" class="ghost-sm" style="font-size: 11.5px; padding: 4px 10px;">✨ Generate New Cards</button>
       </div>
-      <div class="modal-foot" style="justify-content: center; gap: 12px;">
-        <button id="prevCardBtn" class="ghost">← Previous</button>
-        <span id="cardCountIndicator" class="meta" style="font-weight: 800;">1 / 6</span>
+      <div id="flashcardBody" style="padding: 18px 20px; min-height: 190px; display: flex; align-items: center; justify-content: center;">
+        <!-- Card flipper injected by JS -->
+      </div>
+      <!-- Rating options for Spaced Repetition -->
+      <div id="srsRatingControls" class="modal-foot hidden" style="justify-content: center; gap: 8px; flex-wrap: wrap;">
+        <button id="srsAgainBtn" class="ghost-sm danger-btn" style="flex: 1; padding: 8px 4px; font-weight: 800;">🔴 Again (1d)</button>
+        <button id="srsHardBtn" class="ghost-sm" style="flex: 1; padding: 8px 4px; font-weight: 800; border-color: #f59f00; color: #f59f00;">🟡 Hard (2d)</button>
+        <button id="srsGoodBtn" class="ghost-sm" style="flex: 1; padding: 8px 4px; font-weight: 800; border-color: var(--brand); color: var(--brand-d);">🟢 Good (4d)</button>
+        <button id="srsEasyBtn" class="ghost-sm" style="flex: 1; padding: 8px 4px; font-weight: 800; border-color: var(--ok); color: var(--ok);">🔵 Easy (7d)</button>
+      </div>
+      <div id="srsNavControls" class="modal-foot" style="justify-content: center; gap: 12px; margin-top: 4px;">
+        <button id="prevCardBtn" class="ghost">← Prev</button>
+        <span id="cardCountIndicator" class="meta" style="font-weight: 800;">1 / 1</span>
         <button id="nextCardBtn" class="ghost">Next →</button>
       </div>
     </div>

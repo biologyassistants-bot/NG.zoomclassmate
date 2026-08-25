@@ -22,69 +22,86 @@ import bcrypt
 #   * On a host with a persistent disk (e.g. Render Starter + a mounted disk),
 #     set DATA_DIR=/var/data so recordings, roster, config, question log and the
 #     uploaded logo survive restarts and redeploys.
+# The bundled ./data folder is always used to SEED an empty persistent disk on
+# first boot, so your existing recordings show up the first time.
 BUNDLED_DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
 DATA_DIR = os.environ.get("DATA_DIR", "").strip() or BUNDLED_DATA_DIR
 
 
-def _purge_legacy_embeddings_from_disk(file_path):
-    """Fast text-level scanner that strips out massive float embedding arrays
-    directly from disk before json.load() is called, preventing 2GB+ RAM crashes."""
+def _clean_recordings_disk_file(file_path):
+    """Streams through recordings.json line-by-line to strip out heavy float
+    arrays directly on disk without consuming RAM, preventing 2GB+ boot crashes."""
     if not os.path.exists(file_path):
         return
+    if os.path.getsize(file_path) < 500 * 1024:
+        return
+
+    tmp_path = file_path + ".clean.tmp"
     try:
-        # Check size — if file is under 2 MB, no massive embedding arrays exist
-        if os.path.getsize(file_path) < 2 * 1024 * 1024:
-            return
-
+        has_embeddings = False
         with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
-            text = f.read()
-
-        if '"embeddings"' not in text:
+            for line in f:
+                if '"embeddings"' in line:
+                    has_embeddings = True
+                    break
+        if not has_embeddings:
             return
 
-        print(f"[startup] Purging bloated embedding arrays from {file_path}...")
-        idx = 0
-        out = []
-        n = len(text)
-        while idx < n:
-            emb_pos = text.find('"embeddings"', idx)
-            if emb_pos == -1:
-                out.append(text[idx:])
-                break
-            out.append(text[idx:emb_pos])
-            colon_pos = text.find(":", emb_pos)
-            if colon_pos == -1:
-                break
-            bracket_open = text.find("[", colon_pos)
-            if bracket_open == -1:
-                break
-            depth = 1
-            curr = bracket_open + 1
-            while curr < n and depth > 0:
-                ch = text[curr]
-                if ch == "[":
-                    depth += 1
-                elif ch == "]":
-                    depth -= 1
-                curr += 1
-            while curr < n and text[curr] in " \t\r\n":
-                curr += 1
-            if curr < n and text[curr] == ",":
-                curr += 1
-            idx = curr
+        print(f"[startup] Sanitizing {file_path} to prevent memory exhaustion...")
+        with open(file_path, "r", encoding="utf-8", errors="ignore") as fin, \
+             open(tmp_path, "w", encoding="utf-8") as fout:
+            
+            skipping_embeddings = False
+            bracket_depth = 0
+            prev_line = None
 
-        cleaned_text = "".join(out)
-        temp_path = file_path + ".clean.tmp"
-        with open(temp_path, "w", encoding="utf-8") as f:
-            f.write(cleaned_text)
-        
-        os.replace(temp_path, file_path)
-        print(f"[startup] Successfully cleaned {file_path}. RAM stabilized.")
+            for line in fin:
+                if not skipping_embeddings:
+                    if '"embeddings"' in line:
+                        if '[' in line:
+                            bracket_depth = line.count('[') - line.count(']')
+                            if bracket_depth > 0:
+                                skipping_embeddings = True
+                                continue
+                            else:
+                                continue
+                        else:
+                            skipping_embeddings = True
+                            bracket_depth = 0
+                            continue
+                    
+                    if prev_line is not None:
+                        stripped = line.strip()
+                        if (stripped.startswith("}") or stripped.startswith("]")) and prev_line.rstrip().endswith(","):
+                            prev_clean = prev_line.rstrip()[:-1] + "\n"
+                            fout.write(prev_clean)
+                        else:
+                            fout.write(prev_line)
+                    prev_line = line
+                else:
+                    bracket_depth += line.count('[') - line.count(']')
+                    if bracket_depth <= 0:
+                        skipping_embeddings = False
+                        continue
+
+            if prev_line is not None:
+                fout.write(prev_line)
+
+        os.replace(tmp_path, file_path)
+        print(f"[startup] Cleaned {file_path}. Memory usage stabilized.")
     except Exception as e:
-        print(f"[startup sanitizer warning]: {e}")
+        print(f"[startup cleaner error]: {e}")
+        if os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except Exception:
+                pass
 
 
 def _seed_data_dir():
+    """If DATA_DIR is a separate (persistent) location, copy any files that are
+    missing there from the bundled data folder. Never overwrites existing files,
+    so teacher edits made on the live disk are preserved across deploys."""
     try:
         if os.path.abspath(DATA_DIR) == os.path.abspath(BUNDLED_DATA_DIR):
             return
@@ -109,10 +126,11 @@ CONFIG_PATH = os.path.join(DATA_DIR, "config.json")
 QLOG_PATH = os.path.join(DATA_DIR, "question_log.json")
 ROSTER_PATH = os.path.join(DATA_DIR, "roster.json")
 NOTES_LIB_PATH = os.path.join(DATA_DIR, "notes_library.json")
+# in-memory active student sessions: token -> {student_id, name, courses}
 SESSIONS = {}
 
-# Run disk sanitizer to guarantee boot RAM stays below 60 MB
-_purge_legacy_embeddings_from_disk(DATA_PATH)
+# Clean heavy embeddings from persistent disk before loading into memory
+_clean_recordings_disk_file(DATA_PATH)
 
 
 # ---------- shared notes library ----------
@@ -150,6 +168,7 @@ def gen_pin():
 
 
 def hash_pw(pw: str) -> str:
+    # bcrypt only accepts up to 72 bytes; truncate defensively.
     pw_bytes = (pw or "").encode("utf-8")[:72]
     return bcrypt.hashpw(pw_bytes, bcrypt.gensalt()).decode("utf-8")
 
@@ -164,6 +183,7 @@ def verify_pw(pw: str, hashed: str) -> bool:
         return False
 
 
+# default teacher passcode; teacher can change it in the dashboard
 DEFAULT_PASSCODE = "teach123"
 
 
@@ -213,8 +233,14 @@ def load_recordings():
                     r.pop("embeddings", None)
                 return recs
         except Exception as e:
-            print(f"[recordings] load error: {e}")
-            return []
+            print(f"[recordings] primary load error: {e}")
+            try:
+                bundled_path = os.path.join(BUNDLED_DATA_DIR, "recordings.json")
+                if os.path.exists(bundled_path) and os.path.abspath(bundled_path) != os.path.abspath(DATA_PATH):
+                    with open(bundled_path, "r", encoding="utf-8") as bf:
+                        return json.load(bf)
+            except Exception:
+                pass
     return []
 
 
@@ -231,6 +257,11 @@ app.add_middleware(
 )
 
 
+# ---------------------------------------------------------------------------
+# OpenAI key diagnostic endpoint (INLINE — no separate file needed).
+# Open  /api/diag/openai  to confirm the key is set & working. It never
+# returns the key itself, only its length + a masked preview.
+# ---------------------------------------------------------------------------
 def _diag_mask(key: str) -> str:
     if not key:
         return ""
@@ -253,7 +284,10 @@ async def diag_openai():
     }
     if not key:
         report["ok"] = False
-        report["message"] = "OPENAI_API_KEY is NOT set (or empty) on this server."
+        report["message"] = (
+            "OPENAI_API_KEY is NOT set (or empty) on this server. Add it under "
+            "Render -> Environment and redeploy."
+        )
         return JSONResponse(status_code=200, content=report)
 
     import httpx
@@ -263,11 +297,14 @@ async def diag_openai():
             resp = await client.post(
                 f"{base}/chat/completions",
                 headers={"Authorization": f"Bearer {key}"},
-                json={"model": model, "messages": [{"role": "user", "content": "ping"}], "max_tokens": 1},
+                json={"model": model,
+                      "messages": [{"role": "user", "content": "ping"}],
+                      "max_tokens": 1},
             )
     except httpx.RequestError as e:
         report["ok"] = False
-        report["message"] = f"Network error reaching {base}: {e}"
+        report["message"] = (f"Network error reaching {base}: {e}. On Render free "
+                             "tier this can be a cold-start timeout; retry once warm.")
         return JSONResponse(status_code=200, content=report)
 
     if resp.status_code >= 400:
@@ -278,7 +315,18 @@ async def diag_openai():
             detail = resp.text[:200]
         report["ok"] = False
         report["provider_status"] = resp.status_code
-        report["message"] = f"Provider returned {resp.status_code}: {detail[:200]}"
+        low = (detail or "").lower()
+        if resp.status_code == 401 or "incorrect api key" in low or "invalid" in low:
+            report["message"] = ("Key REJECTED (invalid/incorrect). Re-copy from "
+                                 "platform.openai.com and update OPENAI_API_KEY, then redeploy.")
+        elif resp.status_code == 429 or "quota" in low or "billing" in low:
+            report["message"] = ("Key valid but NO CREDIT / rate-limited. Add "
+                                 "billing/credits to the OpenAI account.")
+        elif resp.status_code == 404 or ("model" in low and "not" in low):
+            report["message"] = ("Key works but the model isn't available to this "
+                                 "account. Set OPENAI_MODEL to one you can use.")
+        else:
+            report["message"] = f"Provider returned {resp.status_code}: {detail[:200]}"
         return JSONResponse(status_code=200, content=report)
 
     report["ok"] = True
@@ -288,6 +336,9 @@ async def diag_openai():
 
 
 def _migrate_inline_notes_to_library():
+    """One-time migration: older data stored notes inline on each recording as
+    rec['notes'] = [{id, filename, chunks}]. Move them into the shared library and
+    replace with rec['note_ids'] = [id,...]. Safe to run every startup (idempotent)."""
     lib = load_notes_library()
     lib_ids = {n["id"] for n in lib}
     changed_lib = False
@@ -320,6 +371,7 @@ _migrate_inline_notes_to_library()
 
 
 def fmt_ts(t):
+    """Format a transcript start_time (which may be 'HH:MM:SS' or seconds) as mm:ss / h:mm:ss."""
     if t is None:
         return "?"
     s = str(t)
@@ -346,6 +398,7 @@ def tokenize(text):
 
 # ---------- semantic retrieval (OpenAI Embeddings) ----------
 async def get_embedding(text: str) -> list[float]:
+    """Fetch a single embedding vector for the student's query."""
     import httpx
     async with httpx.AsyncClient(timeout=30) as client:
         resp = await client.post(
@@ -358,12 +411,14 @@ async def get_embedding(text: str) -> list[float]:
 
 
 def cosine_similarity(v1, v2):
+    """Calculate how closely related two pieces of text are."""
     dot = sum(a * b for a, b in zip(v1, v2))
     mag = math.sqrt(sum(a * a for a in v1)) * math.sqrt(sum(b * b for b in v2))
     return dot / mag if mag else 0.0
 
 
 async def build_index_async(rec):
+    """Fetch embeddings for the entire transcript and cache them in-memory only."""
     if "embeddings" in rec and rec["embeddings"]:
         return rec["embeddings"]
         
@@ -388,11 +443,12 @@ async def build_index_async(rec):
             data = resp.json().get("data", [])
             embeddings.extend([d["embedding"] for d in sorted(data, key=lambda x: x["index"])])
             
-    rec["embeddings"] = embeddings
+    rec["embeddings"] = embeddings  # Cached in RAM only
     return embeddings
 
 
 async def retrieve(rec, query, k=18, window=1):
+    """Find the most relevant transcript segments using semantic similarity."""
     segs = rec.get("segments", [])
     if not segs: 
         return []
@@ -417,6 +473,7 @@ async def retrieve(rec, query, k=18, window=1):
 
 # ---------- teacher notes: extraction + retrieval ----------
 def extract_text_from_upload(data: bytes, filename: str) -> str:
+    """Extract plain text from an uploaded PDF / DOCX / TXT file (server-side only)."""
     name = (filename or "").lower()
     if name.endswith(".txt") or name.endswith(".md"):
         for enc in ("utf-8", "utf-16", "latin-1"):
@@ -437,6 +494,7 @@ def extract_text_from_upload(data: bytes, filename: str) -> str:
 
 
 def chunk_note_text(text: str, target_chars=700):
+    """Split note text into paragraph-ish chunks for retrieval."""
     text = re.sub(r"\r\n?", "\n", text or "")
     paras = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
     chunks = []
@@ -457,6 +515,7 @@ def chunk_note_text(text: str, target_chars=700):
 
 
 def retrieve_note_chunks(rec, query, k=4):
+    """Return the top-k most relevant note chunks for the query."""
     lib = load_notes_library()
     notes = [note_by_id(nid, lib) for nid in (rec.get("note_ids") or [])]
     notes = [n for n in notes if n]
@@ -492,6 +551,7 @@ def retrieve_note_chunks(rec, query, k=4):
 
 
 def notes_context(rec, query, max_chars=8000):
+    """Build a labeled notes context block for the LLM prompt."""
     chunks = retrieve_note_chunks(rec, query)
     if not chunks:
         return ""

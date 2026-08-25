@@ -589,11 +589,11 @@ OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
 
 
 class LLMConfigError(Exception):
-    pass
+    """Raised when the LLM backend is not configured (no key, no fallback)."""
 
 
 class LLMUpstreamError(Exception):
-    pass
+    """Raised when the OpenAI-compatible API returns an error."""
 
 
 async def llm(messages, max_tokens=1200, temperature=0.1):
@@ -1837,7 +1837,7 @@ async def generate_flashcards(body: FlashcardBody):
     return data
 
 
-# ---------- study plan generation ----------
+# ---------- study plan generation (100% Mandatory Coverage & Dynamic Allocation) ----------
 class StudyPlanBody(BaseModel):
     recording_ids: list[str]
     days: int
@@ -1854,12 +1854,19 @@ async def generate_study_plan(body: StudyPlanBody):
     if not body.recording_ids:
         return JSONResponse({"error": "Please select at least one class to study."}, status_code=400)
 
+    num_classes = len(body.recording_ids)
+    total_available_mins = int(body.days * body.hours_per_day * 60)
+    
+    # Dynamically allocate base review duration per class
+    target_review_mins = max(20, min(60, int((total_available_mins * 0.6) / num_classes)))
+
     selected_recs = []
     for rid in body.recording_ids:
         rec = REC_BY_ID.get(rid)
         if rec:
-            est_minutes = 90  
-            selected_recs.append(f"- Title: {rec.get('display_title') or rec.get('topic')} | Length: {est_minutes} mins")
+            title = rec.get('display_title') or rec.get('topic') or "Class"
+            unit = rec.get('unit') or "General"
+            selected_recs.append(f"- [{unit}] {title} (Target review: ~{target_review_mins} mins)")
 
     if not selected_recs:
         return JSONResponse({"error": "Selected recordings not found."}, status_code=404)
@@ -1867,29 +1874,30 @@ async def generate_study_plan(body: StudyPlanBody):
     recs_text = "\n".join(selected_recs)
     
     system = (
-        "You are an encouraging, expert academic coach for Biology students. "
-        "Your task is to create a balanced, day-by-day study plan based on the student's available time and selected classes. "
-        "Return STRICT JSON only. "
-        "Schema: {\"plan\":[{\"day\":int,\"quote\":str,\"tasks\":[{\"title\":str,\"description\":str,\"est_minutes\":int}]}]}. "
-        "Rules:\n"
-        "1. 'quote' must be a short, biology-themed motivational sentence for that day.\n"
-        "2. Break down longer recordings into smaller tasks if needed.\n"
-        "3. Include active recall tasks based on the student's focus.\n"
-        "4. Do not exceed the student's daily time limit."
+        "You are an expert academic coach for Biology students. "
+        "Your task is to create a structured, day-by-day study schedule based on the student's constraints.\n\n"
+        "STRICT MANDATORY RULES:\n"
+        f"1. TOTAL COVERAGE (CRITICAL): You MUST schedule EVERY SINGLE ONE of the {num_classes} classes provided below across the {body.days} days. Do NOT skip or omit any class.\n"
+        f"2. TIME BUDGET: Each day has approximately {body.hours_per_day} hours ({int(body.hours_per_day * 60)} minutes). Distribute tasks evenly so daily task times sum to ~{int(body.hours_per_day * 60)} minutes.\n"
+        "3. FOCUS MODE SPECIALIZATION:\n"
+        "   - 'First-time learning': Dedicate more time to thorough topic review, process understanding, and notes consolidation.\n"
+        "   - 'Reviewing and memorizing definitions': Pair class reviews with active recall tasks, flashcards, and keyword drills.\n"
+        "   - 'Past paper and exam practice': Pair class reviews with exam question practice, command word checks, and mark scheme alignment.\n"
+        "4. Return STRICT JSON only.\n"
+        "Schema: {\"plan\":[{\"day\":int,\"quote\":str,\"tasks\":[{\"title\":str,\"description\":str,\"est_minutes\":int}]}]}"
     )
     
     user = (
-        f"Create a {body.days}-day study plan.\n"
-        f"Time available: {body.hours_per_day} hours per day.\n"
-        f"Student's Goal/Focus: {body.focus}\n\n"
-        f"Classes to cover:\n{recs_text}"
+        f"Generate a {body.days}-day plan for {body.hours_per_day} hours/day (Total budget: {total_available_mins} mins).\n"
+        f"Study Focus: {body.focus}\n"
+        f"Classes to cover ({num_classes} total - ALL MUST BE INCLUDED):\n{recs_text}"
     )
 
     try:
         raw = await llm(
             [{"role": "system", "content": system}, {"role": "user", "content": user}],
-            max_tokens=2500,
-            temperature=0.4, 
+            max_tokens=3000,
+            temperature=0.3,
         )
     except (LLMConfigError, LLMUpstreamError) as e:
         return JSONResponse({"error": str(e)}, status_code=503)

@@ -148,7 +148,6 @@
               <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
                 <span style="font-weight: 800; font-size: 13px;">Classes to review</span>
                 <div style="display: flex; gap: 6px;">
-                  <button type="button" class="ghost-sm" style="font-size: 11px; padding: 2px 8px;" onclick="toggleAllClasses(true)">Select All</button>
                   <button type="button" class="ghost-sm" style="font-size: 11px; padding: 2px 8px;" onclick="toggleAllClasses(false)">Deselect All</button>
                 </div>
               </div>
@@ -169,10 +168,13 @@
             <label class="fld" style="margin-bottom: 16px; display: block;">
               <span style="font-weight: 800; font-size: 13px; display: block; margin-bottom: 6px;">Study Focus</span>
               <select id="planFocus" style="width: 100%; padding: 11px 13px; border-radius: 11px; border: 1.5px solid var(--line); background: var(--panel2); font-weight: 600;">
-                <option value="First-time learning">First-time learning</option>
-                <option value="Reviewing and memorizing definitions">Reviewing and memorizing definitions</option>
-                <option value="Past paper and exam practice">Past paper & exam practice</option>
+                <option value="First-time learning">🟢 First-Time Learning (Deep Concept Breakdown)</option>
+                <option value="Reviewing and memorizing definitions" selected>🟡 Review & Memorization (Active Recall & Terms)</option>
+                <option value="Past paper and exam practice">🔴 Exam & Past Paper Practice (Mark Schemes & Drills)</option>
               </select>
+              <p id="focusHint" class="meta" style="font-size: 12px; margin-top: 6px; color: var(--brand-d);">
+                💡 Combines rapid topic overviews with active recall, flashcards, and definition checks.
+              </p>
             </label>
             <button id="generatePlanBtn" class="primary" style="width: 100%;">Generate My Plan</button>
             <button id="resetPlanBtn" class="ghost hidden" style="width: 100%; margin-top: 8px;">🗑️ Delete Plan & Start Over</button>

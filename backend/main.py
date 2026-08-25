@@ -727,6 +727,71 @@ async def transcribe_audio_bytes(audio_bytes, filename="audio.m4a", time_offset=
     return segments[cite: 3]
 
 
+async def fetch_zoom_recording_files(meeting_id):
+    import httpx
+    from urllib.parse import quote
+    token = await zoom_token()[cite: 3]
+    mid = str(meeting_id)[cite: 3]
+    needs_double = mid.startswith("/") or "//" in mid or "/" in mid[cite: 3]
+    path_id = quote(quote(mid, safe=""), safe="") if needs_double else quote(mid, safe="")[cite: 3]
+    async with httpx.AsyncClient(timeout=60) as client:[cite: 3]
+        r = await client.get(
+            f"https://api.zoom.us/v2/meetings/{path_id}/recordings",
+            headers={"Authorization": f"Bearer {token}"},
+        )[cite: 3]
+        if r.status_code != 200:[cite: 3]
+            raise LLMUpstreamError(f"Zoom recordings lookup returned {r.status_code}: {r.text[:300]}")[cite: 3]
+        return r.json().get("recording_files", []) or [][cite: 3]
+
+
+async def fetch_zoom_recording_object(meeting_id):
+    import httpx
+    from urllib.parse import quote
+    token = await zoom_token()[cite: 3]
+    mid = str(meeting_id)[cite: 3]
+    needs_double = mid.startswith("/") or "//" in mid or "/" in mid[cite: 3]
+    path_id = quote(quote(mid, safe=""), safe="") if needs_double else quote(mid, safe="")[cite: 3]
+    async with httpx.AsyncClient(timeout=60) as client:[cite: 3]
+        r = await client.get(
+            f"https://api.zoom.us/v2/meetings/{path_id}/recordings",
+            headers={"Authorization": f"Bearer {token}"},
+        )[cite: 3]
+        if r.status_code == 404:[cite: 3]
+            raise LLMUpstreamError("No cloud recording found for that meeting ID.")[cite: 3]
+        if r.status_code != 200:[cite: 3]
+            raise LLMUpstreamError(f"Zoom lookup returned {r.status_code}: {r.text[:300]}")[cite: 3]
+        return r.json()[cite: 3]
+
+
+def _parse_meeting_id(raw: str) -> str:
+    import re as _re
+    from urllib.parse import urlparse, parse_qs, unquote
+    s = (raw or "").strip()[cite: 3]
+    if not s:[cite: 3]
+        return ""[cite: 3]
+    if s.startswith("http"):[cite: 3]
+        u = urlparse(s)[cite: 3]
+        qs = parse_qs(u.query)[cite: 3]
+        for key in ("meeting_id", "meetingId", "confId"):[cite: 3]
+            if key in qs and qs[key]:[cite: 3]
+                return unquote(qs[key][0])[cite: 3]
+        m = _re.search(r"/j/(\d{9,})", u.path)[cite: 3]
+        if m:[cite: 3]
+            return m.group(1)[cite: 3]
+        m = _re.search(r"(\d{9,})", u.path)[cite: 3]
+        if m:[cite: 3]
+            return m.group(1)[cite: 3]
+        return ""[cite: 3]
+    return s.replace(" ", "")[cite: 3]
+
+
+def _pick_audio_file(files):
+    audio = next((f for f in files if (f.get("file_type") or "").upper() == "M4A"), None)[cite: 3]
+    if audio:[cite: 3]
+        return audio[cite: 3]
+    return next((f for f in files if (f.get("file_type") or "").upper() == "MP4"), None)[cite: 3]
+
+
 async def _transcribe_large_audio(src_path):
     import os as _os
     workdir = _os.path.dirname(src_path)[cite: 3]
@@ -878,71 +943,6 @@ def _detect_source(obj):
         if isinstance(t, str) and "webinar" in t.lower():[cite: 3]
             return "webinar"[cite: 3]
     return "meeting"[cite: 3]
-
-
-async def fetch_zoom_recording_files(meeting_id):
-    import httpx
-    from urllib.parse import quote
-    token = await zoom_token()[cite: 3]
-    mid = str(meeting_id)[cite: 3]
-    needs_double = mid.startswith("/") or "//" in mid or "/" in mid[cite: 3]
-    path_id = quote(quote(mid, safe=""), safe="") if needs_double else quote(mid, safe="")[cite: 3]
-    async with httpx.AsyncClient(timeout=60) as client:[cite: 3]
-        r = await client.get(
-            f"https://api.zoom.us/v2/meetings/{path_id}/recordings",
-            headers={"Authorization": f"Bearer {token}"},
-        )[cite: 3]
-        if r.status_code != 200:[cite: 3]
-            raise LLMUpstreamError(f"Zoom recordings lookup returned {r.status_code}: {r.text[:300]}")[cite: 3]
-        return r.json().get("recording_files", []) or [][cite: 3]
-
-
-async def fetch_zoom_recording_object(meeting_id):
-    import httpx
-    from urllib.parse import quote
-    token = await zoom_token()[cite: 3]
-    mid = str(meeting_id)[cite: 3]
-    needs_double = mid.startswith("/") or "//" in mid or "/" in mid[cite: 3]
-    path_id = quote(quote(mid, safe=""), safe="") if needs_double else quote(mid, safe="")[cite: 3]
-    async with httpx.AsyncClient(timeout=60) as client:[cite: 3]
-        r = await client.get(
-            f"https://api.zoom.us/v2/meetings/{path_id}/recordings",
-            headers={"Authorization": f"Bearer {token}"},
-        )[cite: 3]
-        if r.status_code == 404:[cite: 3]
-            raise LLMUpstreamError("No cloud recording found for that meeting ID.")[cite: 3]
-        if r.status_code != 200:[cite: 3]
-            raise LLMUpstreamError(f"Zoom lookup returned {r.status_code}: {r.text[:300]}")[cite: 3]
-        return r.json()[cite: 3]
-
-
-def _parse_meeting_id(raw: str) -> str:
-    import re as _re
-    from urllib.parse import urlparse, parse_qs, unquote
-    s = (raw or "").strip()[cite: 3]
-    if not s:[cite: 3]
-        return ""[cite: 3]
-    if s.startswith("http"):[cite: 3]
-        u = urlparse(s)[cite: 3]
-        qs = parse_qs(u.query)[cite: 3]
-        for key in ("meeting_id", "meetingId", "confId"):[cite: 3]
-            if key in qs and qs[key]:[cite: 3]
-                return unquote(qs[key][0])[cite: 3]
-        m = _re.search(r"/j/(\d{9,})", u.path)[cite: 3]
-        if m:[cite: 3]
-            return m.group(1)[cite: 3]
-        m = _re.search(r"(\d{9,})", u.path)[cite: 3]
-        if m:[cite: 3]
-            return m.group(1)[cite: 3]
-        return ""[cite: 3]
-    return s.replace(" ", "")[cite: 3]
-
-
-def _pick_audio_file(files):
-    audio = next((f for f in files if (f.get("file_type") or "").upper() == "M4A"), None)[cite: 3]
-    if audio:[cite: 3]
-        return audio[cite: 3]
-    return next((f for f in files if (f.get("file_type") or "").upper() == "MP4"), None)[cite: 3]
 
 
 async def ingest_zoom_meeting(obj, allow_whisper_fallback=True):

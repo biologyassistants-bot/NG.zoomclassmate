@@ -160,7 +160,6 @@ app.add_middleware(
 # OpenAI key diagnostic endpoint (INLINE — no separate file needed).
 # Open  /api/diag/openai  to confirm the key is set & working. It never
 # returns the key itself, only its length + a masked preview.
-# Delete this whole block once you're done debugging.
 # ---------------------------------------------------------------------------
 def _diag_mask(key: str) -> str:
     if not key:
@@ -236,8 +235,10 @@ async def diag_openai():
 
 
 def load_recordings():
-    with open(DATA_PATH) as f:
-        return json.load(f)
+    if os.path.exists(DATA_PATH):
+        with open(DATA_PATH) as f:
+            return json.load(f)
+    return []
 
 
 RECORDINGS = load_recordings()

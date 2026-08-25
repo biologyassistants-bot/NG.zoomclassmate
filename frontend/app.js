@@ -79,6 +79,7 @@ async function fetchServerProfile() {
       if (data.flashcard_deck) {
         state.flashcardDeck = data.flashcard_deck;
       }
+      updateAlertBadge();
     }
   } catch (e) {}
 }
@@ -96,6 +97,7 @@ async function saveServerProfile() {
         flashcard_deck: state.flashcardDeck
       })
     });
+    updateAlertBadge();
   } catch (e) {}
 }
 
@@ -236,15 +238,18 @@ if(el("passInput")) el("passInput").addEventListener("keydown", e => { if (e.key
 if(el("tabStudentDash")) el("tabStudentDash").addEventListener("click", () => switchStudentTab("Dash"));
 if(el("tabStudentTutor")) el("tabStudentTutor").addEventListener("click", () => switchStudentTab("Tutor"));
 if(el("tabStudentPlanner")) el("tabStudentPlanner").addEventListener("click", () => switchStudentTab("Planner"));
+if(el("tabStudentAlerts")) el("tabStudentAlerts").addEventListener("click", () => switchStudentTab("Alerts"));
 
 function switchStudentTab(name) {
   if(el("tabStudentDash")) el("tabStudentDash").classList.toggle("active", name === "Dash");
   if(el("tabStudentTutor")) el("tabStudentTutor").classList.toggle("active", name === "Tutor");
   if(el("tabStudentPlanner")) el("tabStudentPlanner").classList.toggle("active", name === "Planner");
+  if(el("tabStudentAlerts")) el("tabStudentAlerts").classList.toggle("active", name === "Alerts");
   
   if(el("studentDashPane")) el("studentDashPane").classList.toggle("hidden", name !== "Dash");
   if(el("studentTutorPane")) el("studentTutorPane").classList.toggle("hidden", name !== "Tutor");
   if(el("studentPlannerPane")) el("studentPlannerPane").classList.toggle("hidden", name !== "Planner");
+  if(el("studentAlertsPane")) el("studentAlertsPane").classList.toggle("hidden", name !== "Alerts");
 
   if (name === "Dash") renderStudentDashboard();
   if (name === "Planner") {
@@ -254,6 +259,7 @@ function switchStudentTab(name) {
       initPlanner();
     }
   }
+  if (name === "Alerts") renderAlertsPane();
 }
 
 function calculatePlanProgress() {
@@ -265,19 +271,34 @@ function calculatePlanProgress() {
   return tot === 0 ? 0 : Math.round((comp/tot)*100);
 }
 
+function updateAlertBadge() {
+  const badge = el("navAlertBadge");
+  if (!badge) return;
+  const now = new Date();
+  const dueCardsCount = (state.flashcardDeck || []).filter(c => new Date(c.dueDate) <= now).length;
+  if (dueCardsCount > 0) {
+    badge.textContent = dueCardsCount;
+    badge.classList.remove("hidden");
+  } else {
+    badge.classList.add("hidden");
+  }
+}
+
 function renderStudentDashboard() {
   const planPct = calculatePlanProgress();
   const statsBar = el("studentStatsBar");
   if(!statsBar) return;
   
   const courses = new Set(state.recordings.map(r => r.unit || "Unassigned"));
+  const now = new Date();
+  const dueCardsCount = (state.flashcardDeck || []).filter(c => new Date(c.dueDate) <= now).length;
   
   const cards = [
     { label: "Enrolled Courses", value: courses.size },
     { label: "Classes Available", value: state.recordings.length },
+    { label: "Flashcards Due", value: dueCardsCount, sub: dueCardsCount > 0 ? "Review to prevent decay ⚠️" : "All caught up ✓" },
     { label: "Study Plan Progress", value: `${planPct}%`, sub: planPct === 100 ? "Completed! 🎉" : (currentStudyPlan ? "In progress" : "No active plan") },
-    { label: "AI Questions Asked", value: studentStats.questions },
-    { label: "Quizzes Generated", value: studentStats.quizzes }
+    { label: "AI Questions Asked", value: studentStats.questions }
   ];
   
   let html = cards.map(c => 
@@ -300,6 +321,98 @@ function renderStudentDashboard() {
   `;
 
   statsBar.innerHTML = html;
+  updateAlertBadge();
+}
+
+// ================= ALERTS & NOTIFICATIONS PAGE =================
+function renderAlertsPane() {
+  const container = el("alertsContainer");
+  if (!container) return;
+  container.innerHTML = "";
+
+  const now = new Date();
+  const dueCards = (state.flashcardDeck || []).filter(c => new Date(c.dueDate) <= now);
+  
+  // Group due cards by recording
+  const dueByRec = {};
+  dueCards.forEach(c => {
+    if (!dueByRec[c.recording_id]) dueByRec[c.recording_id] = [];
+    dueByRec[c.recording_id].push(c);
+  });
+
+  let hasAlerts = false;
+
+  // 1. Spaced Repetition Due Cards Section
+  if (dueCards.length > 0) {
+    hasAlerts = true;
+    Object.keys(dueByRec).forEach(recId => {
+      const rec = state.recordings.find(r => r.id === recId);
+      const title = rec ? rec.title : "Class Recording";
+      const count = dueByRec[recId].length;
+
+      const card = document.createElement("div");
+      card.className = "q-block";
+      card.style.cssText = "display: flex; justify-content: space-between; align-items: center; padding: 18px; border-left: 4px solid #ff6b6b;";
+      card.innerHTML = `
+        <div>
+          <div style="font-weight: 800; font-size: 15px; margin-bottom: 4px;">
+            🔴 Flashcard Review Due: <span style="color: var(--text);">${escapeHtml(title)}</span>
+          </div>
+          <div class="meta">
+            <strong>${count} card${count > 1 ? 's' : ''}</strong> are ready for active recall review according to your schedule.
+          </div>
+        </div>
+        <button class="primary" style="padding: 8px 16px; font-size: 13px;">Review Deck →</button>
+      `;
+
+      card.querySelector("button").addEventListener("click", () => {
+        if (rec) {
+          switchStudentTab("Tutor");
+          selectRecording(rec);
+          if (el("flashcardBtn")) el("flashcardBtn").click();
+        }
+      });
+      container.appendChild(card);
+    });
+  }
+
+  // 2. Study Plan Daily Task Reminders
+  if (currentStudyPlan) {
+    let uncompletedCount = 0;
+    currentStudyPlan.forEach(d => {
+      d.tasks.forEach(t => { if (!t.completed) uncompletedCount++; });
+    });
+
+    if (uncompletedCount > 0) {
+      hasAlerts = true;
+      const planAlert = document.createElement("div");
+      planAlert.className = "q-block";
+      planAlert.style.cssText = "display: flex; justify-content: space-between; align-items: center; padding: 18px; border-left: 4px solid var(--brand);";
+      planAlert.innerHTML = `
+        <div>
+          <div style="font-weight: 800; font-size: 15px; margin-bottom: 4px;">
+            📅 Active Study Plan in Progress
+          </div>
+          <div class="meta">
+            You have <strong>${uncompletedCount} task${uncompletedCount > 1 ? 's' : ''}</strong> left to complete your scheduled goal.
+          </div>
+        </div>
+        <button class="ghost" style="padding: 8px 16px; font-size: 13px;">Open Planner →</button>
+      `;
+      planAlert.querySelector("button").addEventListener("click", () => switchStudentTab("Planner"));
+      container.appendChild(planAlert);
+    }
+  }
+
+  if (!hasAlerts) {
+    container.innerHTML = `
+      <div class="empty" style="padding: 40px 20px;">
+        <div class="empty-emoji">🎉</div>
+        <h3>You are completely caught up!</h3>
+        <p class="meta">No spaced repetition flashcards or pending plan alerts right now. Keep up the momentum!</p>
+      </div>
+    `;
+  }
 }
 
 // ================= STUDENT AI TUTOR & SAVED CHAT HISTORY =================
@@ -374,7 +487,7 @@ function selectRecording(r) {
   if(el("wsMeta")) el("wsMeta").innerHTML = `${escapeHtml(r.unit)} · ${escapeHtml(r.date || "")} · ${r.segments} transcript lines` +
     (r.has_notes ? ` · <span class="notes-flag">📎 includes extra class notes</span>` : "");
   
-  // Render Persistent Chat History for this recording
+  // Render Persistent Chat History
   const chat = el("chat");
   if(chat) chat.innerHTML = "";
   
@@ -565,7 +678,6 @@ if (flashcardBtn) {
     if (!state.current) return;
     flashcardModal.classList.remove("hidden");
     
-    // Check if we already have cards for this recording
     const existing = getRecordingCards(state.current.id);
     if (existing.length === 0) {
       await generateNewFlashcards();
@@ -676,7 +788,6 @@ function renderCurrentCard() {
   });
 }
 
-// Spaced Repetition rating handlers (Again, Hard, Good, Easy)
 async function rateCard(ratingFactor) {
   if (!currentDeckCards.length) return;
   const card = currentDeckCards[currentCardIndex];
@@ -697,14 +808,12 @@ async function rateCard(ratingFactor) {
     original.reps = (original.reps || 0) + 1;
   }
 
-  // Schedule next review date
   const nextReview = new Date(now.getTime() + (original.interval * 24 * 60 * 60 * 1000));
   original.dueDate = nextReview.toISOString();
 
   await saveServerProfile();
   updateSrsHeader();
 
-  // Move to next card
   if (currentCardIndex < currentDeckCards.length - 1) {
     currentCardIndex++;
   } else {
@@ -722,7 +831,7 @@ if (prevCardBtn) prevCardBtn.addEventListener("click", () => { if (currentCardIn
 if (nextCardBtn) nextCardBtn.addEventListener("click", () => { if (currentCardIndex < currentDeckCards.length - 1) { currentCardIndex++; renderCurrentCard(); } });
 
 /* =========================================================
-   STUDY PLAN FEATURE (ENHANCED COURSE TOGGLES & TASK EDITING)
+   STUDY PLAN FEATURE
    ========================================================= */
 
 const planClassSelect = document.getElementById('planClassSelect');
@@ -833,7 +942,6 @@ function initPlanner() {
   }
 }
 
-// Global master toggle for Select All / Deselect All
 window.toggleAllClasses = function(selectState) {
   const checkboxes = document.querySelectorAll('.class-checkbox');
   checkboxes.forEach(cb => cb.checked = selectState);
@@ -944,7 +1052,6 @@ function renderPlan() {
       leftGroup.appendChild(checkbox);
       leftGroup.appendChild(textDiv);
 
-      // Edit Button for Customization
       const editBtn = document.createElement('button');
       editBtn.type = 'button';
       editBtn.className = 'ghost-sm';
@@ -1298,7 +1405,7 @@ if(el("edDelete")) {
       });
       if (res.ok) { toast("Student deleted.", "success"); closeStudentEditor(); loadStudents(); }
       else { const d = await res.json(); toast(d.error || "Could not delete.", "error"); }
-    } catch (e) { toast("Network error during delete.", "error"); }
+    } catch (e) { toast("Network error during delete.", "error"); deleteBtn.disabled = false; }
   });
 }
 

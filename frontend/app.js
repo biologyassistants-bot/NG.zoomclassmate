@@ -559,6 +559,20 @@ const resetPlanBtn = document.getElementById('resetPlanBtn');
 const planEmptyState = document.getElementById('planEmptyState');
 const planResult = document.getElementById('planResult');
 
+const focusHints = {
+  "First-time learning": "💡 Focuses on deep understanding, concept breakdowns, and taking structured notes.",
+  "Reviewing and memorizing definitions": "💡 Combines rapid topic overviews with active recall, flashcards, and definition checks.",
+  "Past paper and exam practice": "💡 Prioritizes past-paper style questions, command words, and Cambridge/Edexcel mark scheme tips."
+};
+
+const planFocusEl = el("planFocus");
+if (planFocusEl) {
+  planFocusEl.addEventListener("change", (e) => {
+    const hintEl = el("focusHint");
+    if (hintEl) hintEl.textContent = focusHints[e.target.value] || "";
+  });
+}
+
 function initPlanner() {
   if (!planClassSelect) return;
   planClassSelect.innerHTML = '';
@@ -586,7 +600,7 @@ function initPlanner() {
       courseToggleBtn.type = 'button';
       courseToggleBtn.className = 'ghost-sm';
       courseToggleBtn.style.cssText = 'font-size: 11px; padding: 2px 6px;';
-      courseToggleBtn.textContent = 'Toggle Course';
+      courseToggleBtn.textContent = 'Select Course';
       
       const classesContainer = document.createElement('div');
       classesContainer.style.cssText = 'display: flex; flex-direction: column; gap: 4px; margin-top: 4px;';

@@ -1,5 +1,14 @@
 const API = "";
-let state = { name: "", recordings: [], current: null, passcode: "", token: "", role: "" };
+let state = { 
+  name: "", 
+  recordings: [], 
+  current: null, 
+  passcode: "", 
+  token: "", 
+  role: "",
+  chatHistory: {},    // { recording_id: [{ role: 'user'|'bot', text: str }] }
+  flashcardDeck: []   // [{ id, recording_id, front, back, interval, reps, dueDate }]
+};
 
 // Local tracking for student dashboard stats
 let studentStats = JSON.parse(localStorage.getItem('studentStats_NGClassMate') || '{"questions":0, "quizzes":0}');
@@ -44,7 +53,7 @@ function renderBotText(text) {
 
 function saveStudentStats() {
   localStorage.setItem('studentStats_NGClassMate', JSON.stringify(studentStats));
-  saveServerProfile(); // Sync stats across devices
+  saveServerProfile(); 
 }
 
 // ---------- Cross-Device Sync Helpers ----------
@@ -64,6 +73,12 @@ async function fetchServerProfile() {
         studentStats = data.student_stats;
         localStorage.setItem('studentStats_NGClassMate', JSON.stringify(studentStats));
       }
+      if (data.chat_history) {
+        state.chatHistory = data.chat_history;
+      }
+      if (data.flashcard_deck) {
+        state.flashcardDeck = data.flashcard_deck;
+      }
     }
   } catch (e) {}
 }
@@ -73,7 +88,13 @@ async function saveServerProfile() {
   try {
     await fetch(`${API}/api/student/sync`, {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ token: state.token, study_plan: currentStudyPlan, student_stats: studentStats })
+      body: JSON.stringify({ 
+        token: state.token, 
+        study_plan: currentStudyPlan, 
+        student_stats: studentStats,
+        chat_history: state.chatHistory,
+        flashcard_deck: state.flashcardDeck
+      })
     });
   } catch (e) {}
 }
@@ -281,7 +302,7 @@ function renderStudentDashboard() {
   statsBar.innerHTML = html;
 }
 
-// ================= STUDENT AI TUTOR =================
+// ================= STUDENT AI TUTOR & SAVED CHAT HISTORY =================
 async function loadRecordings() {
   const res = await fetch(`${API}/api/recordings`, {
     method: "POST", headers: { "Content-Type": "application/json" },
@@ -352,21 +373,43 @@ function selectRecording(r) {
   if(el("wsTitle")) el("wsTitle").textContent = r.title;
   if(el("wsMeta")) el("wsMeta").innerHTML = `${escapeHtml(r.unit)} · ${escapeHtml(r.date || "")} · ${r.segments} transcript lines` +
     (r.has_notes ? ` · <span class="notes-flag">📎 includes extra class notes</span>` : "");
-  if(el("chat")) el("chat").innerHTML = "";
-  const notesLine = r.has_notes ? " This class also has extra notes from your teacher that I can draw on." : "";
-  addBot(`Hi ${state.name}! Ask me anything about **${r.title}**. I'll answer using only what was said in this recording (with timestamps).${notesLine} 😊`);
+  
+  // Render Persistent Chat History for this recording
+  const chat = el("chat");
+  if(chat) chat.innerHTML = "";
+  
+  const savedHistory = state.chatHistory[r.id] || [];
+  if (savedHistory.length > 0) {
+    savedHistory.forEach(msg => {
+      if (msg.role === 'user') addUser(msg.text, false);
+      else addBot(msg.text, false);
+    });
+  } else {
+    const notesLine = r.has_notes ? " This class also has extra notes from your teacher that I can draw on." : "";
+    addBot(`Hi ${state.name}! Ask me anything about **${r.title}**. I'll answer using only what was said in this recording (with timestamps).${notesLine} 😊`, false);
+  }
 }
 
-function addUser(text) { 
+function addUser(text, save = true) { 
   const chat = el("chat");
   if(!chat) return;
   const d = document.createElement("div"); d.className = "msg user"; d.textContent = text; chat.appendChild(d); scrollChat(); 
+  if (save && state.current) {
+    if (!state.chatHistory[state.current.id]) state.chatHistory[state.current.id] = [];
+    state.chatHistory[state.current.id].push({ role: 'user', text });
+  }
 }
-function addBot(text) { 
+
+function addBot(text, save = true) { 
   const chat = el("chat");
   if(!chat) return;
   const d = document.createElement("div"); d.className = "msg bot"; d.innerHTML = renderBotText(text); chat.appendChild(d); scrollChat(); 
+  if (save && state.current) {
+    if (!state.chatHistory[state.current.id]) state.chatHistory[state.current.id] = [];
+    state.chatHistory[state.current.id].push({ role: 'bot', text });
+  }
 }
+
 function addTyping() { 
   const chat = el("chat");
   if(!chat) return;
@@ -374,6 +417,17 @@ function addTyping() {
 }
 function removeTyping() { const t = el("typing"); if (t) t.remove(); }
 function scrollChat() { const c = el("chat"); if(c) c.scrollTop = c.scrollHeight; }
+
+if(el("clearChatBtn")) {
+  el("clearChatBtn").addEventListener("click", async () => {
+    if (!state.current) return;
+    if (confirm("Clear your saved chat history for this recording?")) {
+      delete state.chatHistory[state.current.id];
+      await saveServerProfile();
+      selectRecording(state.current);
+    }
+  });
+}
 
 if(el("askForm")) {
   el("askForm").addEventListener("submit", async e => {
@@ -384,7 +438,8 @@ if(el("askForm")) {
     if (!q || !state.current) return;
     qInput.value = "";
     if(el("askBtn")) el("askBtn").disabled = true;
-    addUser(q); addTyping();
+    addUser(q, true); 
+    addTyping();
     try {
       const res = await fetch(`${API}/api/ask`, {
         method: "POST", headers: { "Content-Type": "application/json" },
@@ -392,13 +447,14 @@ if(el("askForm")) {
       });
       const data = await res.json();
       removeTyping();
-      if (data.error) addBot("Sorry, something went wrong: " + data.error);
+      if (data.error) addBot("Sorry, something went wrong: " + data.error, true);
       else {
-        addBot(data.answer);
+        addBot(data.answer, true);
         studentStats.questions++;
         saveStudentStats();
+        await saveServerProfile();
       }
-    } catch (err) { removeTyping(); addBot("Sorry, I couldn't reach the server. Please try again."); }
+    } catch (err) { removeTyping(); addBot("Sorry, I couldn't reach the server. Please try again.", true); }
     if(el("askBtn")) el("askBtn").disabled = false; 
     qInput.focus();
   });
@@ -480,8 +536,8 @@ if(el("submitQuiz")) {
   });
 }
 
-// ---------- active recall flashcards ----------
-let currentFlashcards = [];
+// ================= SPACED REPETITION (SRS) FLASHCARDS =================
+let currentDeckCards = [];
 let currentCardIndex = 0;
 
 const flashcardBtn = el("flashcardBtn");
@@ -491,63 +547,179 @@ const flashcardBody = el("flashcardBody");
 const prevCardBtn = el("prevCardBtn");
 const nextCardBtn = el("nextCardBtn");
 const cardCountIndicator = el("cardCountIndicator");
+const srsRatingControls = el("srsRatingControls");
+const genFreshCardsBtn = el("genFreshCardsBtn");
+const srsStatusText = el("srsStatusText");
+
+function getDueFlashcards(recId) {
+  const now = new Date();
+  return state.flashcardDeck.filter(c => c.recording_id === recId && new Date(c.dueDate) <= now);
+}
+
+function getRecordingCards(recId) {
+  return state.flashcardDeck.filter(c => c.recording_id === recId);
+}
 
 if (flashcardBtn) {
   flashcardBtn.addEventListener("click", async () => {
     if (!state.current) return;
     flashcardModal.classList.remove("hidden");
-    flashcardBody.innerHTML = '<div class="typing">Crafting your flashcards <span class="dot">●</span><span class="dot">●</span><span class="dot">●</span></div>';
-    try {
-      const res = await fetch(`${API}/api/flashcards`, {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ recording_id: state.current.id, token: state.token })
-      });
-      const data = await res.json();
-      if (data.error || !data.flashcards) {
-        flashcardBody.innerHTML = '<p>Could not generate flashcards for this recording.</p>';
-        return;
-      }
-      currentFlashcards = data.flashcards;
+    
+    // Check if we already have cards for this recording
+    const existing = getRecordingCards(state.current.id);
+    if (existing.length === 0) {
+      await generateNewFlashcards();
+    } else {
+      currentDeckCards = existing;
       currentCardIndex = 0;
+      updateSrsHeader();
       renderCurrentCard();
-    } catch (e) {
-      flashcardBody.innerHTML = '<p>Network error generating flashcards.</p>';
     }
   });
+}
+
+if (genFreshCardsBtn) {
+  genFreshCardsBtn.addEventListener("click", () => generateNewFlashcards());
+}
+
+async function generateNewFlashcards() {
+  if (!state.current) return;
+  flashcardBody.innerHTML = '<div class="typing">Crafting fresh flashcards from class <span class="dot">●</span><span class="dot">●</span><span class="dot">●</span></div>';
+  if (srsRatingControls) srsRatingControls.classList.add("hidden");
+  
+  const existingFronts = getRecordingCards(state.current.id).map(c => c.front);
+
+  try {
+    const res = await fetch(`${API}/api/flashcards`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ 
+        recording_id: state.current.id, 
+        existing_fronts: existingFronts,
+        token: state.token 
+      })
+    });
+    const data = await res.json();
+    if (data.error || !data.flashcards || data.flashcards.length === 0) {
+      flashcardBody.innerHTML = '<p>Could not generate new cards for this class.</p>';
+      return;
+    }
+
+    const now = new Date().toISOString();
+    const newCards = data.flashcards.map(fc => ({
+      id: "fc_" + Math.random().toString(36).substring(2, 9),
+      recording_id: state.current.id,
+      front: fc.front,
+      back: fc.back,
+      interval: 1,
+      reps: 0,
+      dueDate: now
+    }));
+
+    state.flashcardDeck.push(...newCards);
+    await saveServerProfile();
+
+    currentDeckCards = getRecordingCards(state.current.id);
+    currentCardIndex = currentDeckCards.length - newCards.length;
+    updateSrsHeader();
+    renderCurrentCard();
+  } catch (e) {
+    flashcardBody.innerHTML = '<p>Network error generating flashcards.</p>';
+  }
+}
+
+function updateSrsHeader() {
+  if (!state.current || !srsStatusText) return;
+  const due = getDueFlashcards(state.current.id).length;
+  const total = getRecordingCards(state.current.id).length;
+  srsStatusText.textContent = `🎯 Due for Review: ${due} / ${total} cards`;
 }
 
 if (closeFlashcards) closeFlashcards.addEventListener("click", () => flashcardModal.classList.add("hidden"));
 
 function renderCurrentCard() {
-  if (!currentFlashcards.length) return;
-  const card = currentFlashcards[currentCardIndex];
-  cardCountIndicator.textContent = `${currentCardIndex + 1} / ${currentFlashcards.length}`;
+  if (!currentDeckCards.length) {
+    flashcardBody.innerHTML = '<p class="meta">No flashcards in deck. Click "Generate New Cards" above!</p>';
+    if (srsRatingControls) srsRatingControls.classList.add("hidden");
+    return;
+  }
+  
+  const card = currentDeckCards[currentCardIndex];
+  cardCountIndicator.textContent = `${currentCardIndex + 1} / ${currentDeckCards.length}`;
+  if (srsRatingControls) srsRatingControls.classList.add("hidden");
+
   let isFlipped = false;
   flashcardBody.innerHTML = `
     <div id="activeFlashcard" style="width: 100%; height: 200px; background: var(--panel2); border: 2px solid var(--line); border-radius: 16px; display: flex; align-items: center; justify-content: center; padding: 20px; cursor: pointer; text-align: center; box-shadow: var(--shadow-sm); transition: 0.2s;">
       <div style="font-size: 16px; font-weight: 700; color: var(--text);" id="cardTextContent">
-        💡 <strong>Front:</strong><br><br>${escapeHtml(card.front)}
+        💡 <strong>Front (Question):</strong><br><br>${escapeHtml(card.front)}
+        <div class="meta" style="font-size: 11px; margin-top: 10px; font-weight: 600;">(Click card to reveal answer & Spaced Repetition ratings)</div>
       </div>
     </div>
   `;
+  
   const cardElem = el("activeFlashcard");
   const textElem = el("cardTextContent");
+  
   cardElem.addEventListener("click", () => {
     isFlipped = !isFlipped;
     if (isFlipped) {
       cardElem.style.background = 'rgba(11,191,191,0.08)';
       cardElem.style.borderColor = 'var(--brand)';
       textElem.innerHTML = `✅ <strong>Back (Answer):</strong><br><br>${escapeHtml(card.back)}`;
+      if (srsRatingControls) srsRatingControls.classList.remove("hidden");
     } else {
       cardElem.style.background = 'var(--panel2)';
       cardElem.style.borderColor = 'var(--line)';
-      textElem.innerHTML = `💡 <strong>Front:</strong><br><br>${escapeHtml(card.front)}`;
+      textElem.innerHTML = `💡 <strong>Front (Question):</strong><br><br>${escapeHtml(card.front)}`;
+      if (srsRatingControls) srsRatingControls.classList.add("hidden");
     }
   });
 }
 
+// Spaced Repetition rating handlers (Again, Hard, Good, Easy)
+async function rateCard(ratingFactor) {
+  if (!currentDeckCards.length) return;
+  const card = currentDeckCards[currentCardIndex];
+  const original = state.flashcardDeck.find(c => c.id === card.id);
+  if (!original) return;
+
+  const now = new Date();
+  if (ratingFactor === 'again') {
+    original.interval = 1;
+    original.reps = 0;
+  } else if (ratingFactor === 'hard') {
+    original.interval = Math.max(1, Math.round((original.interval || 1) * 1.2));
+  } else if (ratingFactor === 'good') {
+    original.interval = Math.max(2, Math.round((original.interval || 1) * 2.5));
+    original.reps = (original.reps || 0) + 1;
+  } else if (ratingFactor === 'easy') {
+    original.interval = Math.max(4, Math.round((original.interval || 1) * 3.5));
+    original.reps = (original.reps || 0) + 1;
+  }
+
+  // Schedule next review date
+  const nextReview = new Date(now.getTime() + (original.interval * 24 * 60 * 60 * 1000));
+  original.dueDate = nextReview.toISOString();
+
+  await saveServerProfile();
+  updateSrsHeader();
+
+  // Move to next card
+  if (currentCardIndex < currentDeckCards.length - 1) {
+    currentCardIndex++;
+  } else {
+    currentCardIndex = 0;
+  }
+  renderCurrentCard();
+}
+
+if (el("srsAgainBtn")) el("srsAgainBtn").addEventListener("click", () => rateCard('again'));
+if (el("srsHardBtn")) el("srsHardBtn").addEventListener("click", () => rateCard('hard'));
+if (el("srsGoodBtn")) el("srsGoodBtn").addEventListener("click", () => rateCard('good'));
+if (el("srsEasyBtn")) el("srsEasyBtn").addEventListener("click", () => rateCard('easy'));
+
 if (prevCardBtn) prevCardBtn.addEventListener("click", () => { if (currentCardIndex > 0) { currentCardIndex--; renderCurrentCard(); } });
-if (nextCardBtn) nextCardBtn.addEventListener("click", () => { if (currentCardIndex < currentFlashcards.length - 1) { currentCardIndex++; renderCurrentCard(); } });
+if (nextCardBtn) nextCardBtn.addEventListener("click", () => { if (currentCardIndex < currentDeckCards.length - 1) { currentCardIndex++; renderCurrentCard(); } });
 
 /* =========================================================
    STUDY PLAN FEATURE (ENHANCED COURSE TOGGLES & TASK EDITING)

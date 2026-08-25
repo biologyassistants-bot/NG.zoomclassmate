@@ -22,6 +22,8 @@ import bcrypt
 #   * On a host with a persistent disk (e.g. Render Starter + a mounted disk),
 #     set DATA_DIR=/var/data so recordings, roster, config, question log and the
 #     uploaded logo survive restarts and redeploys.
+# The bundled ./data folder is always used to SEED an empty persistent disk on
+# first boot, so your existing recordings show up the first time.
 BUNDLED_DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
 DATA_DIR = os.environ.get("DATA_DIR", "").strip() or BUNDLED_DATA_DIR
 
@@ -123,7 +125,6 @@ ROSTER_PATH = os.path.join(DATA_DIR, "roster.json")
 NOTES_LIB_PATH = os.path.join(DATA_DIR, "notes_library.json")
 SESSIONS = {}
 
-# Clean heavy embeddings from persistent disk before loading into memory
 _clean_recordings_disk_file(DATA_PATH)
 
 
@@ -1784,7 +1785,7 @@ async def generate_flashcards(body: FlashcardBody):
         raw = await llm(
             [{"role": "system", "content": system}, {"role": "user", "content": user}],
             max_tokens=1500,
-            temperature=0.7, # Higher temperature for fresh, creative outputs
+            temperature=0.7,
         )
     except (LLMConfigError, LLMUpstreamError) as e:
         return JSONResponse({"error": str(e)}, status_code=503)
@@ -1830,7 +1831,6 @@ async def generate_study_plan(body: StudyPlanBody):
     num_classes = len(body.recording_ids)
     total_available_mins = int(body.days * body.hours_per_day * 60)
     
-    # Dynamically allocate base review duration per class
     target_review_mins = max(20, min(60, int((total_available_mins * 0.6) / num_classes)))
 
     selected_recs = []

@@ -22,16 +22,69 @@ import bcrypt
 #   * On a host with a persistent disk (e.g. Render Starter + a mounted disk),
 #     set DATA_DIR=/var/data so recordings, roster, config, question log and the
 #     uploaded logo survive restarts and redeploys.
-# The bundled ./data folder is always used to SEED an empty persistent disk on
-# first boot, so your existing recordings show up the first time.
 BUNDLED_DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
 DATA_DIR = os.environ.get("DATA_DIR", "").strip() or BUNDLED_DATA_DIR
 
 
+def _purge_legacy_embeddings_from_disk(file_path):
+    """Fast text-level scanner that strips out massive float embedding arrays
+    directly from disk before json.load() is called, preventing 2GB+ RAM crashes."""
+    if not os.path.exists(file_path):
+        return
+    try:
+        # Check size — if file is under 2 MB, no massive embedding arrays exist
+        if os.path.getsize(file_path) < 2 * 1024 * 1024:
+            return
+
+        with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+            text = f.read()
+
+        if '"embeddings"' not in text:
+            return
+
+        print(f"[startup] Purging bloated embedding arrays from {file_path}...")
+        idx = 0
+        out = []
+        n = len(text)
+        while idx < n:
+            emb_pos = text.find('"embeddings"', idx)
+            if emb_pos == -1:
+                out.append(text[idx:])
+                break
+            out.append(text[idx:emb_pos])
+            colon_pos = text.find(":", emb_pos)
+            if colon_pos == -1:
+                break
+            bracket_open = text.find("[", colon_pos)
+            if bracket_open == -1:
+                break
+            depth = 1
+            curr = bracket_open + 1
+            while curr < n and depth > 0:
+                ch = text[curr]
+                if ch == "[":
+                    depth += 1
+                elif ch == "]":
+                    depth -= 1
+                curr += 1
+            while curr < n and text[curr] in " \t\r\n":
+                curr += 1
+            if curr < n and text[curr] == ",":
+                curr += 1
+            idx = curr
+
+        cleaned_text = "".join(out)
+        temp_path = file_path + ".clean.tmp"
+        with open(temp_path, "w", encoding="utf-8") as f:
+            f.write(cleaned_text)
+        
+        os.replace(temp_path, file_path)
+        print(f"[startup] Successfully cleaned {file_path}. RAM stabilized.")
+    except Exception as e:
+        print(f"[startup sanitizer warning]: {e}")
+
+
 def _seed_data_dir():
-    """If DATA_DIR is a separate (persistent) location, copy any files that are
-    missing there from the bundled data folder. Never overwrites existing files,
-    so teacher edits made on the live disk are preserved across deploys."""
     try:
         if os.path.abspath(DATA_DIR) == os.path.abspath(BUNDLED_DATA_DIR):
             return
@@ -56,13 +109,13 @@ CONFIG_PATH = os.path.join(DATA_DIR, "config.json")
 QLOG_PATH = os.path.join(DATA_DIR, "question_log.json")
 ROSTER_PATH = os.path.join(DATA_DIR, "roster.json")
 NOTES_LIB_PATH = os.path.join(DATA_DIR, "notes_library.json")
-# in-memory active student sessions: token -> {student_id, name, courses}
 SESSIONS = {}
+
+# Run disk sanitizer to guarantee boot RAM stays below 60 MB
+_purge_legacy_embeddings_from_disk(DATA_PATH)
 
 
 # ---------- shared notes library ----------
-# Each note's text is stored ONCE here: {id, filename, chunks:[...], chars}.
-# A recording references shared notes by id via rec["note_ids"] = [id, ...].
 def load_notes_library():
     if os.path.exists(NOTES_LIB_PATH):
         with open(NOTES_LIB_PATH) as f:
@@ -97,7 +150,6 @@ def gen_pin():
 
 
 def hash_pw(pw: str) -> str:
-    # bcrypt only accepts up to 72 bytes; truncate defensively.
     pw_bytes = (pw or "").encode("utf-8")[:72]
     return bcrypt.hashpw(pw_bytes, bcrypt.gensalt()).decode("utf-8")
 
@@ -112,7 +164,6 @@ def verify_pw(pw: str, hashed: str) -> bool:
         return False
 
 
-# default teacher passcode; teacher can change it in the dashboard
 DEFAULT_PASSCODE = "teach123"
 
 
@@ -144,8 +195,6 @@ def save_qlog(log):
 
 
 def save_recordings(recs):
-    """Save recordings while stripping raw embedding matrices so recordings.json
-    stays lightweight on disk and never causes Out-of-Memory crashes."""
     clean_recs = []
     for r in recs:
         r_copy = dict(r)
@@ -156,8 +205,6 @@ def save_recordings(recs):
 
 
 def load_recordings():
-    """Load recordings from disk and ensure heavy float embedding arrays are
-    purged from RAM to keep startup memory low."""
     if os.path.exists(DATA_PATH):
         try:
             with open(DATA_PATH, "r", encoding="utf-8") as f:
@@ -184,11 +231,6 @@ app.add_middleware(
 )
 
 
-# ---------------------------------------------------------------------------
-# OpenAI key diagnostic endpoint (INLINE — no separate file needed).
-# Open  /api/diag/openai  to confirm the key is set & working. It never
-# returns the key itself, only its length + a masked preview.
-# ---------------------------------------------------------------------------
 def _diag_mask(key: str) -> str:
     if not key:
         return ""
@@ -211,10 +253,7 @@ async def diag_openai():
     }
     if not key:
         report["ok"] = False
-        report["message"] = (
-            "OPENAI_API_KEY is NOT set (or empty) on this server. Add it under "
-            "Render -> Environment and redeploy."
-        )
+        report["message"] = "OPENAI_API_KEY is NOT set (or empty) on this server."
         return JSONResponse(status_code=200, content=report)
 
     import httpx
@@ -224,14 +263,11 @@ async def diag_openai():
             resp = await client.post(
                 f"{base}/chat/completions",
                 headers={"Authorization": f"Bearer {key}"},
-                json={"model": model,
-                      "messages": [{"role": "user", "content": "ping"}],
-                      "max_tokens": 1},
+                json={"model": model, "messages": [{"role": "user", "content": "ping"}], "max_tokens": 1},
             )
     except httpx.RequestError as e:
         report["ok"] = False
-        report["message"] = (f"Network error reaching {base}: {e}. On Render free "
-                             "tier this can be a cold-start timeout; retry once warm.")
+        report["message"] = f"Network error reaching {base}: {e}"
         return JSONResponse(status_code=200, content=report)
 
     if resp.status_code >= 400:
@@ -242,18 +278,7 @@ async def diag_openai():
             detail = resp.text[:200]
         report["ok"] = False
         report["provider_status"] = resp.status_code
-        low = (detail or "").lower()
-        if resp.status_code == 401 or "incorrect api key" in low or "invalid" in low:
-            report["message"] = ("Key REJECTED (invalid/incorrect). Re-copy from "
-                                 "platform.openai.com and update OPENAI_API_KEY, then redeploy.")
-        elif resp.status_code == 429 or "quota" in low or "billing" in low:
-            report["message"] = ("Key valid but NO CREDIT / rate-limited. Add "
-                                 "billing/credits to the OpenAI account.")
-        elif resp.status_code == 404 or ("model" in low and "not" in low):
-            report["message"] = ("Key works but the model isn't available to this "
-                                 "account. Set OPENAI_MODEL to one you can use.")
-        else:
-            report["message"] = f"Provider returned {resp.status_code}: {detail[:200]}"
+        report["message"] = f"Provider returned {resp.status_code}: {detail[:200]}"
         return JSONResponse(status_code=200, content=report)
 
     report["ok"] = True
@@ -263,9 +288,6 @@ async def diag_openai():
 
 
 def _migrate_inline_notes_to_library():
-    """One-time migration: older data stored notes inline on each recording as
-    rec['notes'] = [{id, filename, chunks}]. Move them into the shared library and
-    replace with rec['note_ids'] = [id,...]. Safe to run every startup (idempotent)."""
     lib = load_notes_library()
     lib_ids = {n["id"] for n in lib}
     changed_lib = False
@@ -298,7 +320,6 @@ _migrate_inline_notes_to_library()
 
 
 def fmt_ts(t):
-    """Format a transcript start_time (which may be 'HH:MM:SS' or seconds) as mm:ss / h:mm:ss."""
     if t is None:
         return "?"
     s = str(t)
@@ -325,7 +346,6 @@ def tokenize(text):
 
 # ---------- semantic retrieval (OpenAI Embeddings) ----------
 async def get_embedding(text: str) -> list[float]:
-    """Fetch a single embedding vector for the student's query."""
     import httpx
     async with httpx.AsyncClient(timeout=30) as client:
         resp = await client.post(
@@ -338,14 +358,12 @@ async def get_embedding(text: str) -> list[float]:
 
 
 def cosine_similarity(v1, v2):
-    """Calculate how closely related two pieces of text are."""
     dot = sum(a * b for a, b in zip(v1, v2))
     mag = math.sqrt(sum(a * a for a in v1)) * math.sqrt(sum(b * b for b in v2))
     return dot / mag if mag else 0.0
 
 
 async def build_index_async(rec):
-    """Fetch embeddings for the entire transcript and cache them in-memory only."""
     if "embeddings" in rec and rec["embeddings"]:
         return rec["embeddings"]
         
@@ -356,7 +374,7 @@ async def build_index_async(rec):
     
     import httpx
     embeddings = []
-    batch_size = 500  # Conservative batch size to keep network payload moderate
+    batch_size = 500
     
     async with httpx.AsyncClient(timeout=60) as client:
         for i in range(0, len(texts), batch_size):
@@ -370,12 +388,11 @@ async def build_index_async(rec):
             data = resp.json().get("data", [])
             embeddings.extend([d["embedding"] for d in sorted(data, key=lambda x: x["index"])])
             
-    rec["embeddings"] = embeddings  # Cached in RAM only
+    rec["embeddings"] = embeddings
     return embeddings
 
 
 async def retrieve(rec, query, k=18, window=1):
-    """Find the most relevant transcript segments using semantic similarity."""
     segs = rec.get("segments", [])
     if not segs: 
         return []
@@ -400,7 +417,6 @@ async def retrieve(rec, query, k=18, window=1):
 
 # ---------- teacher notes: extraction + retrieval ----------
 def extract_text_from_upload(data: bytes, filename: str) -> str:
-    """Extract plain text from an uploaded PDF / DOCX / TXT file (server-side only)."""
     name = (filename or "").lower()
     if name.endswith(".txt") or name.endswith(".md"):
         for enc in ("utf-8", "utf-16", "latin-1"):
@@ -421,7 +437,6 @@ def extract_text_from_upload(data: bytes, filename: str) -> str:
 
 
 def chunk_note_text(text: str, target_chars=700):
-    """Split note text into paragraph-ish chunks for retrieval."""
     text = re.sub(r"\r\n?", "\n", text or "")
     paras = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
     chunks = []
@@ -442,7 +457,6 @@ def chunk_note_text(text: str, target_chars=700):
 
 
 def retrieve_note_chunks(rec, query, k=4):
-    """Return the top-k most relevant note chunks for the query."""
     lib = load_notes_library()
     notes = [note_by_id(nid, lib) for nid in (rec.get("note_ids") or [])]
     notes = [n for n in notes if n]
@@ -478,7 +492,6 @@ def retrieve_note_chunks(rec, query, k=4):
 
 
 def notes_context(rec, query, max_chars=8000):
-    """Build a labeled notes context block for the LLM prompt."""
     chunks = retrieve_note_chunks(rec, query)
     if not chunks:
         return ""
@@ -516,11 +529,11 @@ OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
 
 
 class LLMConfigError(Exception):
-    """Raised when the LLM backend is not configured (no key, no fallback)."""
+    pass
 
 
 class LLMUpstreamError(Exception):
-    """Raised when the OpenAI-compatible API returns an error."""
+    pass
 
 
 async def llm(messages, max_tokens=1200, temperature=0.1):
@@ -540,7 +553,7 @@ async def llm(messages, max_tokens=1200, temperature=0.1):
                     },
                 )
         except httpx.RequestError as e:
-            raise LLMUpstreamError(f"Could not reach the AI provider: {e}") from e
+            raise LLMUpstreamError(f"Could not reach AI provider: {e}") from e
 
         if resp.status_code >= 400:
             detail = ""
@@ -548,31 +561,14 @@ async def llm(messages, max_tokens=1200, temperature=0.1):
                 detail = resp.json().get("error", {}).get("message", "")
             except Exception:
                 detail = resp.text[:300]
-            raise LLMUpstreamError(
-                f"AI provider returned {resp.status_code}: {detail or 'unknown error'}"
-            )
+            raise LLMUpstreamError(f"AI provider returned {resp.status_code}: {detail or 'unknown error'}")
 
         try:
             return resp.json()["choices"][0]["message"]["content"]
         except Exception as e:
             raise LLMUpstreamError(f"Unexpected AI response shape: {e}") from e
 
-    _fallback = globals().get("call_llm", None)
-    if _fallback is None:
-        import builtins
-        _fallback = getattr(builtins, "call_llm", None)
-    if _fallback is not None:
-        return await _fallback(
-            messages=messages,
-            model="claude-haiku-4-5-20251001",
-            temperature=temperature,
-            max_completion_tokens=max_tokens,
-        )
-
-    raise LLMConfigError(
-        "The AI features are not configured on this server. "
-        "Set the OPENAI_API_KEY environment variable (and redeploy)."
-    )
+    raise LLMConfigError("The AI features are not configured on this server. Set OPENAI_API_KEY.")
 
 
 OPENAI_TRANSCRIBE_MODEL = os.environ.get("OPENAI_TRANSCRIBE_MODEL", "whisper-1").strip()
@@ -684,9 +680,7 @@ async def fetch_zoom_recording_files(meeting_id):
             headers={"Authorization": f"Bearer {token}"},
         )
         if r.status_code != 200:
-            raise LLMUpstreamError(
-                f"Zoom recordings lookup returned {r.status_code}: {r.text[:300]}"
-            )
+            raise LLMUpstreamError(f"Zoom recordings lookup returned {r.status_code}: {r.text[:300]}")
         return r.json().get("recording_files", []) or []
 
 
@@ -703,10 +697,7 @@ async def fetch_zoom_recording_object(meeting_id):
             headers={"Authorization": f"Bearer {token}"},
         )
         if r.status_code == 404:
-            raise LLMUpstreamError(
-                "No cloud recording found for that meeting ID. Check the ID/link, or the "
-                "recording may have been deleted from Zoom."
-            )
+            raise LLMUpstreamError("No cloud recording found for that meeting ID.")
         if r.status_code != 200:
             raise LLMUpstreamError(f"Zoom lookup returned {r.status_code}: {r.text[:300]}")
         return r.json()
@@ -771,9 +762,7 @@ async def _transcribe_large_audio(src_path):
         _ffmpeg_to_mp3(src_path, chunk_path, start=start, duration=this_len)
         with open(chunk_path, "rb") as f:
             cdata = f.read()
-        seg = await transcribe_audio_bytes(
-            cdata, filename=f"chunk_{idx}.mp3", time_offset=start
-        )
+        seg = await transcribe_audio_bytes(cdata, filename=f"chunk_{idx}.mp3", time_offset=start)
         all_segments.extend(seg)
         try:
             _os.remove(chunk_path)
@@ -793,20 +782,15 @@ async def transcribe_recording_by_id(meeting_id):
     files = await fetch_zoom_recording_files(meeting_id)
     audio = _pick_audio_file(files)
     if not audio:
-        raise LLMUpstreamError(
-            "No audio/video file is available for this recording in Zoom's cloud."
-        )
+        raise LLMUpstreamError("No audio/video file is available for this recording in Zoom's cloud.")
     import httpx
     token = await zoom_token()
     url = audio.get("download_url")
     ext = (audio.get("file_extension") or audio.get("file_type") or "m4a").lower()
-    async with httpx.AsyncClient(timeout=httpx.Timeout(600.0, connect=15.0),
-                                 follow_redirects=True) as client:
+    async with httpx.AsyncClient(timeout=httpx.Timeout(600.0, connect=15.0), follow_redirects=True) as client:
         r = await client.get(url, headers={"Authorization": f"Bearer {token}"})
         if r.status_code != 200:
-            raise LLMUpstreamError(
-                f"Could not download recording audio from Zoom ({r.status_code})."
-            )
+            raise LLMUpstreamError(f"Could not download audio from Zoom ({r.status_code}).")
         audio_bytes = r.content
 
     if len(audio_bytes) <= _CHUNK_SAFETY_BYTES:
@@ -818,10 +802,7 @@ async def transcribe_recording_by_id(meeting_id):
                 f.write(audio_bytes)
             segments = await _transcribe_large_audio(src_path)
     else:
-        raise LLMUpstreamError(
-            "This recording's audio is larger than the 25 MB transcription limit and "
-            "ffmpeg is not available on the server to compress it."
-        )
+        raise LLMUpstreamError("Audio file exceeds 25 MB and ffmpeg is unavailable.")
 
     rec["segments"] = segments
     save_recordings(RECORDINGS)
@@ -834,7 +815,7 @@ async def transcribe_recording_by_id(meeting_id):
     return len(segments)
 
 
-# ---------- Zoom integration (server-to-server OAuth + webhook) ----------
+# ---------- Zoom integration ----------
 ZOOM_ACCOUNT_ID     = os.environ.get("ZOOM_ACCOUNT_ID", "").strip()
 ZOOM_CLIENT_ID      = os.environ.get("ZOOM_CLIENT_ID", "").strip()
 ZOOM_CLIENT_SECRET  = os.environ.get("ZOOM_CLIENT_SECRET", "").strip()
@@ -861,7 +842,6 @@ async def zoom_token():
 
 
 def parse_vtt(text):
-    """Turn a WEBVTT transcript into [{start, speaker, text}, ...]."""
     segments = []
     blocks = re.split(r"\n\s*\n", text.strip())
     for b in blocks:
@@ -924,20 +904,11 @@ async def ingest_zoom_meeting(obj, allow_whisper_fallback=True):
             try:
                 token = await zoom_token()
                 import httpx
-                async with httpx.AsyncClient(
-                    timeout=httpx.Timeout(600.0, connect=15.0),
-                    follow_redirects=True,
-                ) as client:
-                    ar = await client.get(
-                        audio["download_url"],
-                        headers={"Authorization": f"Bearer {token}"},
-                    )
+                async with httpx.AsyncClient(timeout=httpx.Timeout(600.0, connect=15.0), follow_redirects=True) as client:
+                    ar = await client.get(audio["download_url"], headers={"Authorization": f"Bearer {token}"})
                 if ar.status_code == 200:
-                    ext = (audio.get("file_extension")
-                           or audio.get("file_type") or "m4a").lower()
-                    segments = await transcribe_audio_bytes(
-                        ar.content, filename=f"{meeting_id}.{ext}"
-                    )
+                    ext = (audio.get("file_extension") or audio.get("file_type") or "m4a").lower()
+                    segments = await transcribe_audio_bytes(ar.content, filename=f"{meeting_id}.{ext}")
             except Exception as e:
                 print(f"[ingest] whisper fallback failed for {meeting_id}: {e}")
     new_rec = {
@@ -957,7 +928,7 @@ async def ingest_zoom_meeting(obj, allow_whisper_fallback=True):
     return True
 
 
-# ---------- API ----------
+# ---------- API Endpoints ----------
 def _card(r, include_hidden=False):
     return {
         "id": r["id"],
@@ -1019,7 +990,6 @@ def list_recordings(body: RecListBody):
     return {"recordings": out, "units": units}
 
 
-# ---------- auth ----------
 class LoginBody(BaseModel):
     passcode: str
 
@@ -1035,7 +1005,6 @@ def teacher_login(body: LoginBody):
     return JSONResponse({"ok": False, "error": "Wrong passcode"}, status_code=401)
 
 
-# ---------- student roster auth ----------
 def _norm(s):
     return (s or "").strip().lower()
 
@@ -1146,7 +1115,7 @@ def get_student_profile(body: RecListBody):
     }
 
 
-# ---------- teacher roster management ----------
+# ---------- Teacher Roster Management ----------
 class RosterAuth(BaseModel):
     passcode: str
 

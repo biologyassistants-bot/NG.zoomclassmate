@@ -145,8 +145,14 @@
         <div class="planner-setup">
           <div id="planSetup">
             <label class="fld" style="margin-bottom: 12px; display: block;">
-              <span style="font-weight: 800; font-size: 13px;">Classes to review</span>
-              <div id="planClassSelect" style="max-height: 200px; overflow-y: auto; background: var(--panel2); border: 1.5px solid var(--line); border-radius: 11px; padding: 10px; margin-top: 6px;">
+              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                <span style="font-weight: 800; font-size: 13px;">Classes to review</span>
+                <div style="display: flex; gap: 6px;">
+                  <button type="button" class="ghost-sm" style="font-size: 11px; padding: 2px 8px;" onclick="toggleAllClasses(true)">Select All</button>
+                  <button type="button" class="ghost-sm" style="font-size: 11px; padding: 2px 8px;" onclick="toggleAllClasses(false)">Deselect All</button>
+                </div>
+              </div>
+              <div id="planClassSelect" style="max-height: 220px; overflow-y: auto; background: var(--panel2); border: 1.5px solid var(--line); border-radius: 11px; padding: 10px; margin-top: 6px;">
                 <!-- Checkboxes injected by JS -->
               </div>
             </label>
@@ -348,7 +354,7 @@
           </div>
         </label>
         <p id="edStatus" class="ed-status"></p>
-        </div>
+      </div>
       <div class="modal-foot student-edit-foot">
         <button id="edDelete" class="ghost danger-btn">🗑️ Delete student</button>
         <div style="flex:1"></div>

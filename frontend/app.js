@@ -267,7 +267,6 @@ function renderStudentDashboard() {
     </div>`
   ).join("");
 
-  // Append Weak Spots section to the stats bar container
   html += `
     <div style="grid-column: 1 / -1; margin-top: 10px; background: var(--panel); border: 1.5px solid var(--line); padding: 18px; border-radius: 14px;">
       <h3 style="font-size: 16px; font-weight: 800; margin-bottom: 8px;">🎯 Suggested Focus & Weak Spots</h3>
@@ -551,7 +550,7 @@ if (prevCardBtn) prevCardBtn.addEventListener("click", () => { if (currentCardIn
 if (nextCardBtn) nextCardBtn.addEventListener("click", () => { if (currentCardIndex < currentFlashcards.length - 1) { currentCardIndex++; renderCurrentCard(); } });
 
 /* =========================================================
-   STUDY PLAN FEATURE (DEDICATED PANE)
+   STUDY PLAN FEATURE (ENHANCED COURSE TOGGLES & TASK EDITING)
    ========================================================= */
 
 const planClassSelect = document.getElementById('planClassSelect');
@@ -575,28 +574,40 @@ function initPlanner() {
 
     Object.keys(courseGroups).sort().forEach(courseName => {
       const courseSection = document.createElement('div');
-      courseSection.style.cssText = 'margin-bottom: 16px; background: var(--panel2); padding: 12px; border-radius: 10px; border: 1.5px solid var(--line);';
+      courseSection.style.cssText = 'margin-bottom: 12px; background: var(--panel2); padding: 10px; border-radius: 8px; border: 1.5px solid var(--line);';
       
       const courseHeader = document.createElement('div');
-      courseHeader.style.cssText = 'font-weight: 800; font-size: 13.5px; color: var(--brand-d); margin-bottom: 8px; border-bottom: 1px solid var(--line); padding-bottom: 4px;';
-      courseHeader.textContent = `📚 ${courseName}`;
-      courseSection.appendChild(courseHeader);
-
+      courseHeader.style.cssText = 'display: flex; justify-content: space-between; align-items: center; font-weight: 800; font-size: 13px; color: var(--brand-d); margin-bottom: 6px; border-bottom: 1px solid var(--line); padding-bottom: 4px;';
+      
+      const titleSpan = document.createElement('span');
+      titleSpan.textContent = `📚 ${courseName}`;
+      
+      const courseToggleBtn = document.createElement('button');
+      courseToggleBtn.type = 'button';
+      courseToggleBtn.className = 'ghost-sm';
+      courseToggleBtn.style.cssText = 'font-size: 11px; padding: 2px 6px;';
+      courseToggleBtn.textContent = 'Toggle Course';
+      
       const classesContainer = document.createElement('div');
-      classesContainer.style.cssText = 'display: flex; flex-direction: column; gap: 6px;';
+      classesContainer.style.cssText = 'display: flex; flex-direction: column; gap: 4px; margin-top: 4px;';
+
+      const checkboxesInCourse = [];
 
       courseGroups[courseName].forEach(r => {
         const label = document.createElement('label');
-        label.style.cssText = 'display: flex; align-items: center; gap: 8px; cursor: pointer; padding: 4px 0;';
+        label.style.cssText = 'display: flex; align-items: center; gap: 8px; cursor: pointer; padding: 2px 0;';
         
         const checkbox = document.createElement('input');
         checkbox.type = 'checkbox';
         checkbox.value = r.id;
         checkbox.className = 'class-checkbox';
+        checkbox.dataset.course = courseName;
         checkbox.style.cssText = 'transform: scale(1.1); cursor: pointer;';
 
+        checkboxesInCourse.push(checkbox);
+
         const span = document.createElement('span');
-        span.style.cssText = 'font-size: 13px; font-weight: 600; color: var(--text);';
+        span.style.cssText = 'font-size: 12.5px; font-weight: 600; color: var(--text);';
         span.textContent = r.title;
 
         label.appendChild(checkbox);
@@ -604,6 +615,14 @@ function initPlanner() {
         classesContainer.appendChild(label);
       });
 
+      courseToggleBtn.addEventListener('click', () => {
+        const allChecked = checkboxesInCourse.every(cb => cb.checked);
+        checkboxesInCourse.forEach(cb => cb.checked = !allChecked);
+      });
+
+      courseHeader.appendChild(titleSpan);
+      courseHeader.appendChild(courseToggleBtn);
+      courseSection.appendChild(courseHeader);
       courseSection.appendChild(classesContainer);
       planClassSelect.appendChild(courseSection);
     });
@@ -627,6 +646,12 @@ function initPlanner() {
     if(planResult) planResult.classList.add('hidden');
   }
 }
+
+// Global master toggle for Select All / Deselect All
+window.toggleAllClasses = function(selectState) {
+  const checkboxes = document.querySelectorAll('.class-checkbox');
+  checkboxes.forEach(cb => cb.checked = selectState);
+};
 
 if (generatePlanBtn) {
   generatePlanBtn.addEventListener('click', async () => {
@@ -697,14 +722,20 @@ function renderPlan() {
       </div>` : '';
 
     const tasksContainer = document.createElement('div');
+    tasksContainer.style.display = 'flex';
+    tasksContainer.style.flexDirection = 'column';
+    tasksContainer.style.gap = '8px';
 
     day.tasks.forEach((task, tIdx) => {
       totalTasks++;
       if (task.completed) completedTasks++;
       
-      const label = document.createElement('label');
-      label.style.cssText = `display: flex; align-items: flex-start; gap: 12px; padding: 12px; background: var(--panel); border: 1.5px solid var(--line); border-radius: 12px; margin-bottom: 8px; cursor: pointer; transition: 0.15s; opacity: ${task.completed ? '0.55' : '1'};`;
+      const taskCard = document.createElement('div');
+      taskCard.style.cssText = `display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 12px; background: var(--panel); border: 1.5px solid var(--line); border-radius: 12px; opacity: ${task.completed ? '0.55' : '1'}; transition: 0.15s;`;
       
+      const leftGroup = document.createElement('div');
+      leftGroup.style.cssText = 'display: flex; align-items: flex-start; gap: 12px; flex: 1;';
+
       const checkbox = document.createElement('input');
       checkbox.type = 'checkbox';
       checkbox.style.cssText = 'margin-top: 3px; transform: scale(1.3); cursor: pointer;';
@@ -716,6 +747,7 @@ function renderPlan() {
       });
 
       const textDiv = document.createElement('div');
+      textDiv.style.flex = '1';
       textDiv.innerHTML = `
         <strong style="display:block; font-size: 14.5px; margin-bottom: 3px; color: ${task.completed ? 'var(--muted)' : 'var(--text)'};">
           ${escapeHtml(task.title)} <span class="meta" style="font-weight:800; color: var(--brand-d);">(${task.est_minutes}m)</span>
@@ -723,9 +755,35 @@ function renderPlan() {
         <span style="font-size: 13px; color: var(--muted); font-weight:600; line-height: 1.4; display: block;">${escapeHtml(task.description)}</span>
       `;
 
-      label.appendChild(checkbox);
-      label.appendChild(textDiv);
-      tasksContainer.appendChild(label);
+      leftGroup.appendChild(checkbox);
+      leftGroup.appendChild(textDiv);
+
+      // Edit Button for Customization
+      const editBtn = document.createElement('button');
+      editBtn.type = 'button';
+      editBtn.className = 'ghost-sm';
+      editBtn.style.cssText = 'font-size: 11px; padding: 4px 8px; white-space: nowrap;';
+      editBtn.textContent = '✏️ Edit';
+
+      editBtn.addEventListener('click', async () => {
+        const newTitle = prompt("Edit task title:", task.title);
+        if (newTitle === null) return;
+        const newDesc = prompt("Edit task details / description:", task.description);
+        if (newDesc === null) return;
+        const newTime = prompt("Edit estimated minutes:", task.est_minutes);
+        if (newTime === null) return;
+
+        currentStudyPlan[dIdx].tasks[tIdx].title = newTitle.trim() || task.title;
+        currentStudyPlan[dIdx].tasks[tIdx].description = newDesc.trim() || task.description;
+        currentStudyPlan[dIdx].tasks[tIdx].est_minutes = parseInt(newTime) || task.est_minutes;
+
+        await saveServerProfile();
+        renderPlan();
+      });
+
+      taskCard.appendChild(leftGroup);
+      taskCard.appendChild(editBtn);
+      tasksContainer.appendChild(taskCard);
     });
 
     dayCard.innerHTML = `
@@ -1508,7 +1566,7 @@ if(el("saveLogo")) {
     try {
       const res = await fetch(`${API}/api/teacher/logo`, { method: "POST", body: fd });
       const data = await res.json();
-      if (!res.ok || data.error) { if(err) { err.textContent = data.error || "Upload failed."; err.classList.add("hidden"); } return; }
+      if (!res.ok || data.error) { if(err) { err.textContent = data.error || "Upload failed."; err.classList.remove("hidden"); } return; }
       if(ok) {
         ok.classList.remove("hidden"); 
         setTimeout(() => ok.classList.add("hidden"), 2500);

@@ -22,8 +22,6 @@ import bcrypt
 #   * On a host with a persistent disk (e.g. Render Starter + a mounted disk),
 #     set DATA_DIR=/var/data so recordings, roster, config, question log and the
 #     uploaded logo survive restarts and redeploys.
-# The bundled ./data folder is always used to SEED an empty persistent disk on
-# first boot, so your existing recordings show up the first time.
 BUNDLED_DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
 DATA_DIR = os.environ.get("DATA_DIR", "").strip() or BUNDLED_DATA_DIR
 
@@ -99,9 +97,6 @@ def _clean_recordings_disk_file(file_path):
 
 
 def _seed_data_dir():
-    """If DATA_DIR is a separate (persistent) location, copy any files that are
-    missing there from the bundled data folder. Never overwrites existing files,
-    so teacher edits made on the live disk are preserved across deploys."""
     try:
         if os.path.abspath(DATA_DIR) == os.path.abspath(BUNDLED_DATA_DIR):
             return
@@ -126,7 +121,6 @@ CONFIG_PATH = os.path.join(DATA_DIR, "config.json")
 QLOG_PATH = os.path.join(DATA_DIR, "question_log.json")
 ROSTER_PATH = os.path.join(DATA_DIR, "roster.json")
 NOTES_LIB_PATH = os.path.join(DATA_DIR, "notes_library.json")
-# in-memory active student sessions: token -> {student_id, name, courses}
 SESSIONS = {}
 
 # Clean heavy embeddings from persistent disk before loading into memory
@@ -168,7 +162,6 @@ def gen_pin():
 
 
 def hash_pw(pw: str) -> str:
-    # bcrypt only accepts up to 72 bytes; truncate defensively.
     pw_bytes = (pw or "").encode("utf-8")[:72]
     return bcrypt.hashpw(pw_bytes, bcrypt.gensalt()).decode("utf-8")
 
@@ -183,7 +176,6 @@ def verify_pw(pw: str, hashed: str) -> bool:
         return False
 
 
-# default teacher passcode; teacher can change it in the dashboard
 DEFAULT_PASSCODE = "teach123"
 
 
@@ -257,11 +249,6 @@ app.add_middleware(
 )
 
 
-# ---------------------------------------------------------------------------
-# OpenAI key diagnostic endpoint (INLINE — no separate file needed).
-# Open  /api/diag/openai  to confirm the key is set & working. It never
-# returns the key itself, only its length + a masked preview.
-# ---------------------------------------------------------------------------
 def _diag_mask(key: str) -> str:
     if not key:
         return ""
@@ -284,10 +271,7 @@ async def diag_openai():
     }
     if not key:
         report["ok"] = False
-        report["message"] = (
-            "OPENAI_API_KEY is NOT set (or empty) on this server. Add it under "
-            "Render -> Environment and redeploy."
-        )
+        report["message"] = "OPENAI_API_KEY is NOT set (or empty) on this server."
         return JSONResponse(status_code=200, content=report)
 
     import httpx
@@ -297,14 +281,11 @@ async def diag_openai():
             resp = await client.post(
                 f"{base}/chat/completions",
                 headers={"Authorization": f"Bearer {key}"},
-                json={"model": model,
-                      "messages": [{"role": "user", "content": "ping"}],
-                      "max_tokens": 1},
+                json={"model": model, "messages": [{"role": "user", "content": "ping"}], "max_tokens": 1},
             )
     except httpx.RequestError as e:
         report["ok"] = False
-        report["message"] = (f"Network error reaching {base}: {e}. On Render free "
-                             "tier this can be a cold-start timeout; retry once warm.")
+        report["message"] = f"Network error reaching {base}: {e}"
         return JSONResponse(status_code=200, content=report)
 
     if resp.status_code >= 400:
@@ -315,18 +296,7 @@ async def diag_openai():
             detail = resp.text[:200]
         report["ok"] = False
         report["provider_status"] = resp.status_code
-        low = (detail or "").lower()
-        if resp.status_code == 401 or "incorrect api key" in low or "invalid" in low:
-            report["message"] = ("Key REJECTED (invalid/incorrect). Re-copy from "
-                                 "platform.openai.com and update OPENAI_API_KEY, then redeploy.")
-        elif resp.status_code == 429 or "quota" in low or "billing" in low:
-            report["message"] = ("Key valid but NO CREDIT / rate-limited. Add "
-                                 "billing/credits to the OpenAI account.")
-        elif resp.status_code == 404 or ("model" in low and "not" in low):
-            report["message"] = ("Key works but the model isn't available to this "
-                                 "account. Set OPENAI_MODEL to one you can use.")
-        else:
-            report["message"] = f"Provider returned {resp.status_code}: {detail[:200]}"
+        report["message"] = f"Provider returned {resp.status_code}: {detail[:200]}"
         return JSONResponse(status_code=200, content=report)
 
     report["ok"] = True
@@ -336,9 +306,6 @@ async def diag_openai():
 
 
 def _migrate_inline_notes_to_library():
-    """One-time migration: older data stored notes inline on each recording as
-    rec['notes'] = [{id, filename, chunks}]. Move them into the shared library and
-    replace with rec['note_ids'] = [id,...]. Safe to run every startup (idempotent)."""
     lib = load_notes_library()
     lib_ids = {n["id"] for n in lib}
     changed_lib = False
@@ -371,7 +338,6 @@ _migrate_inline_notes_to_library()
 
 
 def fmt_ts(t):
-    """Format a transcript start_time (which may be 'HH:MM:SS' or seconds) as mm:ss / h:mm:ss."""
     if t is None:
         return "?"
     s = str(t)
@@ -398,7 +364,6 @@ def tokenize(text):
 
 # ---------- semantic retrieval (OpenAI Embeddings) ----------
 async def get_embedding(text: str) -> list[float]:
-    """Fetch a single embedding vector for the student's query."""
     import httpx
     async with httpx.AsyncClient(timeout=30) as client:
         resp = await client.post(
@@ -411,14 +376,12 @@ async def get_embedding(text: str) -> list[float]:
 
 
 def cosine_similarity(v1, v2):
-    """Calculate how closely related two pieces of text are."""
     dot = sum(a * b for a, b in zip(v1, v2))
     mag = math.sqrt(sum(a * a for a in v1)) * math.sqrt(sum(b * b for b in v2))
     return dot / mag if mag else 0.0
 
 
 async def build_index_async(rec):
-    """Fetch embeddings for the entire transcript and cache them in-memory only."""
     if "embeddings" in rec and rec["embeddings"]:
         return rec["embeddings"]
         
@@ -443,12 +406,11 @@ async def build_index_async(rec):
             data = resp.json().get("data", [])
             embeddings.extend([d["embedding"] for d in sorted(data, key=lambda x: x["index"])])
             
-    rec["embeddings"] = embeddings  # Cached in RAM only
+    rec["embeddings"] = embeddings
     return embeddings
 
 
 async def retrieve(rec, query, k=18, window=1):
-    """Find the most relevant transcript segments using semantic similarity."""
     segs = rec.get("segments", [])
     if not segs: 
         return []
@@ -473,7 +435,6 @@ async def retrieve(rec, query, k=18, window=1):
 
 # ---------- teacher notes: extraction + retrieval ----------
 def extract_text_from_upload(data: bytes, filename: str) -> str:
-    """Extract plain text from an uploaded PDF / DOCX / TXT file (server-side only)."""
     name = (filename or "").lower()
     if name.endswith(".txt") or name.endswith(".md"):
         for enc in ("utf-8", "utf-16", "latin-1"):
@@ -494,7 +455,6 @@ def extract_text_from_upload(data: bytes, filename: str) -> str:
 
 
 def chunk_note_text(text: str, target_chars=700):
-    """Split note text into paragraph-ish chunks for retrieval."""
     text = re.sub(r"\r\n?", "\n", text or "")
     paras = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
     chunks = []
@@ -515,7 +475,6 @@ def chunk_note_text(text: str, target_chars=700):
 
 
 def retrieve_note_chunks(rec, query, k=4):
-    """Return the top-k most relevant note chunks for the query."""
     lib = load_notes_library()
     notes = [note_by_id(nid, lib) for nid in (rec.get("note_ids") or [])]
     notes = [n for n in notes if n]
@@ -551,7 +510,6 @@ def retrieve_note_chunks(rec, query, k=4):
 
 
 def notes_context(rec, query, max_chars=8000):
-    """Build a labeled notes context block for the LLM prompt."""
     chunks = retrieve_note_chunks(rec, query)
     if not chunks:
         return ""
@@ -589,11 +547,11 @@ OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
 
 
 class LLMConfigError(Exception):
-    """Raised when the LLM backend is not configured (no key, no fallback)."""
+    pass
 
 
 class LLMUpstreamError(Exception):
-    """Raised when the OpenAI-compatible API returns an error."""
+    pass
 
 
 async def llm(messages, max_tokens=1200, temperature=0.1):
@@ -1142,6 +1100,8 @@ class StudentSyncBody(BaseModel):
     token: str
     study_plan: list | None = None
     student_stats: dict | None = None
+    chat_history: dict | None = None
+    flashcard_deck: list | None = None
 
 
 @app.post("/api/student/sync")
@@ -1156,6 +1116,10 @@ def sync_student_data(body: StudentSyncBody):
             student["study_plan"] = body.study_plan
         if body.student_stats is not None:
             student["student_stats"] = body.student_stats
+        if body.chat_history is not None:
+            student["chat_history"] = body.chat_history
+        if body.flashcard_deck is not None:
+            student["flashcard_deck"] = body.flashcard_deck
         save_roster(roster)
     return {"ok": True}
 
@@ -1171,7 +1135,9 @@ def get_student_profile(body: RecListBody):
         return JSONResponse({"error": "Student not found"}, status_code=404)
     return {
         "study_plan": student.get("study_plan"),
-        "student_stats": student.get("student_stats")
+        "student_stats": student.get("student_stats"),
+        "chat_history": student.get("chat_history", {}),
+        "flashcard_deck": student.get("flashcard_deck", [])
     }
 
 
@@ -1775,9 +1741,10 @@ async def quiz(body: QuizBody):
     return data
 
 
-# ---------- automated flashcards generation ----------
+# ---------- automated flashcards generation (Fresh & Unique Cards) ----------
 class FlashcardBody(BaseModel):
     recording_id: str
+    existing_fronts: list[str] | None = []
     token: str | None = None
 
 
@@ -1794,11 +1761,17 @@ async def generate_flashcards(body: FlashcardBody):
     transcript_text = "\n".join([f"[{s.get('timestamp','')}] {s.get('text','')}" for s in rec.get("segments", [])])
     notes_text = notes_context(rec, "flashcards review summary", max_chars=8000)
     
+    avoid_block = ""
+    if body.existing_fronts and len(body.existing_fronts) > 0:
+        avoid_block = "\nAVOID REPEATING these existing question concepts:\n" + "\n".join([f"- {f}" for f in body.existing_fronts[:15]])
+
     system = (
         "You are an expert Biology and science tutor. Based on the following class transcript and teacher notes, "
-        "generate 6 to 8 high-yield flashcards for active recall study. "
+        "generate 5 to 7 fresh, high-yield flashcards for active recall study. "
+        "Focus on varied definitions, processes, comparisons, and mechanisms. "
         "Return STRICT JSON only, no markdown, no prose. "
         "Schema: {\"flashcards\":[{\"front\":str,\"back\":str}]}."
+        + avoid_block
     )
     
     user = (
@@ -1811,7 +1784,7 @@ async def generate_flashcards(body: FlashcardBody):
         raw = await llm(
             [{"role": "system", "content": system}, {"role": "user", "content": user}],
             max_tokens=1500,
-            temperature=0.3,
+            temperature=0.7, # Higher temperature for fresh, creative outputs
         )
     except (LLMConfigError, LLMUpstreamError) as e:
         return JSONResponse({"error": str(e)}, status_code=503)

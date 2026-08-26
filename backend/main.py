@@ -22,8 +22,6 @@ import bcrypt
 #   * On a host with a persistent disk (e.g. Render Starter + a mounted disk),
 #     set DATA_DIR=/var/data so recordings, roster, config, question log and the
 #     uploaded logo survive restarts and redeploys.
-# The bundled ./data folder is always used to SEED an empty persistent disk on
-# first boot, so your existing recordings show up the first time.
 BUNDLED_DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
 DATA_DIR = os.environ.get("DATA_DIR", "").strip() or BUNDLED_DATA_DIR
 
@@ -99,9 +97,6 @@ def _clean_recordings_disk_file(file_path):
 
 
 def _seed_data_dir():
-    """If DATA_DIR is a separate (persistent) location, copy any files that are
-    missing there from the bundled data folder. Never overwrites existing files,
-    so teacher edits made on the live disk are preserved across deploys."""
     try:
         if os.path.abspath(DATA_DIR) == os.path.abspath(BUNDLED_DATA_DIR):
             return
@@ -126,7 +121,6 @@ CONFIG_PATH = os.path.join(DATA_DIR, "config.json")
 QLOG_PATH = os.path.join(DATA_DIR, "question_log.json")
 ROSTER_PATH = os.path.join(DATA_DIR, "roster.json")
 NOTES_LIB_PATH = os.path.join(DATA_DIR, "notes_library.json")
-# in-memory active student sessions: token -> {student_id, name, courses}
 SESSIONS = {}
 
 # Clean heavy embeddings from persistent disk before loading into memory
@@ -134,8 +128,6 @@ _clean_recordings_disk_file(DATA_PATH)
 
 
 # ---------- shared notes library ----------
-# Each note's text is stored ONCE here: {id, filename, chunks:[...], chars}.
-# A recording references shared notes by id via rec["note_ids"] = [id, ...].
 def load_notes_library():
     if os.path.exists(NOTES_LIB_PATH):
         with open(NOTES_LIB_PATH) as f:
@@ -170,7 +162,6 @@ def gen_pin():
 
 
 def hash_pw(pw: str) -> str:
-    # bcrypt only accepts up to 72 bytes; truncate defensively.
     pw_bytes = (pw or "").encode("utf-8")[:72]
     return bcrypt.hashpw(pw_bytes, bcrypt.gensalt()).decode("utf-8")
 
@@ -185,7 +176,6 @@ def verify_pw(pw: str, hashed: str) -> bool:
         return False
 
 
-# default teacher passcode; teacher can change it in the dashboard
 DEFAULT_PASSCODE = "teach123"
 
 
@@ -336,9 +326,6 @@ async def diag_openai():
 
 
 def _migrate_inline_notes_to_library():
-    """One-time migration: older data stored notes inline on each recording as
-    rec['notes'] = [{id, filename, chunks}]. Move them into the shared library and
-    replace with rec['note_ids'] = [id,...]. Safe to run every startup (idempotent)."""
     lib = load_notes_library()
     lib_ids = {n["id"] for n in lib}
     changed_lib = False
@@ -371,7 +358,6 @@ _migrate_inline_notes_to_library()
 
 
 def fmt_ts(t):
-    """Format a transcript start_time (which may be 'HH:MM:SS' or seconds) as mm:ss / h:mm:ss."""
     if t is None:
         return "?"
     s = str(t)
@@ -398,7 +384,6 @@ def tokenize(text):
 
 # ---------- semantic retrieval (OpenAI Embeddings) ----------
 async def get_embedding(text: str) -> list[float]:
-    """Fetch a single embedding vector for the student's query."""
     import httpx
     async with httpx.AsyncClient(timeout=30) as client:
         resp = await client.post(
@@ -411,14 +396,12 @@ async def get_embedding(text: str) -> list[float]:
 
 
 def cosine_similarity(v1, v2):
-    """Calculate how closely related two pieces of text are."""
     dot = sum(a * b for a, b in zip(v1, v2))
     mag = math.sqrt(sum(a * a for a in v1)) * math.sqrt(sum(b * b for b in v2))
     return dot / mag if mag else 0.0
 
 
 async def build_index_async(rec):
-    """Fetch embeddings for the entire transcript and cache them in-memory only."""
     if "embeddings" in rec and rec["embeddings"]:
         return rec["embeddings"]
         
@@ -448,7 +431,6 @@ async def build_index_async(rec):
 
 
 async def retrieve(rec, query, k=18, window=1):
-    """Find the most relevant transcript segments using semantic similarity."""
     segs = rec.get("segments", [])
     if not segs: 
         return []
@@ -473,7 +455,6 @@ async def retrieve(rec, query, k=18, window=1):
 
 # ---------- teacher notes: extraction + retrieval ----------
 def extract_text_from_upload(data: bytes, filename: str) -> str:
-    """Extract plain text from an uploaded PDF / DOCX / TXT file (server-side only)."""
     name = (filename or "").lower()
     if name.endswith(".txt") or name.endswith(".md"):
         for enc in ("utf-8", "utf-16", "latin-1"):
@@ -494,7 +475,6 @@ def extract_text_from_upload(data: bytes, filename: str) -> str:
 
 
 def chunk_note_text(text: str, target_chars=700):
-    """Split note text into paragraph-ish chunks for retrieval."""
     text = re.sub(r"\r\n?", "\n", text or "")
     paras = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
     chunks = []
@@ -515,7 +495,6 @@ def chunk_note_text(text: str, target_chars=700):
 
 
 def retrieve_note_chunks(rec, query, k=4):
-    """Return the top-k most relevant note chunks for the query."""
     lib = load_notes_library()
     notes = [note_by_id(nid, lib) for nid in (rec.get("note_ids") or [])]
     notes = [n for n in notes if n]
@@ -551,7 +530,6 @@ def retrieve_note_chunks(rec, query, k=4):
 
 
 def notes_context(rec, query, max_chars=8000):
-    """Build a labeled notes context block for the LLM prompt."""
     chunks = retrieve_note_chunks(rec, query)
     if not chunks:
         return ""
@@ -906,10 +884,20 @@ async def _download_zoom_text(url: str, token: str) -> str:
     sep = "&" if "?" in url else "?"
     auth_url = f"{url}{sep}access_token={token}"
     import httpx
+    headers = {"Authorization": f"Bearer {token}"}
     async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
-        r = await client.get(auth_url, headers={"Authorization": f"Bearer {token}"})
+        # First attempt: access_token in URL query param
+        r = await client.get(auth_url, headers=headers)
         if r.status_code == 200:
-            return r.text
+            text = r.text.strip()
+            if "WEBVTT" in text or "-->" in text:
+                return text
+        # Fallback attempt: Bearer header only
+        r2 = await client.get(url, headers=headers)
+        if r2.status_code == 200:
+            text2 = r2.text.strip()
+            if "WEBVTT" in text2 or "-->" in text2:
+                return text2
     return ""
 
 
@@ -946,10 +934,16 @@ def _detect_source(obj):
 
 
 async def ingest_zoom_meeting(obj, allow_whisper_fallback=True):
-    meeting_id = str(obj.get("id") or obj.get("uuid") or secrets.token_hex(6))
+    uuid = obj.get("uuid")
+    mid = obj.get("id")
+    meeting_id = str(uuid or mid or secrets.token_hex(6))
+    numeric_id = str(mid) if mid else ""
+    
+    # Check if we already have this recording in our list
+    existing = REC_BY_ID.get(meeting_id) or (REC_BY_ID.get(numeric_id) if numeric_id else None)
     
     # If the recording already exists AND has transcripts, skip
-    if meeting_id in REC_BY_ID and len(REC_BY_ID[meeting_id].get("segments", [])) > 0:
+    if existing and len(existing.get("segments", [])) > 0:
         return False
 
     topic = obj.get("topic", "Untitled class")
@@ -957,14 +951,14 @@ async def ingest_zoom_meeting(obj, allow_whisper_fallback=True):
     source = _detect_source(obj)
     files = obj.get("recording_files", [])
 
-    if not files:
+    if not files and (mid or uuid):
         try:
-            files = await fetch_zoom_recording_files(meeting_id)
+            files = await fetch_zoom_recording_files(mid or uuid)
         except Exception:
             files = []
     
     transcript = next(
-        (f for f in files if (f.get("file_type") or "").upper() in ("TRANSCRIPT", "AUDIO_TRANSCRIPT") 
+        (f for f in files if (f.get("file_type") or "").upper() in ("TRANSCRIPT", "AUDIO_TRANSCRIPT", "CC") 
          or (f.get("file_extension") or "").upper() == "VTT"
          or f.get("recording_type") == "audio_transcript"), 
         None
@@ -981,8 +975,7 @@ async def ingest_zoom_meeting(obj, allow_whisper_fallback=True):
             print(f"[zoom] VTT transcript download failed for {meeting_id}: {e}")
 
     # If recording already exists without transcript, update it when transcript arrives
-    if meeting_id in REC_BY_ID:
-        existing = REC_BY_ID[meeting_id]
+    if existing:
         if segments:
             existing["segments"] = segments
             save_recordings(RECORDINGS)
@@ -996,8 +989,10 @@ async def ingest_zoom_meeting(obj, allow_whisper_fallback=True):
             try:
                 token = await zoom_token()
                 import httpx
+                sep = "&" if "?" in audio["download_url"] else "?"
+                audio_url = f"{audio['download_url']}{sep}access_token={token}"
                 async with httpx.AsyncClient(timeout=httpx.Timeout(600.0, connect=15.0), follow_redirects=True) as client:
-                    ar = await client.get(audio["download_url"], headers={"Authorization": f"Bearer {token}"})
+                    ar = await client.get(audio_url, headers={"Authorization": f"Bearer {token}"})
                 if ar.status_code == 200:
                     ext = (audio.get("file_extension") or audio.get("file_type") or "m4a").lower()
                     segments = await transcribe_audio_bytes(ar.content, filename=f"{meeting_id}.{ext}")
@@ -1017,6 +1012,8 @@ async def ingest_zoom_meeting(obj, allow_whisper_fallback=True):
     }
     RECORDINGS.append(new_rec)
     REC_BY_ID[meeting_id] = new_rec
+    if numeric_id:
+        REC_BY_ID[numeric_id] = new_rec
     save_recordings(RECORDINGS)
     print(f"[zoom] Successfully imported '{topic}' with {len(segments)} lines.")
     return True

@@ -8,6 +8,7 @@ import time
 import hashlib
 import hmac
 import gc
+import asyncio
 from collections import Counter
 from fastapi import FastAPI, UploadFile, File, Form, Request, Query, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
@@ -97,6 +98,9 @@ def _clean_recordings_disk_file(file_path):
 
 
 def _seed_data_dir():
+    """If DATA_DIR is a separate (persistent) location, copy any files that are
+    missing there from the bundled data folder. Never overwrites existing files,
+    so teacher edits made on the live disk are preserved across deploys."""
     try:
         if os.path.abspath(DATA_DIR) == os.path.abspath(BUNDLED_DATA_DIR):
             return
@@ -121,6 +125,7 @@ CONFIG_PATH = os.path.join(DATA_DIR, "config.json")
 QLOG_PATH = os.path.join(DATA_DIR, "question_log.json")
 ROSTER_PATH = os.path.join(DATA_DIR, "roster.json")
 NOTES_LIB_PATH = os.path.join(DATA_DIR, "notes_library.json")
+# in-memory active student sessions: token -> {student_id, name, courses}
 SESSIONS = {}
 
 # Clean heavy embeddings from persistent disk before loading into memory
@@ -128,6 +133,8 @@ _clean_recordings_disk_file(DATA_PATH)
 
 
 # ---------- shared notes library ----------
+# Each note's text is stored ONCE here: {id, filename, chunks:[...], chars}.
+# A recording references shared notes by id via rec["note_ids"] = [id, ...].
 def load_notes_library():
     if os.path.exists(NOTES_LIB_PATH):
         with open(NOTES_LIB_PATH) as f:
@@ -162,6 +169,7 @@ def gen_pin():
 
 
 def hash_pw(pw: str) -> str:
+    # bcrypt only accepts up to 72 bytes; truncate defensively.
     pw_bytes = (pw or "").encode("utf-8")[:72]
     return bcrypt.hashpw(pw_bytes, bcrypt.gensalt()).decode("utf-8")
 
@@ -176,6 +184,7 @@ def verify_pw(pw: str, hashed: str) -> bool:
         return False
 
 
+# default teacher passcode; teacher can change it in the dashboard
 DEFAULT_PASSCODE = "teach123"
 
 
@@ -326,6 +335,9 @@ async def diag_openai():
 
 
 def _migrate_inline_notes_to_library():
+    """One-time migration: older data stored notes inline on each recording as
+    rec['notes'] = [{id, filename, chunks}]. Move them into the shared library and
+    replace with rec['note_ids'] = [id,...]. Safe to run every startup (idempotent)."""
     lib = load_notes_library()
     lib_ids = {n["id"] for n in lib}
     changed_lib = False
@@ -358,6 +370,7 @@ _migrate_inline_notes_to_library()
 
 
 def fmt_ts(t):
+    """Format a transcript start_time (which may be 'HH:MM:SS' or seconds) as mm:ss / h:mm:ss."""
     if t is None:
         return "?"
     s = str(t)
@@ -384,6 +397,7 @@ def tokenize(text):
 
 # ---------- semantic retrieval (OpenAI Embeddings) ----------
 async def get_embedding(text: str) -> list[float]:
+    """Fetch a single embedding vector for the student's query."""
     import httpx
     async with httpx.AsyncClient(timeout=30) as client:
         resp = await client.post(
@@ -396,12 +410,14 @@ async def get_embedding(text: str) -> list[float]:
 
 
 def cosine_similarity(v1, v2):
+    """Calculate how closely related two pieces of text are."""
     dot = sum(a * b for a, b in zip(v1, v2))
     mag = math.sqrt(sum(a * a for a in v1)) * math.sqrt(sum(b * b for b in v2))
     return dot / mag if mag else 0.0
 
 
 async def build_index_async(rec):
+    """Fetch embeddings for the entire transcript and cache them in-memory only."""
     if "embeddings" in rec and rec["embeddings"]:
         return rec["embeddings"]
         
@@ -430,7 +446,8 @@ async def build_index_async(rec):
     return embeddings
 
 
-async def retrieve(rec, query, k=18, window=1):
+async def retrieve(rec, query, k=15, window=1):
+    """Find the most relevant transcript segments using semantic similarity."""
     segs = rec.get("segments", [])
     if not segs: 
         return []
@@ -443,8 +460,8 @@ async def retrieve(rec, query, k=18, window=1):
     top = [i for i in ranked if scores[i] > 0.3][:k] 
     
     if not top:
-        step = max(1, len(segs) // 40)
-        top = list(range(0, len(segs), step))[:40]
+        step = max(1, len(segs) // 30)
+        top = list(range(0, len(segs), step))[:30]
         
     chosen = set()
     for i in top:
@@ -455,6 +472,7 @@ async def retrieve(rec, query, k=18, window=1):
 
 # ---------- teacher notes: extraction + retrieval ----------
 def extract_text_from_upload(data: bytes, filename: str) -> str:
+    """Extract plain text from an uploaded PDF / DOCX / TXT file (server-side only)."""
     name = (filename or "").lower()
     if name.endswith(".txt") or name.endswith(".md"):
         for enc in ("utf-8", "utf-16", "latin-1"):
@@ -475,6 +493,7 @@ def extract_text_from_upload(data: bytes, filename: str) -> str:
 
 
 def chunk_note_text(text: str, target_chars=700):
+    """Split note text into paragraph-ish chunks for retrieval."""
     text = re.sub(r"\r\n?", "\n", text or "")
     paras = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
     chunks = []
@@ -495,6 +514,7 @@ def chunk_note_text(text: str, target_chars=700):
 
 
 def retrieve_note_chunks(rec, query, k=4):
+    """Return the top-k most relevant note chunks for the query."""
     lib = load_notes_library()
     notes = [note_by_id(nid, lib) for nid in (rec.get("note_ids") or [])]
     notes = [n for n in notes if n]
@@ -530,6 +550,7 @@ def retrieve_note_chunks(rec, query, k=4):
 
 
 def notes_context(rec, query, max_chars=8000):
+    """Build a labeled notes context block for the LLM prompt."""
     chunks = retrieve_note_chunks(rec, query)
     if not chunks:
         return ""
@@ -543,7 +564,8 @@ def notes_context(rec, query, max_chars=8000):
     return "\n\n".join(out)
 
 
-def context_from_indices(rec, indices, max_chars=45000):
+def context_from_indices(rec, indices, max_chars=18000):
+    """Optimized context length (18k chars) to prevent 429 Token-Per-Minute rate limits."""
     segs = rec.get("segments", [])
     lines = []
     total = 0
@@ -560,7 +582,7 @@ def context_from_indices(rec, indices, max_chars=45000):
     return "\n".join(lines)
 
 
-# ---------- LLM helper ----------
+# ---------- LLM helper with Exponential Backoff Retries on 429 ----------
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "").strip()
 OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o-mini").strip()
 OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1").strip()
@@ -574,37 +596,49 @@ class LLMUpstreamError(Exception):
     pass
 
 
-async def llm(messages, max_tokens=1200, temperature=0.1):
+async def llm(messages, max_tokens=1200, temperature=0.1, max_retries=4):
     if OPENAI_API_KEY:
         import httpx
         timeout = httpx.Timeout(90.0, connect=10.0)
-        try:
-            async with httpx.AsyncClient(timeout=timeout) as client:
-                resp = await client.post(
-                    f"{OPENAI_BASE_URL}/chat/completions",
-                    headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
-                    json={
-                        "model": OPENAI_MODEL,
-                        "messages": messages,
-                        "temperature": temperature,
-                        "max_tokens": max_tokens,
-                    },
-                )
-        except httpx.RequestError as e:
-            raise LLMUpstreamError(f"Could not reach AI provider: {e}") from e
-
-        if resp.status_code >= 400:
-            detail = ""
+        
+        for attempt in range(max_retries):
             try:
-                detail = resp.json().get("error", {}).get("message", "")
-            except Exception:
-                detail = resp.text[:300]
-            raise LLMUpstreamError(f"AI provider returned {resp.status_code}: {detail or 'unknown error'}")
+                async with httpx.AsyncClient(timeout=timeout) as client:
+                    resp = await client.post(
+                        f"{OPENAI_BASE_URL}/chat/completions",
+                        headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
+                        json={
+                            "model": OPENAI_MODEL,
+                            "messages": messages,
+                            "temperature": temperature,
+                            "max_tokens": max_tokens,
+                        },
+                    )
+                
+                # If rate limited (429), automatically wait and retry
+                if resp.status_code == 429 and attempt < max_retries - 1:
+                    wait_time = 1.5 * (attempt + 1)
+                    print(f"[OpenAI 429 Rate Limit] Retrying in {wait_time}s (attempt {attempt + 1}/{max_retries})...")
+                    await asyncio.sleep(wait_time)
+                    continue
 
-        try:
-            return resp.json()["choices"][0]["message"]["content"]
-        except Exception as e:
-            raise LLMUpstreamError(f"Unexpected AI response shape: {e}") from e
+                if resp.status_code >= 400:
+                    detail = ""
+                    try:
+                        detail = resp.json().get("error", {}).get("message", "")
+                    except Exception:
+                        detail = resp.text[:300]
+                    raise LLMUpstreamError(f"AI provider returned {resp.status_code}: {detail or 'unknown error'}")
+
+                try:
+                    return resp.json()["choices"][0]["message"]["content"]
+                except Exception as e:
+                    raise LLMUpstreamError(f"Unexpected AI response shape: {e}") from e
+
+            except httpx.RequestError as e:
+                if attempt == max_retries - 1:
+                    raise LLMUpstreamError(f"Could not reach AI provider: {e}") from e
+                await asyncio.sleep(1.0 * (attempt + 1))
 
     raise LLMConfigError("The AI features are not configured on this server. Set OPENAI_API_KEY.")
 
@@ -886,13 +920,11 @@ async def _download_zoom_text(url: str, token: str) -> str:
     import httpx
     headers = {"Authorization": f"Bearer {token}"}
     async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
-        # First attempt: access_token in URL query param
         r = await client.get(auth_url, headers=headers)
         if r.status_code == 200:
             text = r.text.strip()
             if "WEBVTT" in text or "-->" in text:
                 return text
-        # Fallback attempt: Bearer header only
         r2 = await client.get(url, headers=headers)
         if r2.status_code == 200:
             text2 = r2.text.strip()
@@ -939,10 +971,8 @@ async def ingest_zoom_meeting(obj, allow_whisper_fallback=True):
     meeting_id = str(uuid or mid or secrets.token_hex(6))
     numeric_id = str(mid) if mid else ""
     
-    # Check if we already have this recording in our list
     existing = REC_BY_ID.get(meeting_id) or (REC_BY_ID.get(numeric_id) if numeric_id else None)
     
-    # If the recording already exists AND has transcripts, skip
     if existing and len(existing.get("segments", [])) > 0:
         return False
 
@@ -974,7 +1004,6 @@ async def ingest_zoom_meeting(obj, allow_whisper_fallback=True):
         except Exception as e:
             print(f"[zoom] VTT transcript download failed for {meeting_id}: {e}")
 
-    # If recording already exists without transcript, update it when transcript arrives
     if existing:
         if segments:
             existing["segments"] = segments
@@ -1686,7 +1715,7 @@ async def ask(body: AskBody):
         return JSONResponse({"error": "Recording not found"}, status_code=404)
     
     idx = await retrieve(rec, body.question)
-    ctx = context_from_indices(rec, idx)
+    ctx = context_from_indices(rec, idx, max_chars=18000)
     notes_ctx = notes_context(rec, body.question)
     
     lang_line = "\nAlways respond in English, even if the student's question is written in another language."
@@ -1776,7 +1805,7 @@ async def quiz(body: QuizBody):
     segs = rec.get("segments", [])
     step = max(1, len(segs) // 60)
     idx = list(range(0, len(segs), step))
-    ctx = context_from_indices(rec, idx, max_chars=60000)
+    ctx = context_from_indices(rec, idx, max_chars=20000)
     lang_line = "Write the quiz in English."
     n = max(1, min(10, body.num_questions))
     system = (
@@ -2390,7 +2419,7 @@ async def generate_summary_and_topics(rec):
     if not segs:
         return None
     idx = await retrieve(rec, rec.get("display_title") or rec.get("topic") or "lecture", k=30, window=1)
-    context = context_from_indices(rec, idx, max_chars=40000)
+    context = context_from_indices(rec, idx, max_chars=20000)
     system = (
         "You summarize a class recording for students. Use ONLY the transcript. "
         "Always write in English. "

@@ -365,49 +365,36 @@
         </div>
       </div>
 
-      <!-- Question Solution Upload / Override Card -->
+     <!-- Question Solution Upload / Override Card -->
       <div class="setting-card">
-        <h3>2. Attach Teacher Video Solution or Annotated Model Answer</h3>
-        <p class="meta" style="margin-bottom: 14px;">When students ask about this specific question, they will be given your video or document explanation alongside the AI analysis.</p>
+        <h3>2. Add Question to Teacher Library</h3>
+        <p class="meta" style="margin-bottom: 14px;">Build your curated library. Students can filter by these details to instantly load your specific resources and AI context.</p>
         
-        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; margin-bottom: 12px;">
-          <label class="fld">
-            <span>Course</span>
-            <select id="tqCourseSelect" style="width: 100%; padding: 8px; border-radius: 8px; border: 1.5px solid var(--line);"></select>
-          </label>
-          <label class="fld">
-            <span>Year</span>
-            <input id="tqYearInput" type="number" value="2023" style="width: 100%; padding: 8px; border-radius: 8px; border: 1.5px solid var(--line);" />
-          </label>
-          <label class="fld">
-            <span>Series</span>
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 10px; margin-bottom: 12px;">
+          <label class="fld"><span>Course</span><select id="tqCourseSelect" style="width: 100%; padding: 8px; border-radius: 8px; border: 1.5px solid var(--line);"></select></label>
+          <label class="fld"><span>Year</span><input id="tqYearInput" type="number" placeholder="2023" style="width: 100%; padding: 8px; border-radius: 8px; border: 1.5px solid var(--line);" /></label>
+          <label class="fld"><span>Series</span>
             <select id="tqSeriesSelect" style="width: 100%; padding: 8px; border-radius: 8px; border: 1.5px solid var(--line);">
-              <option value="May/June">May/June</option>
-              <option value="Oct/Nov">Oct/Nov</option>
-              <option value="Feb/March">Feb/March</option>
-              <option value="Jan">Jan</option>
+              <option value="May/June">May/June</option><option value="Oct/Nov">Oct/Nov</option><option value="Feb/March">Feb/March</option><option value="Jan">Jan</option>
             </select>
           </label>
-          <label class="fld">
-            <span>Paper</span>
-            <input id="tqPaperInput" type="text" placeholder="e.g. 42" value="42" style="width: 100%; padding: 8px; border-radius: 8px; border: 1.5px solid var(--line);" />
-          </label>
-          <label class="fld">
-            <span>Question</span>
-            <input id="tqQuestionInput" type="text" placeholder="e.g. 1(a)" value="1(a)" style="width: 100%; padding: 8px; border-radius: 8px; border: 1.5px solid var(--line);" />
-          </label>
+          <label class="fld"><span>Paper (Variant)</span><input id="tqPaperInput" type="text" placeholder="e.g. 21" style="width: 100%; padding: 8px; border-radius: 8px; border: 1.5px solid var(--line);" /></label>
+          <label class="fld"><span>Question</span><input id="tqQuestionInput" type="text" placeholder="e.g. 1(a)" style="width: 100%; padding: 8px; border-radius: 8px; border: 1.5px solid var(--line);" /></label>
         </div>
 
-        <div style="display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 12px;">
-          <label class="fld" style="flex: 2; min-width: 260px;">
-            <span>Video Solution URL (YouTube, Zoom Cloud, Vimeo, Loom)</span>
-            <input id="tqVideoUrl" type="url" placeholder="https://..." style="width: 100%; padding: 9px; border-radius: 8px; border: 1.5px solid var(--line);" />
-          </label>
-          <label class="fld" style="flex: 1; min-width: 200px;">
-            <span>Attach Teacher Notes File (Optional)</span>
-            <select id="tqNoteLibSelect" style="width: 100%; padding: 9px; border-radius: 8px; border: 1.5px solid var(--line);"></select>
-          </label>
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px;">
+          <label class="fld"><span>Question Paper (QP) Text</span><textarea id="tqQpText" rows="2" placeholder="Paste the question text here..." style="width: 100%; padding: 8px; border-radius: 8px; border: 1.5px solid var(--line); font-size:12px;"></textarea></label>
+          <label class="fld"><span>Mark Scheme (MS) Text</span><textarea id="tqMsText" rows="2" placeholder="Paste the official mark scheme here..." style="width: 100%; padding: 8px; border-radius: 8px; border: 1.5px solid var(--line); font-size:12px;"></textarea></label>
         </div>
+
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin-bottom: 14px;">
+          <label class="fld"><span>Video Solution URL</span><input id="tqVideoUrl" type="url" placeholder="https://youtube..." style="width: 100%; padding: 8px; border-radius: 8px; border: 1.5px solid var(--line);" /></label>
+          <label class="fld"><span>Answered Doc (Notes Lib)</span><select id="tqAnsweredDocSelect" style="width: 100%; padding: 8px; border-radius: 8px; border: 1.5px solid var(--line);"></select></label>
+          <label class="fld"><span>Extra Notes (Notes Lib)</span><select id="tqExtraNoteSelect" style="width: 100%; padding: 8px; border-radius: 8px; border: 1.5px solid var(--line);"></select></label>
+        </div>
+
+        <button id="saveQuestionAssetBtn" class="primary">+ Add to Library</button>
+      </div>
 
         <label class="fld" style="margin-bottom: 14px; display: block;">
           <span>Teacher Model Tip or Key Directive (Shown prominently to student)</span>

@@ -342,11 +342,31 @@ function renderStudentDashboard() {
 }
 
 // ================= PAST PAPER SOLVER (STUDENT) =================
+let ppLibrary = [];
+let ppMode = "library";
+
+if(el("modeLibBtn")) el("modeLibBtn").addEventListener("click", () => setPpMode("library"));
+if(el("modeSnapBtn")) el("modeSnapBtn").addEventListener("click", () => setPpMode("snapshot"));
+
+function setPpMode(mode) {
+  ppMode = mode;
+  if(mode === "library") {
+    el("modeLibBtn").style.cssText = "flex: 1; background: var(--panel); box-shadow: var(--shadow-sm); font-weight: 800; color: var(--brand-d);";
+    el("modeSnapBtn").style.cssText = "flex: 1; font-weight: 600; color: var(--muted);";
+    el("ppLibraryFilters").classList.remove("hidden");
+    el("ppSnapshotUpload").classList.add("hidden");
+  } else {
+    el("modeSnapBtn").style.cssText = "flex: 1; background: var(--panel); box-shadow: var(--shadow-sm); font-weight: 800; color: var(--brand-d);";
+    el("modeLibBtn").style.cssText = "flex: 1; font-weight: 600; color: var(--muted);";
+    el("ppSnapshotUpload").classList.remove("hidden");
+    el("ppLibraryFilters").classList.add("hidden");
+  }
+}
+
 async function initStudentPastPapers() {
   const sel = el("ppCourseSelect");
   if (!sel) return;
-  sel.innerHTML = '<option value="">Select course...</option>';
-
+  
   try {
     const res = await fetch(`${API}/api/student/pastpaper/meta`, {
       method: "POST", headers: { "Content-Type": "application/json" },
@@ -354,23 +374,63 @@ async function initStudentPastPapers() {
     });
     const data = await res.json();
     state.courseSyllabi = data.syllabi || {};
+    ppLibrary = data.library || [];
     
-    (data.courses || []).forEach(c => {
-      const opt = document.createElement("option");
-      opt.value = c;
-      opt.textContent = c;
-      sel.appendChild(opt);
-    });
+    sel.innerHTML = '<option value="">Select course...</option>';
+    (data.courses || []).forEach(c => { sel.appendChild(new Option(c, c)); });
 
     sel.addEventListener("change", () => {
       const chosen = sel.value;
       const badge = el("ppSyllabusBadge");
-      if (badge) {
-        badge.textContent = state.courseSyllabi[chosen] ? `🎯 Syllabus: ${state.courseSyllabi[chosen]}` : "No specific syllabus mapped yet";
-      }
+      if (badge) badge.textContent = state.courseSyllabi[chosen] ? `🎯 Syllabus: ${state.courseSyllabi[chosen]}` : "General Examiner Context";
+      
+      // Populate cascading filters
+      populateCascade("year");
     });
-  } catch (e) {
-    console.error("Failed to load past paper metadata:", e);
+  } catch (e) {}
+}
+
+function populateCascade(level) {
+  const course = el("ppCourseSelect").value;
+  const yearSel = el("ppYearSelect");
+  const seriesSel = el("ppSeriesSelect");
+  const paperSel = el("ppPaperSelect");
+  const qSel = el("ppQuestionSelect");
+
+  if(!course) return;
+
+  if (level === "year") {
+    const years = [...new Set(ppLibrary.filter(x => x.course === course).map(x => x.year))];
+    yearSel.innerHTML = '<option value="">Select Year...</option>';
+    years.forEach(y => yearSel.appendChild(new Option(y, y)));
+    yearSel.disabled = years.length === 0;
+    seriesSel.disabled = true; paperSel.disabled = true; qSel.disabled = true;
+    yearSel.onchange = () => populateCascade("series");
+  } 
+  else if (level === "series") {
+    const year = yearSel.value;
+    const series = [...new Set(ppLibrary.filter(x => x.course === course && x.year === year).map(x => x.series))];
+    seriesSel.innerHTML = '<option value="">Select Series...</option>';
+    series.forEach(s => seriesSel.appendChild(new Option(s, s)));
+    seriesSel.disabled = series.length === 0;
+    paperSel.disabled = true; qSel.disabled = true;
+    seriesSel.onchange = () => populateCascade("paper");
+  }
+  else if (level === "paper") {
+    const year = yearSel.value; const series = seriesSel.value;
+    const papers = [...new Set(ppLibrary.filter(x => x.course === course && x.year === year && x.series === series).map(x => x.paper))];
+    paperSel.innerHTML = '<option value="">Select Paper...</option>';
+    papers.forEach(p => paperSel.appendChild(new Option(p, p)));
+    paperSel.disabled = papers.length === 0;
+    qSel.disabled = true;
+    paperSel.onchange = () => populateCascade("question");
+  }
+  else if (level === "question") {
+    const year = yearSel.value; const series = seriesSel.value; const paper = paperSel.value;
+    const qs = [...new Set(ppLibrary.filter(x => x.course === course && x.year === year && x.series === series && x.paper === paper).map(x => x.question))];
+    qSel.innerHTML = '<option value="">Select Question...</option>';
+    qs.forEach(q => qSel.appendChild(new Option(q, q)));
+    qSel.disabled = qs.length === 0;
   }
 }
 
@@ -380,35 +440,33 @@ if (solvePastPaperBtn) {
     const course = el("ppCourseSelect").value;
     if (!course) { alert("Please select a course."); return; }
 
-    const year = el("ppYearInput").value;
-    const series = el("ppSeriesSelect").value;
-    const paper = el("ppPaperInput").value.trim();
-    const question = el("ppQuestionInput").value.trim();
-    const topicText = el("ppTopicInput").value.trim();
+    const fd = new FormData();
+    fd.append("token", state.token);
+    fd.append("mode", ppMode);
+    fd.append("course", course);
+    fd.append("doubt", el("ppDoubtInput").value.trim());
 
-    if (!paper || !question) { alert("Please specify both Paper/Variant and Question Part."); return; }
+    if (ppMode === "library") {
+      const q = el("ppQuestionSelect").value;
+      if(!q) { alert("Please complete the dropdown filters to select a specific question."); return; }
+      fd.append("year", el("ppYearSelect").value);
+      fd.append("series", el("ppSeriesSelect").value);
+      fd.append("paper", el("ppPaperSelect").value);
+      fd.append("question", q);
+    } else {
+      const fileInput = el("ppImageFile");
+      if (!fileInput.files.length) { alert("Please upload a screenshot of the question."); return; }
+      fd.append("image", fileInput.files[0]);
+    }
 
     const origText = solvePastPaperBtn.innerText;
-    solvePastPaperBtn.innerText = "⏳ Retrieving Mark Scheme & Notes...";
+    solvePastPaperBtn.innerText = "⏳ Connecting to Examiner AI...";
     solvePastPaperBtn.disabled = true;
 
     try {
-      const res = await fetch(`${API}/api/student/pastpaper/solve`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          token: state.token,
-          course,
-          year: parseInt(year),
-          series,
-          paper,
-          question,
-          question_text: topicText
-        })
-      });
+      const res = await fetch(`${API}/api/student/pastpaper/solve`, { method: "POST", body: fd });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Solver failed.");
-
       renderPastPaperSolution(data);
     } catch (err) {
       alert(err.message);
@@ -426,29 +484,22 @@ function renderPastPaperSolution(data) {
   resBox.classList.remove("hidden");
   resBox.innerHTML = "";
 
-  // 1. Teacher Custom Override Asset Banner (if available)
   if (data.teacher_asset) {
     const asset = data.teacher_asset;
     const assetCard = document.createElement("div");
     assetCard.style.cssText = "background: linear-gradient(135deg, rgba(11,191,191,0.12), rgba(12,166,120,0.15)); border: 2px solid var(--brand); border-radius: 14px; padding: 16px;";
     
     let linksHtml = "";
-    if (asset.video_url) {
-      linksHtml += `<a href="${escapeHtml(asset.video_url)}" target="_blank" class="primary" style="display:inline-flex; align-items:center; gap:6px; padding:7px 14px; font-size:12.5px; text-decoration:none; margin-right:10px;">🎥 Watch Teacher Video Solution</a>`;
-    }
-    if (asset.note_filename) {
-      linksHtml += `<span class="ghost-sm" style="padding:6px 12px; font-size:12.5px;">📄 Annotated Model Note: <strong>${escapeHtml(asset.note_filename)}</strong></span>`;
-    }
+    if (asset.video_url) linksHtml += `<a href="${escapeHtml(asset.video_url)}" target="_blank" class="primary" style="display:inline-flex; align-items:center; gap:6px; padding:7px 14px; font-size:12.5px; text-decoration:none; margin-right:10px;">🎥 Watch Teacher Video</a>`;
+    if (asset.answered_doc_name) linksHtml += `<span class="ghost-sm" style="padding:6px 12px; font-size:12.5px;">📄 Linked: <strong>${escapeHtml(asset.answered_doc_name)}</strong></span>`;
 
     assetCard.innerHTML = `
-      <div style="font-weight:900; font-size:15px; color:var(--brand-d); margin-bottom:6px;">👨‍🏫 Teacher's Prepared Solution</div>
-      ${asset.teacher_tip ? `<p style="font-size:13.5px; font-weight:700; margin-bottom:12px; color:var(--text);">💡 <strong>Teacher Tip:</strong> ${escapeHtml(asset.teacher_tip)}</p>` : ''}
+      <div style="font-weight:900; font-size:15px; color:var(--brand-d); margin-bottom:6px;">👨‍🏫 Teacher Resources Attached</div>
       <div style="margin-top:8px;">${linksHtml}</div>
     `;
     resBox.appendChild(assetCard);
   }
 
-  // 2. AI Structured Breakdown
   const solutionCard = document.createElement("div");
   solutionCard.className = "q-block";
   solutionCard.style.padding = "20px";
@@ -2091,25 +2142,27 @@ if(el("saveQuestionAssetBtn")) {
     const series = el("tqSeriesSelect").value;
     const paper = el("tqPaperInput").value.trim();
     const question = el("tqQuestionInput").value.trim();
-    const videoUrl = el("tqVideoUrl").value.trim();
-    const noteId = el("tqNoteLibSelect").value;
-    const tip = el("tqTeacherTip").value.trim();
 
-    if (!course) { toast("Please select a course.", "info"); return; }
-    if (!paper || !question) { toast("Enter paper and question.", "info"); return; }
+    if (!course || !paper || !question) { toast("Course, Paper, and Question are required.", "info"); return; }
+
+    const payload = {
+      passcode: state.passcode,
+      course, year, series, paper, question,
+      qp_text: el("tqQpText").value.trim(),
+      ms_text: el("tqMsText").value.trim(),
+      video_url: el("tqVideoUrl").value.trim(),
+      answered_doc_id: el("tqAnsweredDocSelect").value,
+      extra_note_id: el("tqExtraNoteSelect").value
+    };
 
     try {
       const res = await fetch(`${API}/api/teacher/pastpaper/solutions/save`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          passcode: state.passcode,
-          course, year: parseInt(year), series, paper, question,
-          video_url: videoUrl, note_id: noteId, teacher_tip: tip
-        })
+        body: JSON.stringify(payload)
       });
-      const data = await res.json();
       if (res.ok) {
-        toast("Question solution saved ✓", "success");
+        toast("Added to library ✓", "success");
+        el("tqQpText").value = ""; el("tqMsText").value = ""; el("tqQuestionInput").value = "";
         loadTeacherPastPaperHub();
       }
     } catch (e) { toast("Failed to save.", "error"); }

@@ -339,8 +339,8 @@
     <!-- Teacher Past Paper Hub -->
     <div id="teacherPastPapers" class="teacher-pane hidden">
       <div class="pane-head">
-        <h2>Past Paper Hub: Syllabus & Video Solutions</h2>
-        <p class="meta">Configure which syllabus the AI references for each course, and upload teacher video links or annotated solutions for specific exam questions.</p>
+        <h2>Past Paper Hub: Syllabus & Library</h2>
+        <p class="meta">Configure which syllabus the AI references for each course, and add exact questions to your curated library.</p>
       </div>
 
       <!-- Course Syllabus Config Card -->
@@ -359,13 +359,15 @@
               <option value="Cambridge 0610 (IGCSE Biology)">Cambridge 0610 (IGCSE Biology)</option>
               <option value="Edexcel IAL WBI11/WBI12 (Biology)">Edexcel IAL WBI11/WBI12 (Biology)</option>
               <option value="Edexcel IAL WBI13 (Unit 3 Biology)">Edexcel IAL WBI13 (Unit 3 Biology)</option>
+              <option value="Edexcel IGCSE 4BI1 (Biology)">Edexcel IGCSE 4BI1 (Biology)</option>
+              <option value="Oxford AQA 9610 (Biology)">Oxford AQA 9610 (Biology)</option>
             </select>
           </label>
           <button id="saveSyllabusBtn" class="primary" style="height: 42px;">Save Syllabus Mapping</button>
         </div>
       </div>
 
-     <!-- Question Solution Upload / Override Card -->
+      <!-- Question Solution Upload / Override Card -->
       <div class="setting-card">
         <h3>2. Add Question to Teacher Library</h3>
         <p class="meta" style="margin-bottom: 14px;">Build your curated library. Students can filter by these details to instantly load your specific resources and AI context.</p>
@@ -394,14 +396,6 @@
         </div>
 
         <button id="saveQuestionAssetBtn" class="primary">+ Add to Library</button>
-      </div>
-
-        <label class="fld" style="margin-bottom: 14px; display: block;">
-          <span>Teacher Model Tip or Key Directive (Shown prominently to student)</span>
-          <input id="tqTeacherTip" type="text" placeholder="e.g. Always mention how active site conformation alters and reference Vmax explicitly!" style="width: 100%; padding: 9px; border-radius: 8px; border: 1.5px solid var(--line);" />
-        </label>
-
-        <button id="saveQuestionAssetBtn" class="primary">+ Save Question Solution Asset</button>
       </div>
 
       <h3 style="margin-top: 26px; margin-bottom: 12px; font-size: 17px;">Existing Teacher Overrides</h3>

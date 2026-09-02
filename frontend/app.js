@@ -2018,6 +2018,136 @@ if(el("importOneBtn")) {
   });
 }
 
+// ================= TEACHER PAST PAPERS HUB =================
+async function loadTeacherPastPaperHub() {
+  const courseSel = el("tppCourseSelect");
+  const tqCourseSel = el("tqCourseSelect");
+  const noteLibSel = el("tqNoteLibSelect");
+
+  try {
+    const res = await fetch(`${API}/api/teacher/pastpaper/config`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ passcode: state.passcode })
+    });
+    const data = await res.json();
+
+    if (courseSel) {
+      courseSel.innerHTML = '<option value="">Select course...</option>';
+      (data.courses || []).forEach(c => {
+        const opt = document.createElement("option");
+        opt.value = c; opt.textContent = c;
+        courseSel.appendChild(opt);
+      });
+    }
+
+    if (tqCourseSel) {
+      tqCourseSel.innerHTML = '<option value="">Select course...</option>';
+      (data.courses || []).forEach(c => {
+        const opt = document.createElement("option");
+        opt.value = c; opt.textContent = c;
+        tqCourseSel.appendChild(opt);
+      });
+    }
+
+    if (noteLibSel) {
+      noteLibSel.innerHTML = '<option value="">None</option>';
+      (data.notes_library || []).forEach(n => {
+        const opt = document.createElement("option");
+        opt.value = n.id;
+        opt.textContent = n.filename;
+        noteLibSel.appendChild(opt);
+      });
+    }
+
+    renderTeacherOverrides(data.solutions || []);
+  } catch (e) {
+    console.error("Error loading Past Paper Hub:", e);
+  }
+}
+
+if(el("saveSyllabusBtn")) {
+  el("saveSyllabusBtn").addEventListener("click", async () => {
+    const course = el("tppCourseSelect").value;
+    const syllabus = el("tppSyllabusCode").value;
+    if (!course) {
+      toast("Please select a course first.", "info");
+      return;
+    }
+
+    try {
+      const res = await fetch(`${API}/api/teacher/pastpaper/config/save`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ passcode: state.passcode, course, syllabus })
+      });
+      if (res.ok) toast("Course syllabus mapping saved ✓", "success");
+    } catch (e) { toast("Error saving syllabus.", "error"); }
+  });
+}
+
+if(el("saveQuestionAssetBtn")) {
+  el("saveQuestionAssetBtn").addEventListener("click", async () => {
+    const course = el("tqCourseSelect").value;
+    const year = el("tqYearInput").value;
+    const series = el("tqSeriesSelect").value;
+    const paper = el("tqPaperInput").value.trim();
+    const question = el("tqQuestionInput").value.trim();
+    const videoUrl = el("tqVideoUrl").value.trim();
+    const noteId = el("tqNoteLibSelect").value;
+    const tip = el("tqTeacherTip").value.trim();
+
+    if (!course) { toast("Please select a course.", "info"); return; }
+    if (!paper || !question) { toast("Enter paper and question.", "info"); return; }
+
+    try {
+      const res = await fetch(`${API}/api/teacher/pastpaper/solutions/save`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          passcode: state.passcode,
+          course, year: parseInt(year), series, paper, question,
+          video_url: videoUrl, note_id: noteId, teacher_tip: tip
+        })
+      });
+      const data = await res.json();
+      if (res.ok) {
+        toast("Question solution saved ✓", "success");
+        loadTeacherPastPaperHub();
+      }
+    } catch (e) { toast("Failed to save.", "error"); }
+  });
+}
+
+function renderTeacherOverrides(list) {
+  const container = el("tppOverridesList");
+  if (!container) return;
+  container.innerHTML = "";
+
+  if (!list.length) {
+    container.innerHTML = '<p class="meta">No question solutions attached yet.</p>';
+    return;
+  }
+
+  list.forEach(item => {
+    const card = document.createElement("div");
+    card.className = "student-row";
+    card.innerHTML = `
+      <div>
+        <div style="font-weight:800; font-size:14px; color:var(--brand-d);">${escapeHtml(item.course)} · ${item.year} ${escapeHtml(item.series)} P${escapeHtml(item.paper)} Q${escapeHtml(item.question)}</div>
+        <div class="meta">${item.video_url ? `🎥 Video: ${escapeHtml(item.video_url)}` : 'No video attached'} | ${item.teacher_tip ? `💡 Tip: ${escapeHtml(item.teacher_tip)}` : 'No tip'}</div>
+      </div>
+      <button class="ghost-sm danger-btn">🗑️ Remove</button>
+    `;
+    card.querySelector("button").addEventListener("click", async () => {
+      if (!confirm("Delete this question asset?")) return;
+      await fetch(`${API}/api/teacher/pastpaper/solutions/delete`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ passcode: state.passcode, key: item.key })
+      });
+      loadTeacherPastPaperHub();
+    });
+    container.appendChild(card);
+  });
+}
+
 async function loadQuestions() {
   const res = await fetch(`${API}/api/teacher/questions`, {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ passcode: state.passcode })

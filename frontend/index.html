@@ -185,55 +185,67 @@
       </div>
     </div>
 
-    <!-- Pane 4: Past Paper Solver -->
+   <!-- Pane 4: Past Paper Solver -->
     <div id="studentPastPapersPane" class="student-pane hidden" style="padding: 26px 30px; overflow-y: auto;">
       <div class="pane-head" style="margin-bottom: 20px;">
         <h2>📝 Past Paper Solver & Examiner Insight</h2>
-        <p class="meta">Select an exam question to get exact mark-scheme keywords, teacher solutions, and syllabus notes linkage.</p>
+        <p class="meta">Choose a question from your teacher's library, or upload a screenshot of any past paper.</p>
       </div>
 
       <div class="planner-layout">
         <!-- Question Picker Form -->
         <div class="planner-setup">
           <div style="background: var(--panel); border: 1.5px solid var(--line); border-radius: 14px; padding: 18px;">
+            
+            <!-- Mode Toggle -->
+            <div style="display: flex; gap: 10px; margin-bottom: 16px; background: var(--bg); padding: 4px; border-radius: 8px;">
+              <button id="modeLibBtn" class="ghost" style="flex: 1; background: var(--panel); box-shadow: var(--shadow-sm); font-weight: 800; color: var(--brand-d);">📚 Library</button>
+              <button id="modeSnapBtn" class="ghost" style="flex: 1; font-weight: 600; color: var(--muted);">📸 Screenshot</button>
+            </div>
+
             <label class="fld" style="margin-bottom: 12px; display: block;">
-              <span style="font-weight: 800; font-size: 13px; display: block; margin-bottom: 6px;">Target Course</span>
+              <span style="font-weight: 800; font-size: 13px; display: block; margin-bottom: 6px;">Course / Syllabus</span>
               <select id="ppCourseSelect" style="width: 100%; padding: 10px 12px; border-radius: 10px; border: 1.5px solid var(--line); background: var(--panel2); font-weight: 600;">
                 <option value="">Select course...</option>
               </select>
               <span id="ppSyllabusBadge" class="meta" style="font-size: 11.5px; margin-top: 4px; display: block; color: var(--brand-d);"></span>
             </label>
 
-            <div style="display: flex; gap: 10px; margin-bottom: 12px;">
-              <label class="fld" style="flex: 1;">
-                <span style="font-weight: 800; font-size: 13px; display: block; margin-bottom: 6px;">Exam Year</span>
-                <input id="ppYearInput" type="number" min="2010" max="2030" value="2023" style="width: 100%; padding: 10px 12px; border-radius: 10px; border: 1.5px solid var(--line); background: var(--panel2); font-weight: 600;" />
-              </label>
-              <label class="fld" style="flex: 1;">
-                <span style="font-weight: 800; font-size: 13px; display: block; margin-bottom: 6px;">Series</span>
-                <select id="ppSeriesSelect" style="width: 100%; padding: 10px 12px; border-radius: 10px; border: 1.5px solid var(--line); background: var(--panel2); font-weight: 600;">
-                  <option value="May/June">May / June</option>
-                  <option value="Oct/Nov">Oct / Nov</option>
-                  <option value="Feb/March">Feb / March</option>
-                  <option value="Jan">January</option>
-                </select>
-              </label>
+            <!-- LIBRARY MODE FILTERS -->
+            <div id="ppLibraryFilters">
+              <div style="display: flex; gap: 10px; margin-bottom: 12px;">
+                <label class="fld" style="flex: 1;">
+                  <span style="font-weight: 800; font-size: 13px; display: block; margin-bottom: 6px;">Year</span>
+                  <select id="ppYearSelect" style="width: 100%; padding: 10px 12px; border-radius: 10px; border: 1.5px solid var(--line); background: var(--panel2); font-weight: 600;" disabled><option>Select Course First</option></select>
+                </label>
+                <label class="fld" style="flex: 1;">
+                  <span style="font-weight: 800; font-size: 13px; display: block; margin-bottom: 6px;">Series</span>
+                  <select id="ppSeriesSelect" style="width: 100%; padding: 10px 12px; border-radius: 10px; border: 1.5px solid var(--line); background: var(--panel2); font-weight: 600;" disabled><option>-</option></select>
+                </label>
+              </div>
+              <div style="display: flex; gap: 10px; margin-bottom: 12px;">
+                <label class="fld" style="flex: 1;">
+                  <span style="font-weight: 800; font-size: 13px; display: block; margin-bottom: 6px;">Paper (Variant)</span>
+                  <select id="ppPaperSelect" style="width: 100%; padding: 10px 12px; border-radius: 10px; border: 1.5px solid var(--line); background: var(--panel2); font-weight: 600;" disabled><option>-</option></select>
+                </label>
+                <label class="fld" style="flex: 1;">
+                  <span style="font-weight: 800; font-size: 13px; display: block; margin-bottom: 6px;">Question</span>
+                  <select id="ppQuestionSelect" style="width: 100%; padding: 10px 12px; border-radius: 10px; border: 1.5px solid var(--line); background: var(--panel2); font-weight: 600;" disabled><option>-</option></select>
+                </label>
+              </div>
             </div>
 
-            <div style="display: flex; gap: 10px; margin-bottom: 12px;">
-              <label class="fld" style="flex: 1;">
-                <span style="font-weight: 800; font-size: 13px; display: block; margin-bottom: 6px;">Paper / Variant</span>
-                <input id="ppPaperInput" type="text" placeholder="e.g. 42, 21, 1" value="42" style="width: 100%; padding: 10px 12px; border-radius: 10px; border: 1.5px solid var(--line); background: var(--panel2); font-weight: 600;" />
-              </label>
-              <label class="fld" style="flex: 1;">
-                <span style="font-weight: 800; font-size: 13px; display: block; margin-bottom: 6px;">Question Part</span>
-                <input id="ppQuestionInput" type="text" placeholder="e.g. 3(b)(ii)" value="1(a)" style="width: 100%; padding: 10px 12px; border-radius: 10px; border: 1.5px solid var(--line); background: var(--panel2); font-weight: 600;" />
+            <!-- SNAPSHOT MODE UPLOAD -->
+            <div id="ppSnapshotUpload" class="hidden" style="margin-bottom: 12px;">
+              <label class="fld" style="display: block;">
+                <span style="font-weight: 800; font-size: 13px; display: block; margin-bottom: 6px;">Upload Exam Screenshot</span>
+                <input type="file" id="ppImageFile" accept="image/*" style="width: 100%; padding: 8px; border-radius: 10px; border: 1.5px dashed var(--brand); background: rgba(11,191,191,0.05);" />
               </label>
             </div>
 
             <label class="fld" style="margin-bottom: 16px; display: block;">
-              <span style="font-weight: 800; font-size: 13px; display: block; margin-bottom: 6px;">Question Text / Topic (Optional but recommended)</span>
-              <textarea id="ppTopicInput" rows="3" placeholder="Paste the question prompt or main topic (e.g. Describe competitive enzyme inhibition kinetics)..." style="width: 100%; padding: 10px 12px; border-radius: 10px; border: 1.5px solid var(--line); background: var(--panel2); font-weight: 500; font-size: 13px;"></textarea>
+              <span style="font-weight: 800; font-size: 13px; display: block; margin-bottom: 6px;">Elaborate your doubt (Optional)</span>
+              <textarea id="ppDoubtInput" rows="2" placeholder="e.g. Why is the answer B and not C? Or explain the second mark point..." style="width: 100%; padding: 10px 12px; border-radius: 10px; border: 1.5px solid var(--line); background: var(--panel2); font-weight: 500; font-size: 13px;"></textarea>
             </label>
 
             <button id="solvePastPaperBtn" class="primary" style="width: 100%; padding: 12px;">🔍 Solve & Explain Question</button>
@@ -244,7 +256,7 @@
         <div class="planner-result">
           <div id="ppEmptyState" class="empty">
             <div class="empty-emoji">📄</div>
-            <p>Select a past paper question on the left to get a mark-scheme breakdown, teacher solutions, and examiner tips.</p>
+            <p>Select a question or upload a screenshot to get the mark-scheme breakdown, teacher solutions, and examiner tips.</p>
           </div>
           <div id="ppSolutionResult" class="hidden" style="display: flex; flex-direction: column; gap: 16px;"></div>
         </div>

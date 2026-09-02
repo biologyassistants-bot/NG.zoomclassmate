@@ -1979,13 +1979,9 @@ async def teacher_import_one(body: ImportOneBody):
 
 
 @app.post("/api/teacher/notes/upload")
-async def upload_note(passcode: str = Form(...), id: str = Form(...), file: UploadFile = File(...)):
+async def upload_note(passcode: str = Form(...), id: str = Form(""), file: UploadFile = File(...)):
     if not check_teacher(passcode):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
-        
-    rec = REC_BY_ID.get(id)
-    if not rec:
-        return JSONResponse({"error": "Recording not found"}, status_code=404)
         
     data = await file.read()
     
@@ -2007,14 +2003,24 @@ async def upload_note(passcode: str = Form(...), id: str = Form(...), file: Uplo
     lib.append(note)
     save_notes_library(lib)
     
-    rec.setdefault("note_ids", []).append(nid)
-    save_recordings(RECORDINGS)
-    
+    # If uploaded from the Recordings tab, attach it to the recording
+    if id:
+        rec = REC_BY_ID.get(id)
+        if rec:
+            rec.setdefault("note_ids", []).append(nid)
+            save_recordings(RECORDINGS)
+            current_notes = [n for n in [note_by_id(x, lib) for x in rec["note_ids"]] if n]
+            return {
+                "ok": True, 
+                "recording": {
+                    "notes": [{"id": n["id"], "filename": n["filename"], "chars": n.get("chars", 0)} for n in current_notes]
+                }
+            }
+            
+    # If uploaded from Past Papers tab, just return the note success
     return {
         "ok": True, 
-        "recording": {
-            "notes": [{"id": nid, "filename": note["filename"], "chars": note["chars"]}]
-        }
+        "note": {"id": nid, "filename": note["filename"], "chars": note["chars"]}
     }
 
 

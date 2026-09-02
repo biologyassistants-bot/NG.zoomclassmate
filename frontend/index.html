@@ -65,6 +65,7 @@
       <div class="who">
         <button id="tabStudentDash" class="tab active">Dashboard</button>
         <button id="tabStudentTutor" class="tab">AI Tutor</button>
+        <button id="tabStudentSolver" class="tab">Past Paper Solver</button>
         <button id="tabStudentPlanner" class="tab">Study Planner</button>
         <button id="tabStudentAlerts" class="tab">🔔 Alerts <span id="navAlertBadge" class="badge-count hidden" style="background: #e03131; color: #fff; font-size: 10px; padding: 2px 7px; border-radius: 10px; margin-left: 4px; font-weight: 800;">0</span></button>
         <button class="link" id="studentSignOut" style="margin-left: 12px;">Sign out</button>
@@ -122,7 +123,88 @@
       </main>
     </div>
 
-    <!-- Pane 3: Study Planner -->
+    <!-- Pane 3: Past Paper Solver -->
+    <div id="studentSolverPane" class="student-pane hidden" style="padding: 26px 30px; overflow-y: auto;">
+      <div class="pane-head" style="margin-bottom: 20px;">
+        <h2>📝 Past Paper Solver & Notes Linker</h2>
+        <p class="meta">Select an exam question to get exact mark-scheme criteria, teacher video solutions, and direct notes citations.</p>
+      </div>
+
+      <div class="planner-layout">
+        <!-- Solver Controls -->
+        <div class="planner-setup">
+          <label class="fld" style="margin-bottom: 12px; display: block;">
+            <span style="font-weight: 800; font-size: 13px; display: block; margin-bottom: 6px;">Course</span>
+            <select id="solverCourse" style="width: 100%; padding: 10px; border-radius: 10px; border: 1.5px solid var(--line); background: var(--panel2); font-weight: 600;"></select>
+          </label>
+
+          <div id="solverSyllabusBadge" style="margin-bottom: 12px; padding: 8px 12px; background: rgba(11,191,191,0.1); border-radius: 8px; border: 1px solid var(--brand); font-size: 12px; font-weight: 700; color: var(--brand-d);">
+            Syllabus: Auto-detecting...
+          </div>
+
+          <div style="display: flex; gap: 10px; margin-bottom: 12px;">
+            <label class="fld" style="flex: 1;">
+              <span style="font-weight: 800; font-size: 13px; display: block; margin-bottom: 6px;">Exam Year</span>
+              <select id="solverYear" style="width: 100%; padding: 10px; border-radius: 10px; border: 1.5px solid var(--line); background: var(--panel2); font-weight: 600;">
+                <option value="2024">2024</option>
+                <option value="2023" selected>2023</option>
+                <option value="2022">2022</option>
+                <option value="2021">2021</option>
+                <option value="2020">2020</option>
+              </select>
+            </label>
+            <label class="fld" style="flex: 1;">
+              <span style="font-weight: 800; font-size: 13px; display: block; margin-bottom: 6px;">Series</span>
+              <select id="solverSeries" style="width: 100%; padding: 10px; border-radius: 10px; border: 1.5px solid var(--line); background: var(--panel2); font-weight: 600;">
+                <option value="May/June" selected>May/June (Summer)</option>
+                <option value="Oct/Nov">Oct/Nov (Winter)</option>
+                <option value="Feb/March">Feb/March (Spring)</option>
+              </select>
+            </label>
+          </div>
+
+          <div style="display: flex; gap: 10px; margin-bottom: 12px;">
+            <label class="fld" style="flex: 1;">
+              <span style="font-weight: 800; font-size: 13px; display: block; margin-bottom: 6px;">Paper / Variant</span>
+              <input id="solverPaper" type="text" placeholder="e.g. Paper 21" value="Paper 21" style="width: 100%; padding: 10px; border-radius: 10px; border: 1.5px solid var(--line); background: var(--panel2); font-weight: 600;" />
+            </label>
+            <label class="fld" style="flex: 1;">
+              <span style="font-weight: 800; font-size: 13px; display: block; margin-bottom: 6px;">Question No.</span>
+              <input id="solverQuestion" type="text" placeholder="e.g. Q3(b)" value="Q3(b)" style="width: 100%; padding: 10px; border-radius: 10px; border: 1.5px solid var(--line); background: var(--panel2); font-weight: 600;" />
+            </label>
+          </div>
+
+          <label class="fld" style="margin-bottom: 16px; display: block;">
+            <span style="font-weight: 800; font-size: 13px; display: block; margin-bottom: 6px;">Question Topic or Text (Optional)</span>
+            <textarea id="solverText" rows="3" placeholder="Paste question text or core keywords here (e.g. 'Explain how competitive inhibitors affect the rate of enzyme reaction')..." style="width: 100%; padding: 10px; border-radius: 10px; border: 1.5px solid var(--line); background: var(--panel2); font-family: inherit; font-size: 13px;"></textarea>
+          </label>
+
+          <button id="solvePaperBtn" class="primary" style="width: 100%; padding: 12px;">🔍 Solve & Link to Notes</button>
+        </div>
+
+        <!-- Solver Results Display -->
+        <div class="planner-result">
+          <div id="solverEmptyState" class="empty">
+            <div class="empty-emoji">📄</div>
+            <h3>No question selected yet</h3>
+            <p class="meta">Choose an exam paper and question on the left to view official mark scheme criteria, lesson notes, and traps.</p>
+          </div>
+
+          <div id="solverResult" class="hidden" style="display: flex; flex-direction: column; gap: 16px;">
+            <!-- Teacher Custom Solution Banner (Injected if available) -->
+            <div id="teacherAssetCard" class="hidden" style="background: rgba(11,191,191,0.08); border: 2px solid var(--brand); border-radius: 14px; padding: 18px;">
+              <h3 style="font-size: 15px; font-weight: 800; margin-bottom: 8px; color: var(--brand-d);">👨🏫 Teacher Solution & Walkthrough</h3>
+              <div id="teacherAssetContent"></div>
+            </div>
+
+            <!-- 3-Section Breakdown Display -->
+            <div id="solverSectionsContent"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Pane 4: Study Planner -->
     <div id="studentPlannerPane" class="student-pane hidden" style="padding: 26px 30px; overflow-y: auto;">
       <div class="pane-head" style="margin-bottom: 20px;">
         <h2>📅 Your Study Plan</h2>
@@ -130,7 +212,6 @@
       </div>
 
       <div class="planner-layout">
-        <!-- Setup Sidebar -->
         <div class="planner-setup">
           <div id="planSetup">
             <label class="fld" style="margin-bottom: 12px; display: block;">
@@ -168,7 +249,6 @@
           </div>
         </div>
 
-        <!-- Result Workspace -->
         <div class="planner-result">
           <div id="planEmptyState" class="empty">
             <div class="empty-emoji">🗓️</div>
@@ -179,7 +259,7 @@
       </div>
     </div>
 
-    <!-- Pane 4: Alerts & Reminders -->
+    <!-- Pane 5: Alerts & Reminders -->
     <div id="studentAlertsPane" class="student-pane hidden" style="padding: 26px 30px; overflow-y: auto;">
       <div class="pane-head" style="margin-bottom: 20px;">
         <h2>🔔 Alerts & Study Reminders</h2>
@@ -197,6 +277,7 @@
       <div class="who">
         <button id="tabRecordings" class="tab active">Recordings</button>
         <button id="tabStudents" class="tab">Students</button>
+        <button id="tabTeacherPapers" class="tab">Past Paper Hub</button>
         <button id="tabQuestions" class="tab">Student questions</button>
         <button id="tabAnalytics" class="tab">Analytics</button>
         <button id="tabSettings" class="tab">Settings</button>
@@ -280,6 +361,52 @@
       </div>
 
       <div id="studentList" class="student-list"></div>
+    </div>
+
+    <!-- Teacher Past Paper Hub -->
+    <div id="teacherPastPapers" class="teacher-pane hidden">
+      <div class="pane-head">
+        <h2>Past Paper Hub Configuration</h2>
+        <p class="meta">Set exam boards and syllabus codes for each course, and attach model solution videos or documents to specific questions.</p>
+      </div>
+
+      <div class="setting-card" style="margin-bottom: 20px;">
+        <h3>1. Course Syllabus Mapping</h3>
+        <p class="meta" style="margin-bottom: 12px;">Assign an exam board and specification code to each course so the AI uses the exact official mark scheme rubric.</p>
+        <div style="display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 12px;">
+          <select id="tSyllabusCourse" style="padding: 10px; border-radius: 8px; border: 1.5px solid var(--line);"></select>
+          <select id="tSyllabusBoard" style="padding: 10px; border-radius: 8px; border: 1.5px solid var(--line);">
+            <option value="Cambridge International (CAIE)">Cambridge International (CAIE)</option>
+            <option value="Pearson Edexcel">Pearson Edexcel</option>
+            <option value="AQA">AQA</option>
+            <option value="OCR">OCR</option>
+          </select>
+          <input id="tSyllabusCode" type="text" placeholder="Syllabus Code (e.g. 9700, 0610, WBI11)" style="padding: 10px; border-radius: 8px; border: 1.5px solid var(--line);" />
+          <button id="saveSyllabusBtn" class="primary">Save Course Syllabus</button>
+        </div>
+        <div id="tSyllabusList" style="display: flex; flex-direction: column; gap: 6px; margin-top: 8px;"></div>
+      </div>
+
+      <div class="setting-card">
+        <h3>2. Question Solutions & Video Attachments</h3>
+        <p class="meta" style="margin-bottom: 12px;">Attach a video explanation URL or link an existing class note as a model answer for a specific past paper question.</p>
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; margin-bottom: 10px;">
+          <input id="tSolYear" type="text" placeholder="Year (e.g. 2023)" />
+          <select id="tSolSeries">
+            <option value="May/June">May/June</option>
+            <option value="Oct/Nov">Oct/Nov</option>
+            <option value="Feb/March">Feb/March</option>
+          </select>
+          <input id="tSolPaper" type="text" placeholder="Paper (e.g. Paper 21)" />
+          <input id="tSolQuestion" type="text" placeholder="Question (e.g. Q3(b))" />
+        </div>
+        <div style="display: flex; flex-direction: column; gap: 10px; margin-bottom: 12px;">
+          <input id="tSolVideo" type="text" placeholder="Video Solution URL (YouTube, Zoom cloud link, Loom, etc.)" />
+          <input id="tSolTip" type="text" placeholder="Teacher Examiner Tip (e.g. 'Must state shape of active site changes, do not write active site denatures')" />
+        </div>
+        <button id="saveQuestionSolutionBtn" class="primary">+ Attach Solution Asset</button>
+        <div id="tQuestionSolutionsList" style="margin-top: 18px; display: flex; flex-direction: column; gap: 8px;"></div>
+      </div>
     </div>
 
     <div id="teacherQuestions" class="teacher-pane hidden">
@@ -402,7 +529,6 @@
         <button id="genFreshCardsBtn" class="ghost-sm" style="font-size: 11.5px; padding: 4px 10px;">✨ Generate New Cards</button>
       </div>
       <div id="flashcardBody" style="padding: 18px 20px; min-height: 190px; display: flex; align-items: center; justify-content: center;"></div>
-      <!-- Rating options for Spaced Repetition -->
       <div id="srsRatingControls" class="modal-foot hidden" style="justify-content: center; gap: 8px; flex-wrap: wrap;">
         <button id="srsAgainBtn" class="ghost-sm danger-btn" style="flex: 1; padding: 8px 4px; font-weight: 800;">🔴 Again (1d)</button>
         <button id="srsHardBtn" class="ghost-sm" style="flex: 1; padding: 8px 4px; font-weight: 800; border-color: #f59f00; color: #f59f00;">🟡 Hard (2d)</button>

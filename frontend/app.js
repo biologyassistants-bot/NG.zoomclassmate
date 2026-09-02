@@ -2073,7 +2073,8 @@ if(el("importOneBtn")) {
 async function loadTeacherPastPaperHub() {
   const courseSel = el("tppCourseSelect");
   const tqCourseSel = el("tqCourseSelect");
-  const noteLibSel = el("tqNoteLibSelect");
+  const ansDocSel = el("tqAnsweredDocSelect");
+  const extraNoteSel = el("tqExtraNoteSelect");
 
   try {
     const res = await fetch(`${API}/api/teacher/pastpaper/config`, {
@@ -2084,29 +2085,20 @@ async function loadTeacherPastPaperHub() {
 
     if (courseSel) {
       courseSel.innerHTML = '<option value="">Select course...</option>';
-      (data.courses || []).forEach(c => {
-        const opt = document.createElement("option");
-        opt.value = c; opt.textContent = c;
-        courseSel.appendChild(opt);
-      });
+      (data.courses || []).forEach(c => { courseSel.appendChild(new Option(c, c)); });
     }
 
     if (tqCourseSel) {
       tqCourseSel.innerHTML = '<option value="">Select course...</option>';
-      (data.courses || []).forEach(c => {
-        const opt = document.createElement("option");
-        opt.value = c; opt.textContent = c;
-        tqCourseSel.appendChild(opt);
-      });
+      (data.courses || []).forEach(c => { tqCourseSel.appendChild(new Option(c, c)); });
     }
 
-    if (noteLibSel) {
-      noteLibSel.innerHTML = '<option value="">None</option>';
+    if (ansDocSel && extraNoteSel) {
+      ansDocSel.innerHTML = '<option value="">None</option>';
+      extraNoteSel.innerHTML = '<option value="">None</option>';
       (data.notes_library || []).forEach(n => {
-        const opt = document.createElement("option");
-        opt.value = n.id;
-        opt.textContent = n.filename;
-        noteLibSel.appendChild(opt);
+        ansDocSel.appendChild(new Option(n.filename, n.id));
+        extraNoteSel.appendChild(new Option(n.filename, n.id));
       });
     }
 

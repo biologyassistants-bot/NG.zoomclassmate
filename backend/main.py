@@ -2199,18 +2199,21 @@ def teacher_pp_config(body: TeacherAuth):
         
     courses = set()
     
-    # 1. Grab ONLY the "Unit / course" field from Recordings (the right-side box)
-    for r in RECORDINGS:
-        unit = r.get("unit")
-        if unit and unit.strip() and unit.strip().lower() != "unassigned":
-            courses.add(unit.strip())
-            
-    # 2. Grab courses assigned to Students in the Roster
-    for s in load_roster():
-        for c in s.get("courses", []):
-            if c and c.strip():
-                courses.add(c.strip())
+    try:
+        # 1. Grab ONLY the "Unit / course" field from Recordings (the right-side box)
+        for r in RECORDINGS:
+            unit = r.get("unit")
+            if unit and str(unit).strip() and str(unit).strip().lower() != "unassigned":
+                courses.add(str(unit).strip())
                 
+        # 2. Grab courses assigned to Students in the Roster
+        for s in load_roster():
+            for c in s.get("courses", []):
+                if c and str(c).strip():
+                    courses.add(str(c).strip())
+    except Exception as e:
+        print(f"Error fetching courses: {e}")
+        
     courses_list = sorted(list(courses))
     sols = load_past_paper_solutions()
     

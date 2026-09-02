@@ -1680,10 +1680,16 @@ def student_pastpaper_meta(body: StudentPPMetaBody):
     if not sess:
         return JSONResponse({"error": "Unauthorized"}, status_code=401)
         
-    my_courses = sess.get("courses", [])
-    syllabi = load_past_paper_config()
+    courses = set(sess.get("courses", []))
     
-    return {"courses": my_courses, "syllabi": syllabi}
+    # If the student has no specific courses assigned, let them see courses from the Unit field
+    if not courses:
+        for r in RECORDINGS:
+            unit = r.get("unit")
+            if unit and unit.strip() and unit.strip().lower() != "unassigned":
+                courses.add(unit.strip())
+                
+    return {"courses": sorted(list(courses)), "syllabi": load_past_paper_config()}
 
 
 class SolvePastPaperBody(BaseModel):
@@ -2193,13 +2199,13 @@ def teacher_pp_config(body: TeacherAuth):
         
     courses = set()
     
-    # 1. Grab courses from recordings (if you ever use the Unit box in the future)
+    # 1. Grab ONLY the "Unit / course" field from Recordings (the right-side box)
     for r in RECORDINGS:
-        u = r.get("unit")
-        if u and u.strip().lower() != "unassigned":
-            courses.add(u.strip())
+        unit = r.get("unit")
+        if unit and unit.strip() and unit.strip().lower() != "unassigned":
+            courses.add(unit.strip())
             
-    # 2. Grab courses already assigned to Students in the Roster (This populates the dropdown!)
+    # 2. Grab courses assigned to Students in the Roster
     for s in load_roster():
         for c in s.get("courses", []):
             if c and c.strip():

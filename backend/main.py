@@ -1593,170 +1593,122 @@ class StudyPlanBody(BaseModel):
     focus: str
     token: str | None = None
 
-
 @app.post("/api/student/plan")
 async def generate_study_plan(body: StudyPlanBody):
     if not valid_session(body.token):
-        return JSONResponse({"error": "Your session has expired. Please log in again."}, status_code=401)
+        return JSONResponse({"error": "Session expired"}, status_code=401)
     
-    if not body.recording_ids:
-        return JSONResponse({"error": "Please select at least one class to study."}, status_code=400)
-
-    num_classes = len(body.recording_ids)
-    total_available_mins = int(body.days * body.hours_per_day * 60)
-    
-    target_review_mins = max(20, min(60, int((total_available_mins * 0.6) / num_classes)))
-
-    selected_recs = []
-    for rid in body.recording_ids:
-        rec = REC_BY_ID.get(rid)
-        if rec:
-            title = rec.get('display_title') or rec.get('topic') or "Class"
-            unit = rec.get('unit') or "General"
-            selected_recs.append(f"- [{unit}] {title} (Target review: ~{target_review_mins} mins)")
-
-    if not selected_recs:
-        return JSONResponse({"error": "Selected recordings not found."}, status_code=404)
-
-    recs_text = "\n".join(selected_recs)
-    
+    recs_text = "\n".join([f"- [{REC_BY_ID[r].get('unit','General')}] {REC_BY_ID[r].get('display_title','Class')}" for r in body.recording_ids if r in REC_BY_ID])
     system = (
-        "You are an expert academic coach for Biology students. "
-        "Your task is to create a structured, day-by-day study schedule based on the student's constraints.\n\n"
-        "STRICT MANDATORY RULES:\n"
-        f"1. TOTAL COVERAGE (CRITICAL): You MUST schedule EVERY SINGLE ONE of the {num_classes} classes provided below across the {body.days} days. Do NOT skip or omit any class.\n"
-        f"2. TIME BUDGET: Each day has approximately {body.hours_per_day} hours ({int(body.hours_per_day * 60)} minutes). Distribute tasks evenly so daily task times sum to ~{int(body.hours_per_day * 60)} minutes.\n"
-        "3. FOCUS MODE SPECIALIZATION:\n"
-        "   - 'First-time learning': Dedicate more time to thorough topic review, process understanding, and notes consolidation.\n"
-        "   - 'Reviewing and memorizing definitions': Pair class reviews with active recall tasks, flashcards, and keyword drills.\n"
-        "   - 'Past paper and exam practice': Pair class reviews with exam question practice, command word checks, and mark scheme alignment.\n"
-        "4. Return STRICT JSON only.\n"
-        "Schema: {\"plan\":[{\"day\":int,\"quote\":str,\"tasks\":[{\"title\":str,\"description\":str,\"est_minutes\":int}]}]}"
+        f"Create a {body.days}-day revision timetable for {body.hours_per_day} hours/day covering ALL {len(body.recording_ids)} classes.\n"
+        "STRICT JSON: {\"plan\":[{\"day\":int,\"quote\":str,\"tasks\":[{\"title\":str,\"description\":str,\"est_minutes\":int}]}]}"
     )
-    
-    user = (
-        f"Generate a {body.days}-day plan for {body.hours_per_day} hours/day (Total budget: {total_available_mins} mins).\n"
-        f"Study Focus: {body.focus}\n"
-        f"Classes to cover ({num_classes} total - ALL MUST BE INCLUDED):\n{recs_text}"
-    )
+    user = f"Focus: {body.focus}\nClasses:\n{recs_text}"
 
     try:
-        raw = await llm(
-            [{"role": "system", "content": system}, {"role": "user", "content": user}],
-            max_tokens=3000,
-            temperature=0.3,
-        )
-    except (LLMConfigError, LLMUpstreamError) as e:
-        return JSONResponse({"error": str(e)}, status_code=503)
-
-    data = None
-    txt = (raw or "").strip()
-    if txt.startswith("```"):
-        txt = txt.strip("`")
-        if "\n" in txt:
-            txt = txt.split("\n", 1)[-1]
-            
-    try:
-        start = txt.find("{")
-        end = txt.rfind("}")
-        if start != -1 and end != -1:
-            data = json.loads(txt[start:end+1])
-    except Exception as e:
-        print(f"[Study Plan Error] Could not parse JSON: {e}")
-                
-    if not data or "plan" not in data:
-        return JSONResponse({"error": "Could not generate the plan. Please try again.", "raw": raw[:500]}, status_code=500)
-        
-    return data
-
+        raw = await llm([{"role": "system", "content": system}, {"role": "user", "content": user}], max_tokens=2500)
+        return json.loads(raw[raw.find("{"):raw.rfind("}")+1])
+    except Exception:
+        return JSONResponse({"error": "Plan generation failed."}, status_code=500)
 
 class StudentPPMetaBody(BaseModel):
     token: str | None = None
 
-
 @app.post("/api/student/pastpaper/meta")
 def student_pastpaper_meta(body: StudentPPMetaBody):
     sess = valid_session(body.token)
-    if not sess:
-        return JSONResponse({"error": "Unauthorized"}, status_code=401)
-        
-    courses = set(sess.get("courses", []))
+    if not sess: return JSONResponse({"error": "Unauthorized"}, status_code=401)
     
-    # If the student has no specific courses assigned, let them see courses from the Unit field
-    if not courses:
-        for r in RECORDINGS:
-            unit = r.get("unit")
-            if unit and unit.strip() and unit.strip().lower() != "unassigned":
-                courses.add(unit.strip())
-                
-    return {"courses": sorted(list(courses)), "syllabi": load_past_paper_config()}
-
-
-class SolvePastPaperBody(BaseModel):
-    token: str | None = None
-    course: str
-    year: int
-    series: str
-    paper: str
-    question: str
-    question_text: str | None = ""
-
+    my_courses = sess.get("courses", [])
+    if not my_courses:
+        my_courses = [r.get("unit") for r in RECORDINGS if r.get("unit") and r.get("unit").strip().lower() != "unassigned"]
+    
+    # Return the teacher's saved library structure for the filters
+    sols = load_past_paper_solutions()
+    library_meta = [{"course": v["course"], "year": str(v["year"]), "series": v["series"], "paper": v["paper"], "question": v["question"]} for v in sols.values()]
+    
+    return {"courses": sorted(list(set(my_courses))), "syllabi": load_past_paper_config(), "library": library_meta}
 
 @app.post("/api/student/pastpaper/solve")
-async def solve_past_paper(body: SolvePastPaperBody):
-    sess = valid_session(body.token)
-    if not sess:
-        return JSONResponse({"error": "Unauthorized"}, status_code=401)
+async def solve_past_paper(
+    token: str = Form(...),
+    mode: str = Form(...), # "library" or "snapshot"
+    course: str = Form(...),
+    year: str = Form(""),
+    series: str = Form(""),
+    paper: str = Form(""),
+    question: str = Form(""),
+    doubt: str = Form(""),
+    image: UploadFile = File(None)
+):
+    sess = valid_session(token)
+    if not sess: return JSONResponse({"error": "Unauthorized"}, status_code=401)
         
     syllabi = load_past_paper_config()
-    syllabus = syllabi.get(body.course, "Standard Cambridge / Edexcel Biology")
-    exam_ref = f"{body.year} {body.series} Paper {body.paper} Q{body.question}"
+    syllabus = syllabi.get(course, "Standard Cambridge / Edexcel Biology")
     
     sols = load_past_paper_solutions()
-    sol_key = f"{body.course.lower().strip()}:{body.year}:{body.series.lower().strip()}:{body.paper.lower().strip()}:{body.question.lower().strip()}"
+    sol_key = f"{course.lower().strip()}:{year.lower().strip()}:{series.lower().strip()}:{paper.lower().strip()}:{question.lower().strip()}"
     custom_asset = sols.get(sol_key)
 
-    query = f"{body.course} {body.question_text} {body.paper} {body.question}"
-    notes_ctx = retrieve_all_notes_context(query)
-
-    teacher_doc_ctx = ""
-    if custom_asset and custom_asset.get("note_id"):
-        n = note_by_id(custom_asset["note_id"])
-        if n:
-            teacher_doc_ctx = f"\n[TEACHER HANDWRITTEN/MODEL DOCUMENT]:\n" + "\n".join(n.get("chunks", [])[:5])
-
+    # Compile the prompt
+    exam_ref = f"{year} {series} P{paper} Q{question}" if mode == "library" else "Uploaded Screenshot"
+    
     system = (
-        f"You are an elite academic examiner and senior Biology tutor. "
-        f"The student is practicing a past-paper question for: '{body.course}' under syllabus: '{syllabus}'.\n"
-        f"Exam Reference: {exam_ref}.\n\n"
+        f"You are an elite academic examiner and senior Biology tutor. Course: '{course}', Syllabus: '{syllabus}'.\n"
         "STRICT STRUCTURED OUTPUT RULES:\n"
-        "Respond with EXACTLY these three sections:\n\n"
         "### 1. Mark Scheme Breakdown & Mandatory Keywords\n"
-        "- Detail the exact criteria required for full marks (e.g. [1], [2]).\n"
-        "- Put mandatory scientific keywords and exact syllabus phrasing in **bold**.\n"
-        "- Clearly specify **Allowed** alternative terms vs. **Rejected / Disallowed** colloquial wording.\n\n"
+        "- Detail exact criteria for marks. Bold mandatory keywords.\n"
         "### 2. Lesson & Notes Linkage\n"
-        "- Explain the underlying biological pathway or principle tested.\n"
-        "- Cite relevant parts from the attached teacher class notes when applicable.\n\n"
+        "- Explain the underlying biological pathway.\n"
         "### 3. Examiner Traps & Common Pitfalls\n"
-        "- Highlight common mistakes noted in official examiner reports (e.g. confusing terms, incomplete comparisons, vague answers).\n"
+        "- Highlight common student mistakes."
     )
 
-    user = (
-        f"Question Reference: {exam_ref}\n"
-        f"Question Details/Prompt: {body.question_text or 'Solve question ' + body.question}\n\n"
-        f"Attached Teacher Syllabus Notes:\n{notes_ctx}\n"
-        f"{teacher_doc_ctx}"
-    )
+    user_text = f"Exam Ref: {exam_ref}\nStudent Doubt: {doubt or 'Please break this down.'}\n\n"
+    
+    if mode == "library" and custom_asset:
+        user_text += f"OFFICIAL QUESTION TEXT:\n{custom_asset.get('qp_text', '')}\n\n"
+        user_text += f"OFFICIAL MARK SCHEME:\n{custom_asset.get('ms_text', '')}\n\n"
+        
+        # Pull text from answered doc & extra notes if attached
+        if custom_asset.get("answered_doc_id"):
+            n = note_by_id(custom_asset["answered_doc_id"])
+            if n: user_text += "[MODEL ANSWER DOC]:\n" + "\n".join(n.get("chunks", [])[:4]) + "\n\n"
+        if custom_asset.get("extra_note_id"):
+            n = note_by_id(custom_asset["extra_note_id"])
+            if n: user_text += "[EXTRA TEACHER NOTES]:\n" + "\n".join(n.get("chunks", [])[:4]) + "\n\n"
+
+    # Multimodal LLM Payload construction
+    content = [{"type": "text", "text": user_text}]
+    
+    if mode == "snapshot" and image:
+        img_bytes = await image.read()
+        b64_img = base64.b64encode(img_bytes).decode('utf-8')
+        mime_type = image.content_type or "image/jpeg"
+        content.append({
+            "type": "image_url",
+            "image_url": {"url": f"data:{mime_type};base64,{b64_img}"}
+        })
+
+    messages = [
+        {"role": "system", "content": system},
+        {"role": "user", "content": content}
+    ]
 
     try:
-        explanation = await llm(
-            [{"role": "system", "content": system}, {"role": "user", "content": user}],
-            max_tokens=1800,
-            temperature=0.2
-        )
-    except (LLMConfigError, LLMUpstreamError) as e:
-        return JSONResponse({"error": str(e)}, status_code=503)
+        # Pass raw messages list bypassing standard text wrapper
+        import httpx
+        async with httpx.AsyncClient(timeout=90.0) as client:
+            resp = await client.post(
+                f"{OPENAI_BASE_URL}/chat/completions",
+                headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
+                json={"model": OPENAI_MODEL, "messages": messages, "max_tokens": 1500, "temperature": 0.2}
+            )
+            resp.raise_for_status()
+            explanation = resp.json()["choices"][0]["message"]["content"]
+    except Exception as e:
+        return JSONResponse({"error": f"AI Error: {e}"}, status_code=503)
 
     return {
         "ok": True,
@@ -2245,36 +2197,31 @@ def teacher_pp_save_syllabus(body: SavePPSyllabusBody):
 class SavePPSolutionBody(BaseModel):
     passcode: str
     course: str
-    year: int
+    year: str
     series: str
     paper: str
     question: str
+    qp_text: str | None = ""
+    ms_text: str | None = ""
     video_url: str | None = ""
-    note_id: str | None = ""
-    teacher_tip: str | None = ""
-
+    answered_doc_id: str | None = ""
+    extra_note_id: str | None = ""
 
 @app.post("/api/teacher/pastpaper/solutions/save")
 def teacher_pp_save_solution(body: SavePPSolutionBody):
-    if not check_teacher(body.passcode):
-        return JSONResponse({"error": "unauthorized"}, status_code=401)
-        
+    if not check_teacher(body.passcode): return JSONResponse({"error": "unauthorized"}, status_code=401)
     sols = load_past_paper_solutions()
-    key = f"{body.course.lower().strip()}:{body.year}:{body.series.lower().strip()}:{body.paper.lower().strip()}:{body.question.lower().strip()}"
-    n = note_by_id(body.note_id) if body.note_id else None
+    key = f"{body.course.lower().strip()}:{body.year.lower().strip()}:{body.series.lower().strip()}:{body.paper.lower().strip()}:{body.question.lower().strip()}"
     
+    n_ans = note_by_id(body.answered_doc_id) if body.answered_doc_id else None
+    n_ext = note_by_id(body.extra_note_id) if body.extra_note_id else None
+
     sols[key] = {
-        "course": body.course, 
-        "year": body.year, 
-        "series": body.series, 
-        "paper": body.paper, 
-        "question": body.question, 
-        "video_url": body.video_url, 
-        "note_id": body.note_id, 
-        "note_filename": n.get("filename", "") if n else "", 
-        "teacher_tip": body.teacher_tip
+        "course": body.course, "year": body.year, "series": body.series, "paper": body.paper, "question": body.question,
+        "qp_text": body.qp_text, "ms_text": body.ms_text, "video_url": body.video_url,
+        "answered_doc_id": body.answered_doc_id, "answered_doc_name": n_ans.get("filename", "") if n_ans else "",
+        "extra_note_id": body.extra_note_id, "extra_note_name": n_ext.get("filename", "") if n_ext else ""
     }
-    
     save_past_paper_solutions(sols)
     return {"ok": True}
 

@@ -10,22 +10,21 @@ import hmac
 import gc
 import asyncio
 from collections import Counter
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 from fastapi import FastAPI, UploadFile, File, Form, Request, Query, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, FileResponse
+from fastapi.responses import JSONResponse, FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 import secrets
 import bcrypt
 
-# Data location.
-#   * Default: the repo's bundled ./data folder.
-#   * On a host with a persistent disk (e.g. Render Starter + a mounted disk),
-#     set DATA_DIR=/var/data so recordings, roster, config, question log and the
-#     uploaded logo survive restarts and redeploys.
+# ==============================================================================
+# 1. DIRECTORY & PERSISTENCE SETUP
+# ==============================================================================
 BUNDLED_DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
 DATA_DIR = os.environ.get("DATA_DIR", "").strip() or BUNDLED_DATA_DIR
-
 
 def _clean_recordings_disk_file(file_path):
     """Streams through recordings.json line-by-line to strip out heavy float
@@ -125,32 +124,59 @@ CONFIG_PATH = os.path.join(DATA_DIR, "config.json")
 QLOG_PATH = os.path.join(DATA_DIR, "question_log.json")
 ROSTER_PATH = os.path.join(DATA_DIR, "roster.json")
 NOTES_LIB_PATH = os.path.join(DATA_DIR, "notes_library.json")
-# in-memory active student sessions: token -> {student_id, name, courses}
+PAST_PAPER_CONFIG_PATH = os.path.join(DATA_DIR, "past_paper_config.json")
+PAST_PAPER_SOLUTIONS_PATH = os.path.join(DATA_DIR, "past_paper_solutions.json")
+
+# In-memory active student sessions: token -> {student_id, name, courses}
 SESSIONS = {}
 
 # Clean heavy embeddings from persistent disk before loading into memory
 _clean_recordings_disk_file(DATA_PATH)
 
 
-# ---------- shared notes library ----------
-# Each note's text is stored ONCE here: {id, filename, chunks:[...], chars}.
-# A recording references shared notes by id via rec["note_ids"] = [id, ...].
+# ==============================================================================
+# 2. DATA LOADERS & SAVERS
+# ==============================================================================
+
+def load_past_paper_config():
+    if os.path.exists(PAST_PAPER_CONFIG_PATH):
+        try:
+            with open(PAST_PAPER_CONFIG_PATH, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            print(f"Error loading past paper config: {e}")
+    return {}
+
+def save_past_paper_config(cfg):
+    with open(PAST_PAPER_CONFIG_PATH, "w", encoding="utf-8") as f:
+        json.dump(cfg, f, ensure_ascii=False, indent=2)
+
+def load_past_paper_solutions():
+    if os.path.exists(PAST_PAPER_SOLUTIONS_PATH):
+        try:
+            with open(PAST_PAPER_SOLUTIONS_PATH, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            print(f"Error loading past paper solutions: {e}")
+    return {}
+
+def save_past_paper_solutions(sols):
+    with open(PAST_PAPER_SOLUTIONS_PATH, "w", encoding="utf-8") as f:
+        json.dump(sols, f, ensure_ascii=False, indent=2)
+
 def load_notes_library():
     if os.path.exists(NOTES_LIB_PATH):
         with open(NOTES_LIB_PATH) as f:
             return json.load(f)
     return []
 
-
 def save_notes_library(lib):
     with open(NOTES_LIB_PATH, "w") as f:
         json.dump(lib, f, ensure_ascii=False, indent=2)
 
-
 def note_by_id(note_id, lib=None):
     lib = lib if lib is not None else load_notes_library()
     return next((n for n in lib if n["id"] == note_id), None)
-
 
 def load_roster():
     if os.path.exists(ROSTER_PATH):
@@ -158,21 +184,17 @@ def load_roster():
             return json.load(f)
     return []
 
-
 def save_roster(roster):
     with open(ROSTER_PATH, "w") as f:
         json.dump(roster, f, ensure_ascii=False, indent=2)
 
-
 def gen_pin():
     return f"{secrets.randbelow(10000):04d}"
-
 
 def hash_pw(pw: str) -> str:
     # bcrypt only accepts up to 72 bytes; truncate defensively.
     pw_bytes = (pw or "").encode("utf-8")[:72]
     return bcrypt.hashpw(pw_bytes, bcrypt.gensalt()).decode("utf-8")
-
 
 def verify_pw(pw: str, hashed: str) -> bool:
     if not hashed:
@@ -183,10 +205,8 @@ def verify_pw(pw: str, hashed: str) -> bool:
     except Exception:
         return False
 
-
 # default teacher passcode; teacher can change it in the dashboard
 DEFAULT_PASSCODE = "teach123"
-
 
 def load_config():
     if os.path.exists(CONFIG_PATH):
@@ -197,11 +217,9 @@ def load_config():
         json.dump(cfg, f, ensure_ascii=False, indent=2)
     return cfg
 
-
 def save_config(cfg):
     with open(CONFIG_PATH, "w") as f:
         json.dump(cfg, f, ensure_ascii=False, indent=2)
-
 
 def load_qlog():
     if os.path.exists(QLOG_PATH):
@@ -209,11 +227,9 @@ def load_qlog():
             return json.load(f)
     return []
 
-
 def save_qlog(log):
     with open(QLOG_PATH, "w") as f:
         json.dump(log, f, ensure_ascii=False, indent=2)
-
 
 def save_recordings(recs):
     clean_recs = []
@@ -223,7 +239,6 @@ def save_recordings(recs):
         clean_recs.append(r_copy)
     with open(DATA_PATH, "w", encoding="utf-8") as f:
         json.dump(clean_recs, f, ensure_ascii=False, indent=2)
-
 
 def load_recordings():
     if os.path.exists(DATA_PATH):
@@ -258,9 +273,9 @@ app.add_middleware(
 )
 
 
-# ---------------------------------------------------------------------------
-# OpenAI key diagnostic endpoint
-# ---------------------------------------------------------------------------
+# ==============================================================================
+# 3. OPENAI DIAGNOSTICS & MIGRATION
+# ==============================================================================
 def _diag_mask(key: str) -> str:
     if not key:
         return ""
@@ -342,6 +357,7 @@ def _migrate_inline_notes_to_library():
     lib_ids = {n["id"] for n in lib}
     changed_lib = False
     changed_recs = False
+    
     for r in RECORDINGS:
         inline = r.get("notes")
         if inline:
@@ -360,6 +376,7 @@ def _migrate_inline_notes_to_library():
             changed_recs = True
         elif r.get("note_ids") is None:
             r["note_ids"] = []
+            
     if changed_lib:
         save_notes_library(lib)
     if changed_recs:
@@ -369,6 +386,9 @@ def _migrate_inline_notes_to_library():
 _migrate_inline_notes_to_library()
 
 
+# ==============================================================================
+# 4. LLM, EMBEDDINGS & TEXT UTILS
+# ==============================================================================
 def fmt_ts(t):
     """Format a transcript start_time (which may be 'HH:MM:SS' or seconds) as mm:ss / h:mm:ss."""
     if t is None:
@@ -395,7 +415,6 @@ def tokenize(text):
     return [w.lower() for w in _word_re.findall(text or "")]
 
 
-# ---------- semantic retrieval (OpenAI Embeddings) ----------
 async def get_embedding(text: str) -> list[float]:
     """Fetch a single embedding vector for the student's query."""
     import httpx
@@ -446,7 +465,7 @@ async def build_index_async(rec):
     return embeddings
 
 
-async def retrieve(rec, query, k=15, window=1):
+async def retrieve(rec, query, k=18, window=1):
     """Find the most relevant transcript segments using semantic similarity."""
     segs = rec.get("segments", [])
     if not segs: 
@@ -460,8 +479,8 @@ async def retrieve(rec, query, k=15, window=1):
     top = [i for i in ranked if scores[i] > 0.3][:k] 
     
     if not top:
-        step = max(1, len(segs) // 30)
-        top = list(range(0, len(segs), step))[:30]
+        step = max(1, len(segs) // 40)
+        top = list(range(0, len(segs), step))[:40]
         
     chosen = set()
     for i in top:
@@ -519,20 +538,25 @@ def retrieve_note_chunks(rec, query, k=4):
     notes = [note_by_id(nid, lib) for nid in (rec.get("note_ids") or [])]
     notes = [n for n in notes if n]
     entries = []
+    
     for note in notes:
         for ch in note.get("chunks", []):
             entries.append((note.get("filename") or "notes", ch))
+            
     if not entries:
         return []
+        
     docs = [tokenize(t) for (_, t) in entries]
     df = Counter()
     for d in docs:
         for w in set(d):
             df[w] += 1
+            
     N = len(docs) or 1
     idf = {w: math.log(1 + N / c) for w, c in df.items()}
     q = Counter(tokenize(query))
     scores = []
+    
     for d in docs:
         if not d:
             scores.append(0.0); continue
@@ -542,10 +566,13 @@ def retrieve_note_chunks(rec, query, k=4):
             if w in tf:
                 s += idf.get(w, 0.0) * (tf[w] / len(d)) * qc
         scores.append(s)
+        
     ranked = sorted(range(len(entries)), key=lambda i: scores[i], reverse=True)
     chosen = [i for i in ranked if scores[i] > 0][:k]
+    
     if not chosen:
         chosen = list(range(min(2, len(entries))))
+        
     return [{"note_title": entries[i][0], "text": entries[i][1]} for i in chosen]
 
 
@@ -564,8 +591,53 @@ def notes_context(rec, query, max_chars=8000):
     return "\n\n".join(out)
 
 
+def retrieve_all_notes_context(query, max_chars=8000):
+    """Global notes retrieval for Past Paper Solver."""
+    lib = load_notes_library()
+    entries = []
+    for note in lib:
+        for ch in note.get("chunks", []):
+            entries.append((note.get("filename") or "notes", ch))
+            
+    if not entries:
+        return ""
+        
+    docs = [tokenize(t) for (_, t) in entries]
+    df = Counter()
+    for d in docs:
+        for w in set(d):
+            df[w] += 1
+            
+    N = len(docs) or 1
+    idf = {w: math.log(1 + N / c) for w, c in df.items()}
+    q = Counter(tokenize(query))
+    scores = []
+    
+    for d in docs:
+        if not d:
+            scores.append(0.0); continue
+        tf = Counter(d)
+        s = 0.0
+        for w, qc in q.items():
+            if w in tf:
+                s += idf.get(w, 0.0) * (tf[w] / len(d)) * qc
+        scores.append(s)
+        
+    ranked = sorted(range(len(entries)), key=lambda i: scores[i], reverse=True)
+    chosen = [i for i in ranked if scores[i] > 0][:5]
+    
+    out, total = [], 0
+    for i in chosen:
+        b = f'[NOTE: {entries[i][0]}] {entries[i][1].strip()}'
+        if total + len(b) > max_chars:
+            break
+        out.append(b); total += len(b)
+        
+    return "\n\n".join(out)
+
+
 def context_from_indices(rec, indices, max_chars=18000):
-    """Optimized context length (18k chars) to prevent 429 Token-Per-Minute rate limits."""
+    """Limits transcript slices to 18k characters to prevent 429 Token Rate Limits."""
     segs = rec.get("segments", [])
     lines = []
     total = 0
@@ -582,7 +654,7 @@ def context_from_indices(rec, indices, max_chars=18000):
     return "\n".join(lines)
 
 
-# ---------- LLM helper with Exponential Backoff Retries on 429 ----------
+# ---------- LLM helper ----------
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "").strip()
 OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o-mini").strip()
 OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1").strip()
@@ -591,12 +663,12 @@ OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
 class LLMConfigError(Exception):
     pass
 
-
 class LLMUpstreamError(Exception):
     pass
 
 
 async def llm(messages, max_tokens=1200, temperature=0.1, max_retries=4):
+    """Executes ChatCompletion calls with robust exponential backoff for 429 limits."""
     if OPENAI_API_KEY:
         import httpx
         timeout = httpx.Timeout(90.0, connect=10.0)
@@ -709,6 +781,7 @@ async def transcribe_audio_bytes(audio_bytes, filename="audio.m4a", time_offset=
     if not english_only:
         data["language"] = os.environ.get("TRANSCRIBE_LANGUAGE", "").strip() or None
         data = {k: v for k, v in data.items() if v is not None}
+        
     async with httpx.AsyncClient(timeout=timeout) as client:
         resp = await client.post(
             f"{OPENAI_BASE_URL}{endpoint}",
@@ -719,6 +792,7 @@ async def transcribe_audio_bytes(audio_bytes, filename="audio.m4a", time_offset=
     resp.raise_for_status()
     payload = resp.json()
     segments = []
+    
     for seg in payload.get("segments", []) or []:
         text = (seg.get("text") or "").strip()
         if not text:
@@ -728,6 +802,7 @@ async def transcribe_audio_bytes(audio_bytes, filename="audio.m4a", time_offset=
             "speaker": "",
             "text": text,
         })
+        
     if not segments:
         whole = (payload.get("text") or "").strip()
         if whole:
@@ -736,72 +811,8 @@ async def transcribe_audio_bytes(audio_bytes, filename="audio.m4a", time_offset=
                 "speaker": "",
                 "text": whole,
             })
+            
     return segments
-
-
-async def fetch_zoom_recording_files(meeting_id):
-    import httpx
-    from urllib.parse import quote
-    token = await zoom_token()
-    mid = str(meeting_id)
-    needs_double = mid.startswith("/") or "//" in mid or "/" in mid
-    path_id = quote(quote(mid, safe=""), safe="") if needs_double else quote(mid, safe="")
-    async with httpx.AsyncClient(timeout=60) as client:
-        r = await client.get(
-            f"https://api.zoom.us/v2/meetings/{path_id}/recordings",
-            headers={"Authorization": f"Bearer {token}"},
-        )
-        if r.status_code != 200:
-            raise LLMUpstreamError(f"Zoom recordings lookup returned {r.status_code}: {r.text[:300]}")
-        return r.json().get("recording_files", []) or []
-
-
-async def fetch_zoom_recording_object(meeting_id):
-    import httpx
-    from urllib.parse import quote
-    token = await zoom_token()
-    mid = str(meeting_id)
-    needs_double = mid.startswith("/") or "//" in mid or "/" in mid
-    path_id = quote(quote(mid, safe=""), safe="") if needs_double else quote(mid, safe="")
-    async with httpx.AsyncClient(timeout=60) as client:
-        r = await client.get(
-            f"https://api.zoom.us/v2/meetings/{path_id}/recordings",
-            headers={"Authorization": f"Bearer {token}"},
-        )
-        if r.status_code == 404:
-            raise LLMUpstreamError("No cloud recording found for that meeting ID.")
-        if r.status_code != 200:
-            raise LLMUpstreamError(f"Zoom lookup returned {r.status_code}: {r.text[:300]}")
-        return r.json()
-
-
-def _parse_meeting_id(raw: str) -> str:
-    import re as _re
-    from urllib.parse import urlparse, parse_qs, unquote
-    s = (raw or "").strip()
-    if not s:
-        return ""
-    if s.startswith("http"):
-        u = urlparse(s)
-        qs = parse_qs(u.query)
-        for key in ("meeting_id", "meetingId", "confId"):
-            if key in qs and qs[key]:
-                return unquote(qs[key][0])
-        m = _re.search(r"/j/(\d{9,})", u.path)
-        if m:
-            return m.group(1)
-        m = _re.search(r"(\d{9,})", u.path)
-        if m:
-            return m.group(1)
-        return ""
-    return s.replace(" ", "")
-
-
-def _pick_audio_file(files):
-    audio = next((f for f in files if (f.get("file_type") or "").upper() == "M4A"), None)
-    if audio:
-        return audio
-    return next((f for f in files if (f.get("file_type") or "").upper() == "MP4"), None)
 
 
 async def _transcribe_large_audio(src_path):
@@ -851,14 +862,17 @@ async def transcribe_recording_by_id(meeting_id):
     rec = REC_BY_ID.get(meeting_id)
     if not rec:
         raise LLMUpstreamError("Recording not found.")
+        
     files = await fetch_zoom_recording_files(meeting_id)
     audio = _pick_audio_file(files)
     if not audio:
         raise LLMUpstreamError("No audio/video file is available for this recording in Zoom's cloud.")
+        
     import httpx
     token = await zoom_token()
     url = audio.get("download_url")
     ext = (audio.get("file_extension") or audio.get("file_type") or "m4a").lower()
+    
     async with httpx.AsyncClient(timeout=httpx.Timeout(600.0, connect=15.0), follow_redirects=True) as client:
         r = await client.get(url, headers={"Authorization": f"Bearer {token}"})
         if r.status_code != 200:
@@ -878,16 +892,20 @@ async def transcribe_recording_by_id(meeting_id):
 
     rec["segments"] = segments
     save_recordings(RECORDINGS)
+    
     try:
         audio_bytes = None
     except Exception:
         pass
+        
     rec.pop("embeddings", None)
     gc.collect()
     return len(segments)
 
 
-# ---------- Zoom integration ----------
+# ==============================================================================
+# 5. ZOOM INTEGRATION & WEBHOOK HANDLERS
+# ==============================================================================
 ZOOM_ACCOUNT_ID     = os.environ.get("ZOOM_ACCOUNT_ID", "").strip()
 ZOOM_CLIENT_ID      = os.environ.get("ZOOM_CLIENT_ID", "").strip()
 ZOOM_CLIENT_SECRET  = os.environ.get("ZOOM_CLIENT_SECRET", "").strip()
@@ -898,8 +916,10 @@ _zoom_tok = {"token": None, "exp": 0}
 async def zoom_token():
     if _zoom_tok["token"] and _zoom_tok["exp"] > time.time():
         return _zoom_tok["token"]
+        
     creds = base64.b64encode(f"{ZOOM_CLIENT_ID}:{ZOOM_CLIENT_SECRET}".encode()).decode()
     import httpx
+    
     async with httpx.AsyncClient(timeout=30) as client:
         r = await client.post(
             "https://zoom.us/oauth/token",
@@ -908,6 +928,7 @@ async def zoom_token():
         )
         r.raise_for_status()
         d = r.json()
+        
     _zoom_tok["token"] = d["access_token"]
     _zoom_tok["exp"] = time.time() + d.get("expires_in", 3600) - 60
     return _zoom_tok["token"]
@@ -918,39 +939,48 @@ async def _download_zoom_text(url: str, token: str) -> str:
     sep = "&" if "?" in url else "?"
     auth_url = f"{url}{sep}access_token={token}"
     import httpx
+    
     headers = {"Authorization": f"Bearer {token}"}
+    
     async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
+        # First attempt: Pass token in URL query parameter
         r = await client.get(auth_url, headers=headers)
         if r.status_code == 200:
             text = r.text.strip()
             if "WEBVTT" in text or "-->" in text:
                 return text
+                
+        # Second attempt: Standard header fallback
         r2 = await client.get(url, headers=headers)
         if r2.status_code == 200:
             text2 = r2.text.strip()
             if "WEBVTT" in text2 or "-->" in text2:
                 return text2
+                
     return ""
 
 
 def parse_vtt(text):
     segments = []
     blocks = re.split(r"\n\s*\n", text.strip())
+    
     for b in blocks:
         lines = [l for l in b.splitlines() if l.strip()]
-        if not lines:
-            continue
         tline_i = next((i for i, l in enumerate(lines) if "-->" in l), None)
-        if tline_i is None:
-            continue
-        start = lines[tline_i].split("-->")[0].strip().split(".")[0]
-        body = " ".join(lines[tline_i + 1:]).strip()
-        speaker = ""
-        m = re.match(r"^([^:]{1,40}):\s*(.*)$", body)
-        if m:
-            speaker, body = m.group(1).strip(), m.group(2).strip()
-        if body:
-            segments.append({"start": start, "speaker": speaker, "text": body})
+        
+        if tline_i is not None:
+            start = lines[tline_i].split("-->")[0].strip().split(".")[0]
+            body = " ".join(lines[tline_i + 1:]).strip()
+            speaker = ""
+            m = re.match(r"^([^:]{1,40}):\s*(.*)$", body)
+            
+            if m:
+                speaker = m.group(1).strip()
+                body = m.group(2).strip()
+                
+            if body:
+                segments.append({"start": start, "speaker": speaker, "text": body})
+                
     return segments
 
 
@@ -965,14 +995,88 @@ def _detect_source(obj):
     return "meeting"
 
 
+async def fetch_zoom_recording_files(meeting_id):
+    import httpx
+    from urllib.parse import quote
+    
+    token = await zoom_token()
+    mid = str(meeting_id)
+    needs_double = mid.startswith("/") or "//" in mid or "/" in mid
+    path_id = quote(quote(mid, safe=""), safe="") if needs_double else quote(mid, safe="")
+    
+    async with httpx.AsyncClient(timeout=60) as client:
+        r = await client.get(
+            f"https://api.zoom.us/v2/meetings/{path_id}/recordings",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        if r.status_code != 200:
+            raise LLMUpstreamError(f"Zoom recordings lookup returned {r.status_code}: {r.text[:300]}")
+        return r.json().get("recording_files", []) or []
+
+
+async def fetch_zoom_recording_object(meeting_id):
+    import httpx
+    from urllib.parse import quote
+    
+    token = await zoom_token()
+    mid = str(meeting_id)
+    needs_double = mid.startswith("/") or "//" in mid or "/" in mid
+    path_id = quote(quote(mid, safe=""), safe="") if needs_double else quote(mid, safe="")
+    
+    async with httpx.AsyncClient(timeout=60) as client:
+        r = await client.get(
+            f"https://api.zoom.us/v2/meetings/{path_id}/recordings",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        if r.status_code == 404:
+            raise LLMUpstreamError("No cloud recording found for that meeting ID.")
+        if r.status_code != 200:
+            raise LLMUpstreamError(f"Zoom lookup returned {r.status_code}: {r.text[:300]}")
+        return r.json()
+
+
+def _parse_meeting_id(raw: str) -> str:
+    import re as _re
+    from urllib.parse import urlparse, parse_qs, unquote
+    
+    s = (raw or "").strip()
+    if not s:
+        return ""
+        
+    if s.startswith("http"):
+        u = urlparse(s)
+        qs = parse_qs(u.query)
+        for key in ("meeting_id", "meetingId", "confId"):
+            if key in qs and qs[key]:
+                return unquote(qs[key][0])
+        m = _re.search(r"/j/(\d{9,})", u.path)
+        if m:
+            return m.group(1)
+        m = _re.search(r"(\d{9,})", u.path)
+        if m:
+            return m.group(1)
+        return ""
+        
+    return s.replace(" ", "")
+
+
+def _pick_audio_file(files):
+    audio = next((f for f in files if (f.get("file_type") or "").upper() == "M4A"), None)
+    if audio:
+        return audio
+    return next((f for f in files if (f.get("file_type") or "").upper() == "MP4"), None)
+
+
 async def ingest_zoom_meeting(obj, allow_whisper_fallback=True):
     uuid = obj.get("uuid")
     mid = obj.get("id")
     meeting_id = str(uuid or mid or secrets.token_hex(6))
     numeric_id = str(mid) if mid else ""
     
+    # Check if we already have this recording in our list
     existing = REC_BY_ID.get(meeting_id) or (REC_BY_ID.get(numeric_id) if numeric_id else None)
     
+    # If the recording already exists AND has transcripts, skip
     if existing and len(existing.get("segments", [])) > 0:
         return False
 
@@ -1004,6 +1108,7 @@ async def ingest_zoom_meeting(obj, allow_whisper_fallback=True):
         except Exception as e:
             print(f"[zoom] VTT transcript download failed for {meeting_id}: {e}")
 
+    # If recording already exists without transcript, update it when transcript arrives
     if existing:
         if segments:
             existing["segments"] = segments
@@ -1027,6 +1132,7 @@ async def ingest_zoom_meeting(obj, allow_whisper_fallback=True):
                     segments = await transcribe_audio_bytes(ar.content, filename=f"{meeting_id}.{ext}")
             except Exception as e:
                 print(f"[ingest] whisper fallback failed for {meeting_id}: {e}")
+
     new_rec = {
         "id": meeting_id,
         "topic": topic,
@@ -1039,16 +1145,73 @@ async def ingest_zoom_meeting(obj, allow_whisper_fallback=True):
         "segments": segments,
         "note_ids": []
     }
+    
     RECORDINGS.append(new_rec)
     REC_BY_ID[meeting_id] = new_rec
     if numeric_id:
         REC_BY_ID[numeric_id] = new_rec
+        
     save_recordings(RECORDINGS)
     print(f"[zoom] Successfully imported '{topic}' with {len(segments)} lines.")
     return True
 
 
-# ---------- API Endpoints ----------
+@app.post("/api/zoom/webhook")
+async def zoom_webhook(request: Request, background_tasks: BackgroundTasks):
+    body = await request.body()
+    payload = await request.json()
+    
+    if payload.get("event") == "endpoint.url_validation":
+        plain = payload["payload"]["plainToken"]
+        sig = hmac.new(ZOOM_WEBHOOK_SECRET.encode(), plain.encode(), hashlib.sha256).hexdigest()
+        return {"plainToken": plain, "encryptedToken": sig}
+        
+    ts = request.headers.get("x-zm-request-timestamp", "")
+    got = request.headers.get("x-zm-signature", "")
+    message = f"v0:{ts}:{body.decode('utf-8')}".encode()
+    expected = "v0=" + hmac.new(ZOOM_WEBHOOK_SECRET.encode(), message, hashlib.sha256).hexdigest()
+    
+    if not hmac.compare_digest(expected, got):
+        return JSONResponse({"error": "bad signature"}, status_code=401)
+        
+    event = payload.get("event", "")
+    print(f"[zoom webhook] received event: {event}")
+    
+    recording_events = {
+        "recording.completed",
+        "recording.transcript_completed",
+        "webinar.recording_completed",
+        "webinar.recording_transcript_completed",
+    }
+    
+    is_recording_event = (
+        event in recording_events
+        or ("recording" in event and ("completed" in event or "transcript" in event))
+    )
+    
+    if is_recording_event:
+        p_load = payload.get("payload", {})
+        obj = p_load.get("object", {}) or p_load.get("webinar", {})
+        
+        if not obj.get("id") and not obj.get("uuid"):
+            obj = p_load.get("object", {})
+            
+        if obj.get("id") or obj.get("uuid"):
+            background_tasks.add_task(ingest_zoom_meeting, obj)
+            print(f"[zoom webhook] queued background ingest for webinar/meeting: '{obj.get('topic')}'")
+        else:
+            print(f"[zoom webhook warning] could not extract meeting/webinar ID from payload: {payload}")
+        
+    return {"ok": True}
+
+
+# ==============================================================================
+# 6. APP ENDPOINTS: STUDENT
+# ==============================================================================
+def valid_session(token: str):
+    return SESSIONS.get(token or "")
+
+
 def _card(r, include_hidden=False):
     return {
         "id": r["id"],
@@ -1066,7 +1229,6 @@ def _card(r, include_hidden=False):
         "notes_count": len(r.get("note_ids") or []),
         "notes": (_card_notes_meta(r) if include_hidden else None),
     }
-
 
 def _card_notes_meta(r):
     lib = load_notes_library()
@@ -1089,17 +1251,22 @@ def list_recordings(body: RecListBody):
     sess = valid_session(body.token)
     if not sess:
         return JSONResponse({"error": "Your session has expired. Please log in again."}, status_code=401)
+        
     my_courses = sess.get("courses", [])
+    
     def allowed(r):
         if not r.get("visible", True):
             return False
         if not my_courses:
             return False
         return (r.get("unit") or "Unassigned") in my_courses
+        
     def _date_key(r):
         return (r.get("date") or "9999-12-31 23:59:59")
+        
     allowed_recs = sorted([r for r in RECORDINGS if allowed(r)], key=_date_key)
     out = [_card(r) for r in allowed_recs]
+    
     units = []
     seen = set()
     for r in allowed_recs:
@@ -1107,67 +1274,8 @@ def list_recordings(body: RecListBody):
         if u not in seen:
             seen.add(u)
             units.append(u)
+            
     return {"recordings": out, "units": units}
-
-
-class LoginBody(BaseModel):
-    passcode: str
-
-
-def check_passcode(passcode: str) -> bool:
-    return passcode == load_config().get("passcode")
-
-
-@app.post("/api/teacher/login")
-def teacher_login(body: LoginBody):
-    if check_passcode(body.passcode):
-        return {"ok": True}
-    return JSONResponse({"ok": False, "error": "Wrong passcode"}, status_code=401)
-
-
-def _norm(s):
-    return (s or "").strip().lower()
-
-
-def normalize_courses(value):
-    if value is None:
-        return []
-    if isinstance(value, str):
-        parts = re.split(r"[;,]", value)
-    elif isinstance(value, (list, tuple)):
-        parts = []
-        for v in value:
-            if isinstance(v, str):
-                parts.extend(re.split(r"[;,]", v))
-            elif v is not None:
-                parts.append(str(v))
-    else:
-        return []
-    seen, out = set(), []
-    for p in parts:
-        p = (p or "").strip()
-        if p and p.lower() not in seen:
-            out.append(p); seen.add(p.lower())
-    return out
-
-
-def _repair_roster_courses():
-    try:
-        roster = load_roster()
-        changed = False
-        for s in roster:
-            fixed = normalize_courses(s.get("courses"))
-            if fixed != s.get("courses"):
-                s["courses"] = fixed
-                changed = True
-        if changed:
-            save_roster(roster)
-            print("[roster] normalized course lists on startup")
-    except Exception as e:
-        print(f"[roster] repair warning: {e}")
-
-
-_repair_roster_courses()
 
 
 class StudentLoginBody(BaseModel):
@@ -1178,26 +1286,26 @@ class StudentLoginBody(BaseModel):
 @app.post("/api/student/login")
 def student_login(body: StudentLoginBody):
     roster = load_roster()
+    
     for st in roster:
-        if _norm(st.get("email")) == _norm(body.email) and verify_pw(body.password, st.get("password_hash")):
-            token = secrets.token_urlsafe(24)
-            SESSIONS[token] = {
-                "student_id": st["id"],
-                "name": st.get("name") or st.get("email"),
-                "courses": normalize_courses(st.get("courses")),
-            }
-            return {"ok": True, "token": token, "name": SESSIONS[token]["name"]}
+        if (st.get("email") or "").strip().lower() == body.email.strip().lower():
+            if verify_pw(body.password, st.get("password_hash")):
+                token = secrets.token_urlsafe(24)
+                courses = [c.strip() for c in (st.get("courses") or []) if c.strip()]
+                
+                SESSIONS[token] = {
+                    "student_id": st["id"],
+                    "name": st.get("name") or st.get("email"),
+                    "courses": courses,
+                }
+                return {"ok": True, "token": token, "name": SESSIONS[token]["name"]}
+                
     return JSONResponse(
         {"ok": False, "error": "That email and password don't match our class roster. Check with your teacher."},
         status_code=401,
     )
 
 
-def valid_session(token: str):
-    return SESSIONS.get(token or "")
-
-
-# ---------- Cross-Device Sync Endpoints ----------
 class StudentSyncBody(BaseModel):
     token: str
     study_plan: list | None = None
@@ -1211,8 +1319,10 @@ def sync_student_data(body: StudentSyncBody):
     sess = valid_session(body.token)
     if not sess:
         return JSONResponse({"error": "Unauthorized"}, status_code=401)
+        
     roster = load_roster()
     student = next((s for s in roster if s["id"] == sess["student_id"]), None)
+    
     if student:
         if body.study_plan is not None:
             student["study_plan"] = body.study_plan
@@ -1223,6 +1333,7 @@ def sync_student_data(body: StudentSyncBody):
         if body.flashcard_deck is not None:
             student["flashcard_deck"] = body.flashcard_deck
         save_roster(roster)
+        
     return {"ok": True}
 
 
@@ -1231,10 +1342,12 @@ def get_student_profile(body: RecListBody):
     sess = valid_session(body.token)
     if not sess:
         return JSONResponse({"error": "Unauthorized"}, status_code=401)
+        
     roster = load_roster()
     student = next((s for s in roster if s["id"] == sess["student_id"]), None)
     if not student:
         return JSONResponse({"error": "Student not found"}, status_code=404)
+        
     return {
         "study_plan": student.get("study_plan"),
         "student_stats": student.get("student_stats"),
@@ -1243,461 +1356,9 @@ def get_student_profile(body: RecListBody):
     }
 
 
-# ---------- Teacher Roster Management ----------
-class RosterAuth(BaseModel):
-    passcode: str
-
-
-@app.post("/api/teacher/students")
-def list_students(body: RosterAuth):
-    if not check_passcode(body.passcode):
-        return JSONResponse({"error": "unauthorized"}, status_code=401)
-    safe = [{
-        "id": s["id"],
-        "name": s.get("name", ""),
-        "email": s.get("email", ""),
-        "courses": normalize_courses(s.get("courses")),
-        "has_password": bool(s.get("password_hash")),
-    } for s in load_roster()]
-    return {"students": safe}
-
-
-class AddStudentBody(BaseModel):
-    passcode: str
-    name: str
-    email: str | None = ""
-    password: str | None = ""
-    courses: str | None = ""
-
-
-@app.post("/api/teacher/students/add")
-def add_student(body: AddStudentBody):
-    if not check_passcode(body.passcode):
-        return JSONResponse({"error": "unauthorized"}, status_code=401)
-    name = body.name.strip()
-    email = (body.email or "").strip()
-    if not email:
-        return JSONResponse({"error": "Email required"}, status_code=400)
-    roster = load_roster()
-    courses = [c.strip() for c in (body.courses or "").split(";") if c.strip()]
-    existing = next((s for s in roster if _norm(s.get("email")) == _norm(email)), None)
-    if existing:
-        prev = normalize_courses(existing.get("courses"))
-        seen = {_norm(c) for c in prev}
-        merged = list(prev)
-        added_courses = []
-        for c in courses:
-            if _norm(c) not in seen:
-                merged.append(c); seen.add(_norm(c)); added_courses.append(c)
-        existing["courses"] = merged
-        if name and name != email.split("@")[0]:
-            existing["name"] = name
-        if (body.password or "").strip():
-            existing["password_hash"] = hash_pw(body.password)
-        save_roster(roster)
-        if added_courses:
-            msg = f"Added course(s) {', '.join(added_courses)} to existing student {existing.get('email')}."
-        else:
-            msg = f"{existing.get('email')} already had those course(s); nothing to add."
-        return {"ok": True, "merged": True, "message": msg, "student": {
-            "id": existing["id"], "name": existing.get("name"), "email": existing.get("email"),
-            "courses": existing.get("courses", []), "has_password": bool(existing.get("password_hash")),
-        }}
-    student = {
-        "id": secrets.token_hex(6),
-        "name": name or email.split("@")[0],
-        "email": email,
-        "courses": courses,
-        "password_hash": hash_pw(body.password) if (body.password or "").strip() else "",
-    }
-    roster.append(student)
-    save_roster(roster)
-    return {"ok": True, "merged": False, "student": {
-        "id": student["id"], "name": student["name"], "email": student["email"],
-        "courses": student["courses"], "has_password": bool(student["password_hash"]),
-    }}
-
-
-class RemoveStudentBody(BaseModel):
-    passcode: str
-    id: str
-
-
-@app.post("/api/teacher/students/remove")
-def remove_student(body: RemoveStudentBody):
-    if not check_passcode(body.passcode):
-        return JSONResponse({"error": "unauthorized"}, status_code=401)
-    roster = [s for s in load_roster() if s["id"] != body.id]
-    save_roster(roster)
-    for tok in [t for t, v in SESSIONS.items() if v["student_id"] == body.id]:
-        SESSIONS.pop(tok, None)
-    return {"ok": True}
-
-
-class ResetPasswordBody(BaseModel):
-    passcode: str
-    id: str
-    new_password: str | None = None
-
-
-def _gen_password(n=8):
-    alphabet = "abcdefghijkmnpqrstuvwxyz23456789"
-    return "".join(secrets.choice(alphabet) for _ in range(n))
-
-
-@app.post("/api/teacher/students/reset-password")
-def reset_student_password(body: ResetPasswordBody):
-    if not check_passcode(body.passcode):
-        return JSONResponse({"error": "unauthorized"}, status_code=401)
-    roster = load_roster()
-    student = next((s for s in roster if s["id"] == body.id), None)
-    if not student:
-        return JSONResponse({"error": "Student not found"}, status_code=404)
-    new_pw = (body.new_password or "").strip() or _gen_password()
-    student["password_hash"] = hash_pw(new_pw)
-    save_roster(roster)
-    for tok in [t for t, v in SESSIONS.items() if v["student_id"] == body.id]:
-        SESSIONS.pop(tok, None)
-    return {"ok": True, "email": student.get("email"), "new_password": new_pw}
-
-
-class UpdateStudentBody(BaseModel):
-    passcode: str
-    id: str
-    name: str | None = None
-    email: str | None = None
-    courses: list[str] | None = None
-    new_password: str | None = None
-
-
-@app.post("/api/teacher/students/update")
-def update_student(body: UpdateStudentBody):
-    if not check_passcode(body.passcode):
-        return JSONResponse({"error": "unauthorized"}, status_code=401)
-    roster = load_roster()
-    student = next((s for s in roster if s["id"] == body.id), None)
-    if not student:
-        return JSONResponse({"error": "Student not found"}, status_code=404)
-
-    if body.email is not None:
-        new_email = body.email.strip()
-        if not new_email:
-            return JSONResponse({"error": "Email can't be empty."}, status_code=400)
-        clash = any(_norm(s.get("email")) == _norm(new_email) and s["id"] != body.id for s in roster)
-        if clash:
-            return JSONResponse({"error": "Another student already uses that email."}, status_code=400)
-        student["email"] = new_email
-
-    if body.name is not None:
-        student["name"] = body.name.strip() or (student.get("email") or "").split("@")[0]
-
-    if body.courses is not None:
-        seen, cleaned = set(), []
-        for c in body.courses:
-            c = (c or "").strip()
-            if c and _norm(c) not in seen:
-                cleaned.append(c); seen.add(_norm(c))
-        student["courses"] = cleaned
-
-    pw_changed = False
-    if body.new_password is not None and body.new_password.strip():
-        student["password_hash"] = hash_pw(body.new_password.strip())
-        pw_changed = True
-
-    save_roster(roster)
-    if pw_changed or body.email is not None:
-        for tok in [t for t, v in SESSIONS.items() if v.get("student_id") == body.id]:
-            SESSIONS.pop(tok, None)
-    return {"ok": True, "student": {
-        "id": student["id"], "name": student.get("name", ""), "email": student.get("email", ""),
-        "courses": student.get("courses", []), "has_password": bool(student.get("password_hash")),
-    }}
-
-
-# ---------- de-duplicate accounts by email ----------
-def _find_email_duplicates(roster):
-    groups = {}
-    for s in roster:
-        key = _norm(s.get("email"))
-        if not key:
-            continue
-        groups.setdefault(key, []).append(s)
-    return {k: v for k, v in groups.items() if len(v) > 1}
-
-
-def _merge_group_courses(entries):
-    seen, merged = set(), []
-    for e in entries:
-        for c in normalize_courses(e.get("courses")):
-            if _norm(c) not in seen:
-                merged.append(c); seen.add(_norm(c))
-    return merged
-
-
-class DedupeAuth(BaseModel):
-    passcode: str
-
-
-@app.post("/api/teacher/students/dedupe-preview")
-def dedupe_preview(body: DedupeAuth):
-    if not check_passcode(body.passcode):
-        return JSONResponse({"error": "unauthorized"}, status_code=401)
-    roster = load_roster()
-    dups = _find_email_duplicates(roster)
-    preview = []
-    for email, entries in dups.items():
-        keep = entries[0]
-        remove = entries[1:]
-        preview.append({
-            "email": keep.get("email"),
-            "duplicate_count": len(entries),
-            "keep": {"id": keep["id"], "name": keep.get("name"),
-                     "courses": keep.get("courses", []),
-                     "has_password": bool(keep.get("password_hash"))},
-            "will_delete": [{"id": e["id"], "name": e.get("name"),
-                             "courses": e.get("courses", [])} for e in remove],
-            "merged_courses": _merge_group_courses(entries),
-        })
-    return {
-        "duplicate_emails": len(dups),
-        "accounts_to_delete": sum(len(e) - 1 for e in dups.values()),
-        "groups": preview,
-    }
-
-
-@app.post("/api/teacher/students/dedupe-apply")
-def dedupe_apply(body: DedupeAuth):
-    if not check_passcode(body.passcode):
-        return JSONResponse({"error": "unauthorized"}, status_code=401)
-    roster = load_roster()
-    dups = _find_email_duplicates(roster)
-    if not dups:
-        return {"ok": True, "merged_emails": 0, "deleted_accounts": 0, "message": "No duplicates found."}
-    delete_ids = set()
-    merged_emails = 0
-    for email, entries in dups.items():
-        keep = entries[0]
-        keep["courses"] = _merge_group_courses(entries)
-        if not keep.get("password_hash"):
-            for e in entries[1:]:
-                if e.get("password_hash"):
-                    keep["password_hash"] = e["password_hash"]
-                    break
-        for e in entries[1:]:
-            delete_ids.add(e["id"])
-        merged_emails += 1
-    new_roster = [s for s in roster if s["id"] not in delete_ids]
-    save_roster(new_roster)
-    for tok in [t for t, v in SESSIONS.items() if v.get("student_id") in delete_ids]:
-        SESSIONS.pop(tok, None)
-    return {
-        "ok": True,
-        "merged_emails": merged_emails,
-        "deleted_accounts": len(delete_ids),
-        "total_now": len(new_roster),
-    }
-
-
-@app.post("/api/teacher/students/import")
-async def import_students(passcode: str = Form(...), file: UploadFile = File(...)):
-    if not check_passcode(passcode):
-        return JSONResponse({"error": "unauthorized"}, status_code=401)
-    try:
-        import openpyxl
-        content = await file.read()
-        wb = openpyxl.load_workbook(io.BytesIO(content))
-        ws = wb.active
-        rows = list(ws.iter_rows(values_only=True))
-    except Exception as e:
-        return JSONResponse({"error": f"Could not read the Excel file: {e}"}, status_code=400)
-    if not rows:
-        return JSONResponse({"error": "The sheet is empty."}, status_code=400)
-    header = [str(h).strip().lower() if h is not None else "" for h in rows[0]]
-    def col(name):
-        return header.index(name) if name in header else -1
-    ei, pi, ni, ci = col("email"), col("password"), col("name"), col("courses")
-    if ei < 0 or pi < 0:
-        return JSONResponse({"error": "The sheet must have 'email' and 'password' columns."}, status_code=400)
-    roster = load_roster()
-    by_email = {_norm(s.get("email")): s for s in roster if s.get("email")}
-    added = updated = 0
-    for row in rows[1:]:
-        if not row or ei >= len(row) or not row[ei]:
-            continue
-        email = str(row[ei]).strip()
-        pw = str(row[pi]).strip() if pi < len(row) and row[pi] else ""
-        name = str(row[ni]).strip() if ni >= 0 and ni < len(row) and row[ni] else email.split("@")[0]
-        courses = []
-        if ci >= 0 and ci < len(row) and row[ci]:
-            courses = [c.strip() for c in str(row[ci]).split(";") if c.strip()]
-        key = _norm(email)
-        if key in by_email:
-            s = by_email[key]
-            existing = normalize_courses(s.get("courses"))
-            seen = {_norm(c) for c in existing}
-            merged = list(existing)
-            for c in courses:
-                if _norm(c) not in seen:
-                    merged.append(c)
-                    seen.add(_norm(c))
-            s["courses"] = merged
-            if name and name != email.split("@")[0]:
-                s["name"] = name
-            if pw:
-                s["password_hash"] = hash_pw(pw)
-            updated += 1
-        else:
-            roster.append({
-                "id": secrets.token_hex(6),
-                "name": name,
-                "email": email,
-                "courses": courses,
-                "password_hash": hash_pw(pw) if pw else "",
-            })
-            added += 1
-    save_roster(roster)
-    return {"ok": True, "added": added, "updated": updated, "total": len(roster)}
-
-
-# ---------- teacher endpoints ----------
-class TeacherAuth(BaseModel):
-    passcode: str
-
-
-@app.post("/api/teacher/recordings")
-def teacher_recordings(body: TeacherAuth):
-    if not check_passcode(body.passcode):
-        return JSONResponse({"error": "unauthorized"}, status_code=401)
-    out = [_card(r, include_hidden=True) for r in RECORDINGS]
-    units = sorted({(r.get("unit") or "Unassigned") for r in RECORDINGS})
-    return {"recordings": out, "units": units}
-
-
-class UpdateRecBody(BaseModel):
-    passcode: str
-    id: str
-    display_title: str | None = None
-    visible: bool | None = None
-    unit: str | None = None
-
-
-@app.post("/api/teacher/update")
-def teacher_update(body: UpdateRecBody):
-    if not check_passcode(body.passcode):
-        return JSONResponse({"error": "unauthorized"}, status_code=401)
-    rec = REC_BY_ID.get(body.id)
-    if not rec:
-        return JSONResponse({"error": "not found"}, status_code=404)
-    if body.display_title is not None and body.display_title.strip():
-        rec["display_title"] = body.display_title.strip()
-    if body.visible is not None:
-        rec["visible"] = body.visible
-    if body.unit is not None and body.unit.strip():
-        rec["unit"] = body.unit.strip()
-    save_recordings(RECORDINGS)
-    return {"ok": True, "recording": _card(rec, include_hidden=True)}
-
-
-class PasscodeBody(BaseModel):
-    passcode: str
-    new_passcode: str
-
-
-ALLOWED_LOGO_EXT = {"png": "png", "jpg": "jpg", "jpeg": "jpg", "webp": "webp", "gif": "gif", "svg": "svg"}
-LOGO_MAX_BYTES = 2 * 1024 * 1024
-LOGO_MIME = {"png": "image/png", "jpg": "image/jpeg", "webp": "image/webp",
-             "gif": "image/gif", "svg": "image/svg+xml"}
-LOGO_PATH_BASE = os.path.join(DATA_DIR, "logo")
-
-
-def _current_logo_file():
-    for e in set(ALLOWED_LOGO_EXT.values()):
-        p = f"{LOGO_PATH_BASE}.{e}"
-        if os.path.exists(p):
-            return p, e
-    return None, None
-
-
-def _migrate_frontend_logo_to_disk():
-    try:
-        existing, _ = _current_logo_file()
-        if existing:
-            return
-        for e in set(ALLOWED_LOGO_EXT.values()):
-            fe = os.path.join(FRONTEND_DIR, f"logo.{e}")
-            if os.path.exists(fe):
-                import shutil
-                shutil.copy2(fe, f"{LOGO_PATH_BASE}.{e}")
-                break
-    except Exception as ex:
-        print(f"[logo] migrate warning: {ex}")
-
-
-_migrate_frontend_logo_to_disk()
-
-
-@app.post("/api/teacher/logo")
-async def upload_logo(passcode: str = Form(...), file: UploadFile = File(...)):
-    if not check_passcode(passcode):
-        return JSONResponse({"error": "unauthorized"}, status_code=401)
-    ext = (file.filename or "").rsplit(".", 1)[-1].lower() if "." in (file.filename or "") else ""
-    if ext not in ALLOWED_LOGO_EXT:
-        return JSONResponse({"error": "Please upload a PNG, JPG, WEBP, GIF or SVG image."}, status_code=400)
-    data = await file.read()
-    if len(data) > LOGO_MAX_BYTES:
-        return JSONResponse({"error": "Image is too large (max 2 MB)."}, status_code=400)
-    save_ext = ALLOWED_LOGO_EXT[ext]
-    os.makedirs(DATA_DIR, exist_ok=True)
-    for e in set(ALLOWED_LOGO_EXT.values()):
-        old = f"{LOGO_PATH_BASE}.{e}"
-        if os.path.exists(old):
-            try:
-                os.remove(old)
-            except OSError:
-                pass
-    with open(f"{LOGO_PATH_BASE}.{save_ext}", "wb") as f:
-        f.write(data)
-    cfg = load_config()
-    cfg["logo"] = "/logo"
-    cfg["logo_ext"] = save_ext
-    save_config(cfg)
-    return {"ok": True, "logo": "/logo"}
-
-
-@app.get("/logo")
-def get_logo():
-    path, e = _current_logo_file()
-    if not path:
-        return JSONResponse({"error": "no logo"}, status_code=404)
-    return FileResponse(path, media_type=LOGO_MIME.get(e, "application/octet-stream"))
-
-
-@app.get("/api/branding")
-def branding():
-    path, _ = _current_logo_file()
-    return {"logo": "/logo" if path else ""}
-
-
-@app.post("/api/teacher/passcode")
-def change_passcode(body: PasscodeBody):
-    if not check_passcode(body.passcode):
-        return JSONResponse({"error": "unauthorized"}, status_code=401)
-    if not body.new_passcode.strip():
-        return JSONResponse({"error": "empty passcode"}, status_code=400)
-    cfg = load_config()
-    cfg["passcode"] = body.new_passcode.strip()
-    save_config(cfg)
-    return {"ok": True}
-
-
-@app.post("/api/teacher/questions")
-def teacher_questions(body: TeacherAuth):
-    if not check_passcode(body.passcode):
-        return JSONResponse({"error": "unauthorized"}, status_code=401)
-    log = load_qlog()
-    return {"questions": list(reversed(log))[:500]}
-
-
+# ==============================================================================
+# 7. APP ENDPOINTS: AI TUTOR, QUIZZES & FLASHCARDS
+# ==============================================================================
 class AskBody(BaseModel):
     recording_id: str
     question: str
@@ -1710,6 +1371,7 @@ async def ask(body: AskBody):
     sess = valid_session(body.token)
     if not sess:
         return JSONResponse({"error": "Your session has expired. Please log in again."}, status_code=401)
+        
     rec = REC_BY_ID.get(body.recording_id)
     if not rec:
         return JSONResponse({"error": "Recording not found"}, status_code=404)
@@ -1784,6 +1446,7 @@ async def ask(body: AskBody):
         save_qlog(log[-1000:])
     except Exception:
         pass
+        
     return {"answer": answer, "cited_segments": len(idx)}
 
 
@@ -1799,15 +1462,19 @@ class QuizBody(BaseModel):
 async def quiz(body: QuizBody):
     if not valid_session(body.token):
         return JSONResponse({"error": "Your session has expired. Please log in again."}, status_code=401)
+        
     rec = REC_BY_ID.get(body.recording_id)
     if not rec:
         return JSONResponse({"error": "Recording not found"}, status_code=404)
+        
     segs = rec.get("segments", [])
     step = max(1, len(segs) // 60)
     idx = list(range(0, len(segs), step))
-    ctx = context_from_indices(rec, idx, max_chars=20000)
+    ctx = context_from_indices(rec, idx, max_chars=18000)
+    
     lang_line = "Write the quiz in English."
     n = max(1, min(10, body.num_questions))
+    
     system = (
         "You are ClassMate, creating a quiz to help students review a class recording. "
         "Use ONLY the transcript content provided. Return STRICT JSON only, no markdown, no prose. "
@@ -1817,10 +1484,12 @@ async def quiz(body: QuizBody):
         "The 'explanation' must reference what was said in the recording. "
         f"Create exactly {n} multiple-choice questions ({body.difficulty} difficulty). {lang_line}"
     )
+    
     user = (
         f"Class recording: {rec.get('display_title') or rec.get('topic')}\n\n"
         f"Transcript excerpts:\n{ctx}"
     )
+    
     try:
         raw = await llm(
             [{"role": "system", "content": system}, {"role": "user", "content": user}],
@@ -1828,6 +1497,7 @@ async def quiz(body: QuizBody):
         )
     except (LLMConfigError, LLMUpstreamError) as e:
         return JSONResponse({"error": str(e)}, status_code=503)
+        
     data = None
     try:
         data = json.loads(raw)
@@ -1838,12 +1508,13 @@ async def quiz(body: QuizBody):
                 data = json.loads(m.group(0))
             except Exception:
                 data = None
+                
     if not data or "questions" not in data:
         return JSONResponse({"error": "Could not generate quiz", "raw": raw[:500]}, status_code=500)
+        
     return data
 
 
-# ---------- automated flashcards generation (Fresh & Unique Cards) ----------
 class FlashcardBody(BaseModel):
     recording_id: str
     existing_fronts: list[str] | None = []
@@ -1912,7 +1583,9 @@ async def generate_flashcards(body: FlashcardBody):
     return data
 
 
-# ---------- study plan generation (100% Mandatory Coverage & Dynamic Allocation) ----------
+# ==============================================================================
+# 8. APP ENDPOINTS: STUDY PLANNER & PAST PAPERS
+# ==============================================================================
 class StudyPlanBody(BaseModel):
     recording_ids: list[str]
     days: int
@@ -1997,54 +1670,222 @@ async def generate_study_plan(body: StudyPlanBody):
     return data
 
 
-# ---------- Zoom webhook ----------
-@app.post("/api/zoom/webhook")
-async def zoom_webhook(request: Request, background_tasks: BackgroundTasks):
-    body = await request.body()
-    payload = await request.json()
-    
-    if payload.get("event") == "endpoint.url_validation":
-        plain = payload["payload"]["plainToken"]
-        sig = hmac.new(ZOOM_WEBHOOK_SECRET.encode(), plain.encode(), hashlib.sha256).hexdigest()
-        return {"plainToken": plain, "encryptedToken": sig}
+class StudentPPMetaBody(BaseModel):
+    token: str | None = None
+
+
+@app.post("/api/student/pastpaper/meta")
+def student_pastpaper_meta(body: StudentPPMetaBody):
+    sess = valid_session(body.token)
+    if not sess:
+        return JSONResponse({"error": "Unauthorized"}, status_code=401)
         
-    ts = request.headers.get("x-zm-request-timestamp", "")
-    got = request.headers.get("x-zm-signature", "")
-    message = f"v0:{ts}:{body.decode('utf-8')}".encode()
-    expected = "v0=" + hmac.new(ZOOM_WEBHOOK_SECRET.encode(), message, hashlib.sha256).hexdigest()
+    my_courses = sess.get("courses", [])
+    syllabi = load_past_paper_config()
     
-    if not hmac.compare_digest(expected, got):
-        return JSONResponse({"error": "bad signature"}, status_code=401)
+    return {"courses": my_courses, "syllabi": syllabi}
+
+
+class SolvePastPaperBody(BaseModel):
+    token: str | None = None
+    course: str
+    year: int
+    series: str
+    paper: str
+    question: str
+    question_text: str | None = ""
+
+
+@app.post("/api/student/pastpaper/solve")
+async def solve_past_paper(body: SolvePastPaperBody):
+    sess = valid_session(body.token)
+    if not sess:
+        return JSONResponse({"error": "Unauthorized"}, status_code=401)
         
-    event = payload.get("event", "")
-    print(f"[zoom webhook] received event: {event}")
+    syllabi = load_past_paper_config()
+    syllabus = syllabi.get(body.course, "Standard Cambridge / Edexcel Biology")
+    exam_ref = f"{body.year} {body.series} Paper {body.paper} Q{body.question}"
     
-    recording_events = {
-        "recording.completed",
-        "recording.transcript_completed",
-        "webinar.recording_completed",
-        "webinar.recording_transcript_completed",
-    }
-    
-    is_recording_event = (
-        event in recording_events
-        or ("recording" in event and ("completed" in event or "transcript" in event))
+    sols = load_past_paper_solutions()
+    sol_key = f"{body.course.lower().strip()}:{body.year}:{body.series.lower().strip()}:{body.paper.lower().strip()}:{body.question.lower().strip()}"
+    custom_asset = sols.get(sol_key)
+
+    query = f"{body.course} {body.question_text} {body.paper} {body.question}"
+    notes_ctx = retrieve_all_notes_context(query)
+
+    teacher_doc_ctx = ""
+    if custom_asset and custom_asset.get("note_id"):
+        n = note_by_id(custom_asset["note_id"])
+        if n:
+            teacher_doc_ctx = f"\n[TEACHER HANDWRITTEN/MODEL DOCUMENT]:\n" + "\n".join(n.get("chunks", [])[:5])
+
+    system = (
+        f"You are an elite academic examiner and senior Biology tutor. "
+        f"The student is practicing a past-paper question for: '{body.course}' under syllabus: '{syllabus}'.\n"
+        f"Exam Reference: {exam_ref}.\n\n"
+        "STRICT STRUCTURED OUTPUT RULES:\n"
+        "Respond with EXACTLY these three sections:\n\n"
+        "### 1. Mark Scheme Breakdown & Mandatory Keywords\n"
+        "- Detail the exact criteria required for full marks (e.g. [1], [2]).\n"
+        "- Put mandatory scientific keywords and exact syllabus phrasing in **bold**.\n"
+        "- Clearly specify **Allowed** alternative terms vs. **Rejected / Disallowed** colloquial wording.\n\n"
+        "### 2. Lesson & Notes Linkage\n"
+        "- Explain the underlying biological pathway or principle tested.\n"
+        "- Cite relevant parts from the attached teacher class notes when applicable.\n\n"
+        "### 3. Examiner Traps & Common Pitfalls\n"
+        "- Highlight common mistakes noted in official examiner reports (e.g. confusing terms, incomplete comparisons, vague answers).\n"
     )
+
+    user = (
+        f"Question Reference: {exam_ref}\n"
+        f"Question Details/Prompt: {body.question_text or 'Solve question ' + body.question}\n\n"
+        f"Attached Teacher Syllabus Notes:\n{notes_ctx}\n"
+        f"{teacher_doc_ctx}"
+    )
+
+    try:
+        explanation = await llm(
+            [{"role": "system", "content": system}, {"role": "user", "content": user}],
+            max_tokens=1800,
+            temperature=0.2
+        )
+    except (LLMConfigError, LLMUpstreamError) as e:
+        return JSONResponse({"error": str(e)}, status_code=503)
+
+    return {
+        "ok": True,
+        "exam_ref": exam_ref,
+        "syllabus": syllabus,
+        "solution_markdown": explanation,
+        "teacher_asset": custom_asset
+    }
+
+
+# ==============================================================================
+# 9. TEACHER ADMIN ENDPOINTS
+# ==============================================================================
+class TeacherAuth(BaseModel):
+    passcode: str
+
+def check_teacher(passcode: str) -> bool:
+    return passcode == load_config().get("passcode")
+
+
+@app.post("/api/teacher/login")
+def teacher_login(body: TeacherAuth):
+    if check_teacher(body.passcode):
+        return {"ok": True}
+    return JSONResponse({"ok": False}, status_code=401)
+
+
+@app.post("/api/teacher/recordings")
+def teacher_recordings(body: TeacherAuth):
+    if not check_teacher(body.passcode):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+        
+    lib = load_notes_library()
+    out = []
     
-    if is_recording_event:
-        p_load = payload.get("payload", {})
-        obj = p_load.get("object", {}) or p_load.get("webinar", {})
+    for r in RECORDINGS:
+        r_notes = [note_by_id(nid, lib) for nid in (r.get("note_ids") or [])]
+        out.append({
+            "id": r["id"], 
+            "title": r.get("display_title") or r.get("topic"), 
+            "original_title": r.get("original_topic") or r.get("topic"),
+            "date": r.get("date"), 
+            "source": r.get("source") or "meeting", 
+            "unit": r.get("unit") or "Unassigned",
+            "visible": r.get("visible", True), 
+            "segments": len(r.get("segments", [])), 
+            "summary": r.get("summary", ""), 
+            "topics": r.get("topics", []),
+            "notes": [{"id": n["id"], "filename": n["filename"], "chars": n.get("chars", 0)} for n in r_notes if n]
+        })
         
-        if not obj.get("id") and not obj.get("uuid"):
-            obj = p_load.get("object", {})
-            
-        if obj.get("id") or obj.get("uuid"):
-            background_tasks.add_task(ingest_zoom_meeting, obj)
-            print(f"[zoom webhook] queued background ingest for webinar/meeting: '{obj.get('topic')}'")
-        else:
-            print(f"[zoom webhook warning] could not extract meeting/webinar ID from payload: {payload}")
+    return {"recordings": out}
+
+
+class UpdateRecBody(BaseModel):
+    passcode: str
+    id: str
+    display_title: str | None = None
+    visible: bool | None = None
+    unit: str | None = None
+
+
+@app.post("/api/teacher/update")
+def teacher_update(body: UpdateRecBody):
+    if not check_teacher(body.passcode):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
         
+    rec = REC_BY_ID.get(body.id)
+    if not rec:
+        return JSONResponse({"error": "not found"}, status_code=404)
+        
+    if body.display_title is not None:
+        rec["display_title"] = body.display_title.strip()
+    if body.visible is not None:
+        rec["visible"] = body.visible
+    if body.unit is not None:
+        rec["unit"] = body.unit.strip()
+        
+    save_recordings(RECORDINGS)
     return {"ok": True}
+
+
+class DeleteRecBody(BaseModel):
+    passcode: str
+    id: str
+
+
+@app.post("/api/teacher/recordings/delete")
+def teacher_delete_recording(body: DeleteRecBody):
+    global RECORDINGS
+    if not check_teacher(body.passcode):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+        
+    RECORDINGS = [r for r in RECORDINGS if r.get("id") != body.id]
+    REC_BY_ID.pop(body.id, None)
+    save_recordings(RECORDINGS)
+    return {"ok": True}
+
+
+@app.post("/api/teacher/recordings/delete-unassigned")
+def teacher_delete_unassigned(body: TeacherAuth):
+    global RECORDINGS
+    if not check_teacher(body.passcode):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+        
+    RECORDINGS = [r for r in RECORDINGS if (r.get("unit") or "Unassigned") != "Unassigned"]
+    save_recordings(RECORDINGS)
+    return {"ok": True}
+
+
+@app.post("/api/teacher/summary")
+async def teacher_summary(body: DeleteRecBody):
+    if not check_teacher(body.passcode):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+        
+    rec = REC_BY_ID.get(body.id)
+    if not rec or not rec.get("segments"):
+        return JSONResponse({"error": "Transcript missing"}, status_code=404)
+        
+    ctx = context_from_indices(rec, list(range(min(50, len(rec["segments"])))), max_chars=18000)
+    system = "Summarize recording. STRICT JSON: {\"summary\":str,\"topics\":[str]}"
+    
+    try:
+        raw = await llm([{"role": "system", "content": system}, {"role": "user", "content": ctx}], max_tokens=500)
+        start_idx = raw.find("{")
+        end_idx = raw.rfind("}") + 1
+        data = json.loads(raw[start_idx:end_idx])
+        
+        rec["summary"] = data.get("summary", "")
+        rec["topics"] = data.get("topics", [])
+        save_recordings(RECORDINGS)
+        
+        return {"ok": True, "summary": rec["summary"], "topics": rec["topics"]}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
 
 
 class BackfillBody(BaseModel):
@@ -2061,6 +1902,7 @@ async def _list_cloud_recordings(from_date: str, to_date: str):
     results = []
     start = datetime.strptime(from_date, "%Y-%m-%d")
     end = datetime.strptime(to_date, "%Y-%m-%d")
+    
     async with httpx.AsyncClient(timeout=60) as client:
         window_start = start
         while window_start <= end:
@@ -2074,37 +1916,47 @@ async def _list_cloud_recordings(from_date: str, to_date: str):
                 }
                 if next_token:
                     params["next_page_token"] = next_token
+                    
                 r = await client.get(
                     "https://api.zoom.us/v2/users/me/recordings",
                     headers={"Authorization": f"Bearer {token}"},
                     params=params,
                 )
+                
                 if r.status_code != 200:
                     break
+                    
                 data = r.json()
                 results.extend(data.get("meetings", []))
                 next_token = data.get("next_page_token") or ""
+                
                 if not next_token:
                     break
+                    
             window_start = window_end + timedelta(days=1)
+            
     return results
 
 
 @app.post("/api/teacher/backfill")
 async def teacher_backfill(body: BackfillBody):
-    if not check_passcode(body.passcode):
+    if not check_teacher(body.passcode):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
+        
     from datetime import datetime, timedelta
     to_date = body.to_date or datetime.utcnow().strftime("%Y-%m-%d")
     from_date = body.from_date or (datetime.utcnow() - timedelta(days=180)).strftime("%Y-%m-%d")
+    
     try:
         meetings = await _list_cloud_recordings(from_date, to_date)
     except Exception as e:
         return JSONResponse({"error": f"Could not list cloud recordings: {e}"}, status_code=502)
+        
     added = 0
     skipped = 0
     errors = 0
     details = []
+    
     for m in meetings:
         try:
             was_added = await ingest_zoom_meeting(m, allow_whisper_fallback=False)
@@ -2119,6 +1971,7 @@ async def teacher_backfill(body: BackfillBody):
                 skipped += 1
         except Exception:
             errors += 1
+            
     return {
         "ok": True,
         "range": {"from": from_date, "to": to_date},
@@ -2138,123 +1991,73 @@ class ImportOneBody(BaseModel):
 
 @app.post("/api/teacher/import-one")
 async def teacher_import_one(body: ImportOneBody):
-    if not check_passcode(body.passcode):
+    if not check_teacher(body.passcode):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
-    meeting_id = _parse_meeting_id(body.ref)
-    if not meeting_id:
+        
+    mid = _parse_meeting_id(body.ref)
+    
+    if not mid:
         return JSONResponse(
             {"error": "Couldn't read a meeting ID from that. Paste the Zoom Meeting ID/UUID, or a recording link."},
             status_code=400,
         )
+        
     try:
-        obj = await fetch_zoom_recording_object(meeting_id)
+        obj = await fetch_zoom_recording_object(mid)
     except LLMUpstreamError as e:
         return JSONResponse({"error": str(e)}, status_code=502)
     except Exception as e:
         return JSONResponse({"error": f"Could not fetch that recording: {e}"}, status_code=502)
-    
-    existing_id = str(obj.get("id") or obj.get("uuid") or meeting_id)
-    if existing_id in REC_BY_ID:
-        return JSONResponse(
-            {"error": f"That recording is already imported: \"{REC_BY_ID[existing_id].get('display_title')}\"."},
-            status_code=409,
-        )
+        
     try:
         added = await ingest_zoom_meeting(obj, allow_whisper_fallback=False)
     except Exception as e:
         return JSONResponse({"error": f"Import failed: {e}"}, status_code=500)
+        
     if not added:
         return JSONResponse({"error": "That recording is already imported."}, status_code=409)
-    rec = REC_BY_ID.get(existing_id)
-    return {
-        "ok": True,
-        "recording": _card(rec, include_hidden=True) if rec else None,
-        "has_transcript": bool(rec and rec.get("segments")),
-        "total_recordings_now": len(RECORDINGS),
-    }
-
-
-NOTE_MAX_UPLOAD_BYTES = 60 * 1024 * 1024
-NOTE_MAX_TEXT_CHARS = 2 * 1024 * 1024
+        
+    return {"ok": True, "added": added}
 
 
 @app.post("/api/teacher/notes/upload")
 async def upload_note(passcode: str = Form(...), id: str = Form(...), file: UploadFile = File(...)):
-    if not check_passcode(passcode):
+    if not check_teacher(passcode):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
+        
     rec = REC_BY_ID.get(id)
     if not rec:
-        return JSONResponse({"error": "not found"}, status_code=404)
+        return JSONResponse({"error": "Recording not found"}, status_code=404)
+        
     data = await file.read()
-    if len(data) > NOTE_MAX_UPLOAD_BYTES:
-        return JSONResponse({"error": "File is unusually large."}, status_code=400)
+    
     try:
-        text = extract_text_from_upload(data, file.filename or "")
+        text = extract_text_from_upload(data, file.filename or "note")
     except ValueError as e:
         return JSONResponse({"error": str(e)}, status_code=400)
     except Exception as e:
         return JSONResponse({"error": f"Could not read that file: {e}"}, status_code=422)
-    
-    original_len = len(text)
-    trimmed = False
-    if original_len > NOTE_MAX_TEXT_CHARS:
-        text = text[:NOTE_MAX_TEXT_CHARS]
-        trimmed = True
+        
     chunks = chunk_note_text(text)
+    
     if not chunks:
         return JSONResponse({"error": "No readable text found in that file."}, status_code=422)
-    kept = sum(len(c) for c in chunks)
-    
+        
     lib = load_notes_library()
-    note = {"id": secrets.token_hex(6), "filename": (file.filename or "notes"),
-            "chunks": chunks, "chars": kept}
+    nid = secrets.token_hex(6)
+    note = {"id": nid, "filename": file.filename or "notes", "chunks": chunks, "chars": sum(len(c) for c in chunks)}
     lib.append(note)
     save_notes_library(lib)
-    ids = list(rec.get("note_ids") or [])
-    if note["id"] not in ids:
-        ids.append(note["id"])
-    rec["note_ids"] = ids
+    
+    rec.setdefault("note_ids", []).append(nid)
     save_recordings(RECORDINGS)
-    return {"ok": True, "id": id,
-            "note": {"id": note["id"], "filename": note["filename"], "chars": kept, "chunks": len(chunks)},
-            "file_bytes": len(data), "text_chars": kept, "trimmed": trimmed,
-            "recording": _card(rec, include_hidden=True)}
-
-
-class ListLibraryBody(BaseModel):
-    passcode: str
-    for_recording: str | None = None
-
-
-@app.post("/api/teacher/notes/library")
-def notes_library(body: ListLibraryBody):
-    if not check_passcode(body.passcode):
-        return JSONResponse({"error": "unauthorized"}, status_code=401)
-    lib = load_notes_library()
-    usage = {}
-    for r in RECORDINGS:
-        for nid in (r.get("note_ids") or []):
-            usage[nid] = usage.get(nid, 0) + 1
-
-    allowed_ids = None
-    if body.for_recording:
-        target = REC_BY_ID.get(body.for_recording)
-        target_unit = (target.get("unit") or "Unassigned") if target else "Unassigned"
-        if target_unit != "Unassigned":
-            allowed_ids = set()
-            for r in RECORDINGS:
-                if (r.get("unit") or "Unassigned") == target_unit:
-                    for nid in (r.get("note_ids") or []):
-                        allowed_ids.add(nid)
-
-    out = []
-    for n in lib:
-        if allowed_ids is not None and n["id"] not in allowed_ids:
-            continue
-        out.append({"id": n["id"], "filename": n.get("filename"),
-                    "chars": n.get("chars", sum(len(c) for c in n.get("chunks", []))),
-                    "used_by": usage.get(n["id"], 0)})
-    return {"library": out}
+    
+    return {
+        "ok": True, 
+        "recording": {
+            "notes": [{"id": nid, "filename": note["filename"], "chars": note["chars"]}]
+        }
+    }
 
 
 class AttachNoteBody(BaseModel):
@@ -2265,41 +2068,50 @@ class AttachNoteBody(BaseModel):
 
 @app.post("/api/teacher/notes/attach")
 def attach_note(body: AttachNoteBody):
-    if not check_passcode(body.passcode):
+    if not check_teacher(body.passcode):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
-    rec = REC_BY_ID.get(body.id)
-    if not rec:
-        return JSONResponse({"error": "recording not found"}, status_code=404)
-    if not note_by_id(body.note_id):
-        return JSONResponse({"error": "note not found in library"}, status_code=404)
-    ids = list(rec.get("note_ids") or [])
-    if body.note_id in ids:
-        return JSONResponse({"error": "That note is already attached to this recording."}, status_code=409)
-    ids.append(body.note_id)
-    rec["note_ids"] = ids
-    save_recordings(RECORDINGS)
-    return {"ok": True, "recording": _card(rec, include_hidden=True)}
-
-
-class DetachNoteBody(BaseModel):
-    passcode: str
-    id: str
-    note_id: str
-
-
-@app.post("/api/teacher/notes/detach")
-def detach_note(body: DetachNoteBody):
-    if not check_passcode(body.passcode):
-        return JSONResponse({"error": "unauthorized"}, status_code=401)
+        
     rec = REC_BY_ID.get(body.id)
     if not rec:
         return JSONResponse({"error": "not found"}, status_code=404)
-    ids = list(rec.get("note_ids") or [])
-    if body.note_id not in ids:
-        return JSONResponse({"error": "note not attached"}, status_code=404)
-    rec["note_ids"] = [x for x in ids if x != body.note_id]
+        
+    if not note_by_id(body.note_id):
+        return JSONResponse({"error": "note not found in library"}, status_code=404)
+        
+    if body.note_id not in rec.setdefault("note_ids", []):
+        rec["note_ids"].append(body.note_id)
+        save_recordings(RECORDINGS)
+        
+    current_notes = [n for n in [note_by_id(x) for x in rec["note_ids"]] if n]
+    
+    return {
+        "ok": True, 
+        "recording": {
+            "notes": [{"id": n["id"], "filename": n["filename"], "chars": n.get("chars", 0)} for n in current_notes]
+        }
+    }
+
+
+@app.post("/api/teacher/notes/detach")
+def detach_note(body: AttachNoteBody):
+    if not check_teacher(body.passcode):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+        
+    rec = REC_BY_ID.get(body.id)
+    if not rec:
+        return JSONResponse({"error": "not found"}, status_code=404)
+        
+    rec["note_ids"] = [x for x in rec.get("note_ids", []) if x != body.note_id]
     save_recordings(RECORDINGS)
-    return {"ok": True, "recording": _card(rec, include_hidden=True)}
+    
+    current_notes = [n for n in [note_by_id(x) for x in rec["note_ids"]] if n]
+    
+    return {
+        "ok": True, 
+        "recording": {
+            "notes": [{"id": n["id"], "filename": n["filename"], "chars": n.get("chars", 0)} for n in current_notes]
+        }
+    }
 
 
 class DeleteLibraryNoteBody(BaseModel):
@@ -2309,43 +2121,40 @@ class DeleteLibraryNoteBody(BaseModel):
 
 @app.post("/api/teacher/notes/library/delete")
 def delete_library_note(body: DeleteLibraryNoteBody):
-    if not check_passcode(body.passcode):
+    if not check_teacher(body.passcode):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
+        
     lib = load_notes_library()
     if not note_by_id(body.note_id, lib):
         return JSONResponse({"error": "note not found"}, status_code=404)
+        
     lib = [n for n in lib if n["id"] != body.note_id]
     save_notes_library(lib)
+    
     detached_from = 0
     for r in RECORDINGS:
         ids = r.get("note_ids") or []
         if body.note_id in ids:
             r["note_ids"] = [x for x in ids if x != body.note_id]
             detached_from += 1
+            
     if detached_from:
         save_recordings(RECORDINGS)
+        
     return {"ok": True, "detached_from": detached_from}
 
 
-class DeleteNoteBody(BaseModel):
-    passcode: str
-    id: str
-    note_id: str
-
-
-@app.post("/api/teacher/notes/delete")
-def delete_note(body: DeleteNoteBody):
-    if not check_passcode(body.passcode):
+@app.post("/api/teacher/notes/library")
+def get_notes_library(body: TeacherAuth):
+    if not check_teacher(body.passcode):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
-    rec = REC_BY_ID.get(body.id)
-    if not rec:
-        return JSONResponse({"error": "not found"}, status_code=404)
-    ids = list(rec.get("note_ids") or [])
-    if body.note_id not in ids:
-        return JSONResponse({"error": "note not found"}, status_code=404)
-    rec["note_ids"] = [x for x in ids if x != body.note_id]
-    save_recordings(RECORDINGS)
-    return {"ok": True, "recording": _card(rec, include_hidden=True)}
+        
+    lib = load_notes_library()
+    usage = {n["id"]: sum(1 for r in RECORDINGS if n["id"] in (r.get("note_ids") or [])) for n in lib}
+    
+    return {
+        "library": [{"id": n["id"], "filename": n["filename"], "used_by": usage.get(n["id"], 0)} for n in lib]
+    }
 
 
 class TranscribeBody(BaseModel):
@@ -2355,11 +2164,13 @@ class TranscribeBody(BaseModel):
 
 @app.post("/api/teacher/transcribe")
 async def teacher_transcribe(body: TranscribeBody):
-    if not check_passcode(body.passcode):
+    if not check_teacher(body.passcode):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
+        
     rec = REC_BY_ID.get(body.id)
     if not rec:
         return JSONResponse({"error": "not found"}, status_code=404)
+        
     try:
         count = await transcribe_recording_by_id(body.id)
     except LLMConfigError as e:
@@ -2368,118 +2179,450 @@ async def teacher_transcribe(body: TranscribeBody):
         return JSONResponse({"error": str(e)}, status_code=502)
     except Exception as e:
         return JSONResponse({"error": f"Transcription failed: {e}"}, status_code=500)
+        
     if count == 0:
         return JSONResponse({"error": "Transcription produced no text."}, status_code=422)
-    return {"ok": True, "id": body.id, "segments": count, "recording": _card(rec, include_hidden=True)}
+        
+    return {"ok": True, "segments": count}
 
 
-def _remove_recording(rid: str) -> bool:
-    global RECORDINGS
-    rec = REC_BY_ID.get(rid)
-    if not rec:
-        return False
-    RECORDINGS = [r for r in RECORDINGS if r.get("id") != rid]
-    REC_BY_ID.pop(rid, None)
-    return True
+@app.post("/api/teacher/pastpaper/config")
+def teacher_pp_config(body: TeacherAuth):
+    if not check_teacher(body.passcode):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+        
+    courses = sorted({r.get("unit") or "Unassigned" for r in RECORDINGS if (r.get("unit") or "Unassigned") != "Unassigned"})
+    sols = load_past_paper_solutions()
+    
+    return {
+        "courses": courses, 
+        "syllabi": load_past_paper_config(), 
+        "notes_library": [{"id": n["id"], "filename": n["filename"]} for n in load_notes_library()], 
+        "solutions": [{"key": k, **v} for k, v in sols.items()]
+    }
 
 
-class DeleteRecBody(BaseModel):
+class SavePPSyllabusBody(BaseModel):
+    passcode: str
+    course: str
+    syllabus: str
+
+
+@app.post("/api/teacher/pastpaper/config/save")
+def teacher_pp_save_syllabus(body: SavePPSyllabusBody):
+    if not check_teacher(body.passcode):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+        
+    cfg = load_past_paper_config()
+    cfg[body.course] = body.syllabus
+    save_past_paper_config(cfg)
+    return {"ok": True}
+
+
+class SavePPSolutionBody(BaseModel):
+    passcode: str
+    course: str
+    year: int
+    series: str
+    paper: str
+    question: str
+    video_url: str | None = ""
+    note_id: str | None = ""
+    teacher_tip: str | None = ""
+
+
+@app.post("/api/teacher/pastpaper/solutions/save")
+def teacher_pp_save_solution(body: SavePPSolutionBody):
+    if not check_teacher(body.passcode):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+        
+    sols = load_past_paper_solutions()
+    key = f"{body.course.lower().strip()}:{body.year}:{body.series.lower().strip()}:{body.paper.lower().strip()}:{body.question.lower().strip()}"
+    n = note_by_id(body.note_id) if body.note_id else None
+    
+    sols[key] = {
+        "course": body.course, 
+        "year": body.year, 
+        "series": body.series, 
+        "paper": body.paper, 
+        "question": body.question, 
+        "video_url": body.video_url, 
+        "note_id": body.note_id, 
+        "note_filename": n.get("filename", "") if n else "", 
+        "teacher_tip": body.teacher_tip
+    }
+    
+    save_past_paper_solutions(sols)
+    return {"ok": True}
+
+
+class DeleteKeyBody(BaseModel):
+    passcode: str
+    key: str
+
+
+@app.post("/api/teacher/pastpaper/solutions/delete")
+def teacher_pp_delete_solution(body: DeleteKeyBody):
+    if not check_teacher(body.passcode):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+        
+    sols = load_past_paper_solutions()
+    sols.pop(body.key, None)
+    save_past_paper_solutions(sols)
+    
+    return {"ok": True}
+
+
+@app.post("/api/teacher/students")
+def list_students(body: TeacherAuth):
+    if not check_teacher(body.passcode):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+        
+    students = []
+    for s in load_roster():
+        students.append({
+            "id": s["id"], 
+            "name": s.get("name", ""), 
+            "email": s.get("email", ""), 
+            "courses": s.get("courses", []),
+            "has_password": bool(s.get("password_hash"))
+        })
+        
+    return {"students": students}
+
+
+class AddStudentBody(BaseModel):
+    passcode: str
+    name: str
+    email: str
+    password: str | None = ""
+    courses: str | None = ""
+
+
+@app.post("/api/teacher/students/add")
+def add_student(body: AddStudentBody):
+    if not check_teacher(body.passcode):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+        
+    name = body.name.strip()
+    email = (body.email or "").strip()
+    
+    if not email:
+        return JSONResponse({"error": "Email required"}, status_code=400)
+        
+    roster = load_roster()
+    courses = [c.strip() for c in (body.courses or "").split(";") if c.strip()]
+    
+    existing = next((s for s in roster if (s.get("email") or "").strip().lower() == email.lower()), None)
+    
+    if existing:
+        prev = existing.get("courses", [])
+        seen = {c.lower() for c in prev}
+        merged = list(prev)
+        
+        for c in courses:
+            if c.lower() not in seen:
+                merged.append(c)
+                seen.add(c.lower())
+                
+        existing["courses"] = merged
+        
+        if name and name != email.split("@")[0]:
+            existing["name"] = name
+            
+        if (body.password or "").strip():
+            existing["password_hash"] = hash_pw(body.password)
+            
+        save_roster(roster)
+        return {"ok": True, "merged": True, "message": "Student updated."}
+        
+    new_st = {
+        "id": secrets.token_hex(6), 
+        "name": name or email.split("@")[0], 
+        "email": email, 
+        "courses": courses, 
+        "password_hash": hash_pw(body.password) if body.password else ""
+    }
+    
+    roster.append(new_st)
+    save_roster(roster)
+    
+    return {"ok": True, "merged": False}
+
+
+class RemoveStudentBody(BaseModel):
     passcode: str
     id: str
 
 
-@app.post("/api/teacher/recordings/delete")
-def teacher_delete_recording(body: DeleteRecBody):
-    if not check_passcode(body.passcode):
+@app.post("/api/teacher/students/remove")
+def remove_student(body: RemoveStudentBody):
+    if not check_teacher(body.passcode):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
-    if not _remove_recording(body.id):
-        return JSONResponse({"error": "not found"}, status_code=404)
-    save_recordings(RECORDINGS)
-    return {"ok": True, "id": body.id, "total_recordings_now": len(RECORDINGS)}
+        
+    roster = load_roster()
+    new_roster = [s for s in roster if s["id"] != body.id]
+    save_roster(new_roster)
+    
+    for tok in [t for t, v in SESSIONS.items() if v["student_id"] == body.id]:
+        SESSIONS.pop(tok, None)
+        
+    return {"ok": True}
 
 
-class DeleteUnassignedBody(BaseModel):
-    passcode: str
-
-
-@app.post("/api/teacher/recordings/delete-unassigned")
-def teacher_delete_unassigned(body: DeleteUnassignedBody):
-    if not check_passcode(body.passcode):
-        return JSONResponse({"error": "unauthorized"}, status_code=401)
-    targets = [r["id"] for r in RECORDINGS if (r.get("unit") or "Unassigned") == "Unassigned"]
-    for rid in targets:
-        _remove_recording(rid)
-    if targets:
-        save_recordings(RECORDINGS)
-    return {"ok": True, "deleted": len(targets), "total_recordings_now": len(RECORDINGS)}
-
-
-async def generate_summary_and_topics(rec):
-    segs = rec.get("segments") or []
-    if not segs:
-        return None
-    idx = await retrieve(rec, rec.get("display_title") or rec.get("topic") or "lecture", k=30, window=1)
-    context = context_from_indices(rec, idx, max_chars=20000)
-    system = (
-        "You summarize a class recording for students. Use ONLY the transcript. "
-        "Always write in English. "
-        "Return STRICT JSON: {\"summary\": string (2-4 sentences), "
-        "\"topics\": string[] (4-8 short topic tags, each 1-4 words)}. No markdown, no extra text."
-    )
-    raw = await llm(
-        [{"role": "system", "content": system},
-         {"role": "user", "content": f"Transcript excerpts:\n{context}"}],
-        max_tokens=500, temperature=0.2,
-    )
-    import json as _json
-    txt = (raw or "").strip()
-    if txt.startswith("```"):
-        txt = txt.strip("`")
-        txt = txt.split("\n", 1)[-1] if "\n" in txt else txt
-    try:
-        data = _json.loads(txt[txt.find("{"): txt.rfind("}") + 1])
-    except Exception:
-        data = {"summary": txt[:400], "topics": []}
-    rec["summary"] = (data.get("summary") or "").strip()
-    rec["topics"] = [t.strip() for t in (data.get("topics") or []) if t.strip()][:8]
-    return rec
-
-
-class SummaryBody(BaseModel):
+class ResetPasswordBody(BaseModel):
     passcode: str
     id: str
+    new_password: str | None = None
 
 
-@app.post("/api/teacher/summary")
-async def teacher_summary(body: SummaryBody):
-    if not check_passcode(body.passcode):
+def _gen_password(n=8):
+    alphabet = "abcdefghijkmnpqrstuvwxyz23456789"
+    return "".join(secrets.choice(alphabet) for _ in range(n))
+
+
+@app.post("/api/teacher/students/reset-password")
+def reset_student_password(body: ResetPasswordBody):
+    if not check_teacher(body.passcode):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
-    rec = REC_BY_ID.get(body.id)
-    if not rec:
-        return JSONResponse({"error": "not found"}, status_code=404)
-    if not rec.get("segments"):
-        return JSONResponse({"error": "This recording has no transcript yet."}, status_code=422)
-    try:
-        await generate_summary_and_topics(rec)
-    except LLMConfigError as e:
-        return JSONResponse({"error": str(e)}, status_code=503)
-    except Exception as e:
-        return JSONResponse({"error": f"Could not generate summary: {e}"}, status_code=500)
-    save_recordings(RECORDINGS)
-    return {"ok": True, "id": body.id, "summary": rec.get("summary", ""), "topics": rec.get("topics", [])}
+        
+    roster = load_roster()
+    student = next((s for s in roster if s["id"] == body.id), None)
+    
+    if not student:
+        return JSONResponse({"error": "Student not found"}, status_code=404)
+        
+    new_pw = (body.new_password or "").strip() or _gen_password()
+    student["password_hash"] = hash_pw(new_pw)
+    save_roster(roster)
+    
+    for tok in [t for t, v in SESSIONS.items() if v["student_id"] == body.id]:
+        SESSIONS.pop(tok, None)
+        
+    return {"ok": True, "email": student.get("email"), "new_password": new_pw}
 
 
+class UpdateStudentBody(BaseModel):
+    passcode: str
+    id: str
+    name: str
+    email: str
+    courses: list[str]
+    new_password: str | None = None
+
+
+@app.post("/api/teacher/students/update")
+def update_student(body: UpdateStudentBody):
+    if not check_teacher(body.passcode):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+        
+    roster = load_roster()
+    st = next((s for s in roster if s["id"] == body.id), None)
+    
+    if not st:
+        return JSONResponse({"error": "Student not found"}, status_code=404)
+        
+    new_email = body.email.strip()
+    if not new_email:
+        return JSONResponse({"error": "Email can't be empty."}, status_code=400)
+        
+    clash = any((s.get("email") or "").lower() == new_email.lower() and s["id"] != body.id for s in roster)
+    if clash:
+        return JSONResponse({"error": "Another student already uses that email."}, status_code=400)
+        
+    st["email"] = new_email
+    st["name"] = body.name.strip() or (st.get("email") or "").split("@")[0]
+    
+    seen, cleaned = set(), []
+    for c in body.courses:
+        c = (c or "").strip()
+        if c and c.lower() not in seen:
+            cleaned.append(c)
+            seen.add(c.lower())
+    st["courses"] = cleaned
+
+    pw_changed = False
+    if body.new_password is not None and body.new_password.strip():
+        st["password_hash"] = hash_pw(body.new_password.strip())
+        pw_changed = True
+
+    save_roster(roster)
+    
+    if pw_changed:
+        for tok in [t for t, v in SESSIONS.items() if v.get("student_id") == body.id]:
+            SESSIONS.pop(tok, None)
+            
+    return {"ok": True}
+
+
+# ==============================================================================
+# 10. DEDUPLICATION ENDPOINTS
+# ==============================================================================
+def _find_email_duplicates(roster):
+    groups = {}
+    for s in roster:
+        key = (s.get("email") or "").strip().lower()
+        if not key:
+            continue
+        groups.setdefault(key, []).append(s)
+    return {k: v for k, v in groups.items() if len(v) > 1}
+
+
+def _merge_group_courses(entries):
+    seen, merged = set(), []
+    for e in entries:
+        for c in (e.get("courses") or []):
+            cl = c.strip().lower()
+            if cl not in seen:
+                merged.append(c.strip())
+                seen.add(cl)
+    return merged
+
+
+class DedupeAuth(BaseModel):
+    passcode: str
+
+
+@app.post("/api/teacher/students/dedupe-preview")
+def dedupe_preview(body: DedupeAuth):
+    if not check_teacher(body.passcode):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+        
+    dups = _find_email_duplicates(load_roster())
+    preview = []
+    
+    for email, entries in dups.items():
+        keep = entries[0]
+        preview.append({
+            "email": keep.get("email"),
+            "duplicate_count": len(entries),
+            "keep": {
+                "id": keep["id"], 
+                "name": keep.get("name"), 
+                "courses": keep.get("courses", []), 
+                "has_password": bool(keep.get("password_hash"))
+            },
+            "will_delete": [
+                {"id": e["id"], "name": e.get("name"), "courses": e.get("courses", [])} 
+                for e in entries[1:]
+            ],
+            "merged_courses": _merge_group_courses(entries),
+        })
+        
+    return {
+        "duplicate_emails": len(dups), 
+        "accounts_to_delete": sum(len(e) - 1 for e in dups.values()), 
+        "groups": preview
+    }
+
+
+@app.post("/api/teacher/students/dedupe-apply")
+def dedupe_apply(body: DedupeAuth):
+    if not check_teacher(body.passcode):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+        
+    roster = load_roster()
+    dups = _find_email_duplicates(roster)
+    
+    if not dups:
+        return {"ok": True, "merged_emails": 0, "deleted_accounts": 0}
+        
+    delete_ids = set()
+    merged_emails = 0
+    
+    for email, entries in dups.items():
+        keep = entries[0]
+        keep["courses"] = _merge_group_courses(entries)
+        
+        if not keep.get("password_hash"):
+            for e in entries[1:]:
+                if e.get("password_hash"):
+                    keep["password_hash"] = e["password_hash"]
+                    break
+                    
+        for e in entries[1:]:
+            delete_ids.add(e["id"])
+            
+        merged_emails += 1
+        
+    new_roster = [s for s in roster if s["id"] not in delete_ids]
+    save_roster(new_roster)
+    
+    for tok in [t for t, v in SESSIONS.items() if v.get("student_id") in delete_ids]:
+        SESSIONS.pop(tok, None)
+        
+    return {
+        "ok": True, 
+        "merged_emails": merged_emails, 
+        "deleted_accounts": len(delete_ids), 
+        "total_now": len(new_roster)
+    }
+
+
+@app.post("/api/teacher/students/import")
+async def import_students(passcode: str = Form(...), file: UploadFile = File(...)):
+    if not check_teacher(passcode):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+        
+    import openpyxl
+    wb = openpyxl.load_workbook(io.BytesIO(await file.read()))
+    ws = wb.active
+    rows = list(ws.iter_rows(values_only=True))
+    
+    roster = load_roster()
+    by_email = {(s.get("email") or "").strip().lower(): s for s in roster if s.get("email")}
+    added = updated = 0
+    
+    for row in rows[1:]:
+        if len(row) >= 2 and row[0]:
+            email = str(row[0]).strip()
+            pw = str(row[1]).strip() if row[1] else ""
+            name = str(row[2]).strip() if len(row) > 2 and row[2] else email.split('@')[0]
+            courses = [c.strip() for c in str(row[3]).split(';')] if len(row) > 3 and row[3] else []
+            
+            key = email.lower()
+            if key in by_email:
+                s = by_email[key]
+                existing_courses = s.get("courses", [])
+                seen = {c.lower() for c in existing_courses}
+                merged = list(existing_courses)
+                
+                for c in courses:
+                    if c.lower() not in seen:
+                        merged.append(c)
+                        seen.add(c.lower())
+                        
+                s["courses"] = merged
+                if name and name != email.split("@")[0]:
+                    s["name"] = name
+                if pw:
+                    s["password_hash"] = hash_pw(pw)
+                updated += 1
+            else:
+                new_st = {
+                    "id": secrets.token_hex(6), 
+                    "email": email, 
+                    "password_hash": hash_pw(pw) if pw else "", 
+                    "name": name, 
+                    "courses": courses
+                }
+                roster.append(new_st)
+                by_email[key] = new_st
+                added += 1
+                
+    save_roster(roster)
+    return {"ok": True, "added": added, "updated": updated}
+
+
+# ==============================================================================
+# 11. STATS, EXPORTS & LOGOS
+# ==============================================================================
 @app.post("/api/teacher/stats")
 def teacher_stats(body: TeacherAuth):
-    if not check_passcode(body.passcode):
+    if not check_teacher(body.passcode):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
-    from datetime import datetime, timedelta
-    roster = load_roster()
+        
     log = load_qlog()
-    total = len(RECORDINGS)
-    transcribed = sum(1 for r in RECORDINGS if r.get("segments"))
-    visible = sum(1 for r in RECORDINGS if r.get("visible", True))
-    unassigned = sum(1 for r in RECORDINGS if (r.get("unit") or "Unassigned") == "Unassigned")
     week_ago = datetime.utcnow() - timedelta(days=7)
     q_week = 0
     for q in log:
@@ -2488,17 +2631,17 @@ def teacher_stats(body: TeacherAuth):
                 q_week += 1
         except Exception:
             pass
-    courses = len({(r.get("unit") or "Unassigned") for r in RECORDINGS})
+            
     return {
-        "recordings_total": total,
-        "recordings_transcribed": transcribed,
-        "recordings_missing": total - transcribed,
-        "recordings_visible": visible,
-        "recordings_unassigned": unassigned,
-        "courses": courses,
-        "students": len(roster),
-        "questions_total": len(log),
-        "questions_this_week": q_week,
+        "recordings_total": len(RECORDINGS), 
+        "recordings_transcribed": sum(1 for r in RECORDINGS if r.get("segments")),
+        "recordings_missing": len(RECORDINGS) - sum(1 for r in RECORDINGS if r.get("segments")),
+        "recordings_visible": sum(1 for r in RECORDINGS if r.get("visible", True)), 
+        "recordings_unassigned": sum(1 for r in RECORDINGS if (r.get("unit") or "Unassigned") == "Unassigned"),
+        "courses": len({r.get("unit") or "Unassigned" for r in RECORDINGS}),
+        "students": len(load_roster()), 
+        "questions_total": len(log), 
+        "questions_this_week": q_week
     }
 
 
@@ -2511,13 +2654,15 @@ _STOPWORDS = set("the a an and or of to in is are was were be been what how why 
 
 @app.post("/api/teacher/analytics")
 def teacher_analytics(body: TeacherAuth):
-    if not check_passcode(body.passcode):
+    if not check_teacher(body.passcode):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
+        
     log = load_qlog()
     kw = Counter()
     per_student = Counter()
     per_course = Counter()
     per_day = Counter()
+    
     for q in log:
         for w in tokenize(q.get("question", "")):
             if len(w) > 2 and w not in _STOPWORDS:
@@ -2527,6 +2672,7 @@ def teacher_analytics(body: TeacherAuth):
         d = (q.get("time") or "")[:10]
         if d:
             per_day[d] += 1
+            
     return {
         "total": len(log),
         "top_keywords": kw.most_common(15),
@@ -2536,79 +2682,95 @@ def teacher_analytics(body: TeacherAuth):
     }
 
 
+@app.post("/api/teacher/questions")
+def teacher_questions(body: TeacherAuth):
+    if not check_teacher(body.passcode):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    return {"questions": list(reversed(load_qlog()))[:500]}
+
+
 @app.get("/api/teacher/export/questions.csv")
 def export_questions_csv(passcode: str = Query(...)):
-    if not check_passcode(passcode):
+    if not check_teacher(passcode):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
+        
     import csv
-    log = load_qlog()
     buf = io.StringIO()
     w = csv.writer(buf)
-    w.writerow(["Time", "Student", "Recording", "Unit", "Question"])
-    for q in reversed(log):
-        w.writerow([q.get("time", ""), q.get("student", ""), q.get("recording_title", ""),
-                    q.get("unit", ""), q.get("question", "")])
-    data = buf.getvalue().encode("utf-8-sig")
-    from fastapi.responses import Response
-    return Response(content=data, media_type="text/csv",
-                    headers={"Content-Disposition": "attachment; filename=questions.csv"})
+    w.writerow(["Time", "Student", "Recording", "Unit", "Question", "Answer"])
+    
+    for q in reversed(load_qlog()):
+        w.writerow([
+            q.get("time",""), 
+            q.get("student",""), 
+            q.get("recording_title",""),
+            q.get("unit",""), 
+            q.get("question",""), 
+            q.get("answer","")
+        ])
+        
+    return Response(
+        content=buf.getvalue().encode("utf-8-sig"), 
+        media_type="text/csv", 
+        headers={"Content-Disposition": "attachment; filename=questions.csv"}
+    )
 
 
 @app.get("/api/teacher/export/roster.csv")
 def export_roster_csv(passcode: str = Query(...)):
-    if not check_passcode(passcode):
+    if not check_teacher(passcode):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
+        
     import csv
-    roster = load_roster()
     buf = io.StringIO()
     w = csv.writer(buf)
     w.writerow(["Name", "Email", "Courses"])
-    for s in roster:
-        w.writerow([s.get("name", ""), s.get("email", ""), ", ".join(s.get("courses", []) or [])])
-    data = buf.getvalue().encode("utf-8-sig")
-    from fastapi.responses import Response
-    return Response(content=data, media_type="text/csv",
-                    headers={"Content-Disposition": "attachment; filename=roster.csv"})
+    
+    for s in load_roster():
+        w.writerow([s.get("name",""), s.get("email",""), ", ".join(s.get("courses",[]) or [])])
+        
+    return Response(
+        content=buf.getvalue().encode("utf-8-sig"), 
+        media_type="text/csv", 
+        headers={"Content-Disposition": "attachment; filename=roster.csv"}
+    )
 
 
 @app.get("/api/teacher/export/questions.pdf")
 def export_questions_pdf(passcode: str = Query(...)):
-    if not check_passcode(passcode):
+    if not check_teacher(passcode):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
-    from fastapi.responses import Response
-    from datetime import datetime
+        
     log = load_qlog()
     lines = [f"NG-ClassMate — Student Questions Report",
              f"Generated {datetime.utcnow().strftime('%Y-%m-%d %H:%M')} UTC",
              f"Total questions: {len(log)}", ""]
+             
     for q in reversed(log):
         lines.append(f"{q.get('time','')}  |  {q.get('student','')}  |  {q.get('unit','')}")
         lines.append(f"  Q: {q.get('question','')}")
         lines.append(f"  Recording: {q.get('recording_title','')}")
         lines.append("")
-    pdf_bytes = _simple_text_pdf(lines)
-    return Response(content=pdf_bytes, media_type="application/pdf",
-                    headers={"Content-Disposition": "attachment; filename=questions.pdf"})
-
-
-def _simple_text_pdf(lines):
+        
     def esc(s):
         return (s or "").replace("\\", r"\\").replace("(", r"\(").replace(")", r"\)")
+        
     per_page = 48
     pages = [lines[i:i + per_page] for i in range(0, max(1, len(lines)), per_page)] or [[""]]
-    objs = []
     n_pages = len(pages)
     font_obj = 3 + n_pages * 2
-    kids = []
     body_objs = {}
     obj_num = 3
     content_nums = []
     page_nums = []
+    
     for pi, pg in enumerate(pages):
         page_no = obj_num; obj_num += 1
         content_no = obj_num; obj_num += 1
         page_nums.append(page_no); content_nums.append(content_no)
+        
     font_no = obj_num
+    
     for pi, pg in enumerate(pages):
         text_cmds = ["BT", "/F1 10 Tf", "12 TL", "40 800 Td"]
         for ln in pg:
@@ -2621,22 +2783,108 @@ def _simple_text_pdf(lines):
             f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
             f"/Resources << /Font << /F1 {font_no} 0 R >> >> /Contents {content_nums[pi]} 0 R >>"
         )
+        
     body_objs[font_no] = "<< /Type /Font /Subtype /Type1 /BaseFont /Courier >>"
     kids_str = " ".join(f"{pn} 0 R" for pn in page_nums)
     body_objs[1] = "<< /Type /Catalog /Pages 2 0 R >>"
     body_objs[2] = f"<< /Type /Pages /Kids [{kids_str}] /Count {n_pages} >>"
+    
     out = "%PDF-1.4\n"
     offsets = {}
     for num in sorted(body_objs):
         offsets[num] = len(out.encode("latin-1", "replace"))
         out += f"{num} 0 obj\n{body_objs[num]}\nendobj\n"
+        
     xref_pos = len(out.encode("latin-1", "replace"))
     max_num = max(body_objs)
     out += f"xref\n0 {max_num + 1}\n0000000000 65535 f \n"
     for num in range(1, max_num + 1):
         out += f"{offsets.get(num, 0):010d} 00000 n \n"
     out += f"trailer\n<< /Size {max_num + 1} /Root 1 0 R >>\nstartxref\n{xref_pos}\n%%EOF"
-    return out.encode("latin-1", "replace")
+    
+    return Response(
+        content=out.encode("latin-1", "replace"), 
+        media_type="application/pdf", 
+        headers={"Content-Disposition": "attachment; filename=questions.pdf"}
+    )
+
+
+class ChangePassBody(BaseModel):
+    passcode: str
+    new_passcode: str
+
+@app.post("/api/teacher/passcode")
+def change_passcode(body: ChangePassBody):
+    if not check_teacher(body.passcode):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+        
+    if not body.new_passcode.strip():
+        return JSONResponse({"error": "empty passcode"}, status_code=400)
+        
+    cfg = load_config()
+    cfg["passcode"] = body.new_passcode.strip()
+    save_config(cfg)
+    return {"ok": True}
+
+
+ALLOWED_LOGO_EXT = {"png": "png", "jpg": "jpg", "jpeg": "jpg", "webp": "webp", "gif": "gif", "svg": "svg"}
+LOGO_MAX_BYTES = 2 * 1024 * 1024
+LOGO_MIME = {"png": "image/png", "jpg": "image/jpeg", "webp": "image/webp", "gif": "image/gif", "svg": "image/svg+xml"}
+LOGO_PATH_BASE = os.path.join(DATA_DIR, "logo")
+
+def _current_logo_file():
+    for e in set(ALLOWED_LOGO_EXT.values()):
+        p = f"{LOGO_PATH_BASE}.{e}"
+        if os.path.exists(p):
+            return p, e
+    return None, None
+
+
+@app.post("/api/teacher/logo")
+async def upload_logo(passcode: str = Form(...), file: UploadFile = File(...)):
+    if not check_teacher(passcode):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+        
+    ext = (file.filename or "").rsplit(".", 1)[-1].lower() if "." in (file.filename or "") else ""
+    if ext not in ALLOWED_LOGO_EXT:
+        return JSONResponse({"error": "Please upload a PNG, JPG, WEBP, GIF or SVG image."}, status_code=400)
+        
+    data = await file.read()
+    if len(data) > LOGO_MAX_BYTES:
+        return JSONResponse({"error": "Image is too large (max 2 MB)."}, status_code=400)
+        
+    save_ext = ALLOWED_LOGO_EXT[ext]
+    os.makedirs(DATA_DIR, exist_ok=True)
+    
+    for e in set(ALLOWED_LOGO_EXT.values()):
+        old = f"{LOGO_PATH_BASE}.{e}"
+        if os.path.exists(old):
+            try: os.remove(old)
+            except OSError: pass
+            
+    with open(f"{LOGO_PATH_BASE}.{save_ext}", "wb") as f:
+        f.write(data)
+        
+    cfg = load_config()
+    cfg["logo"] = "/logo"
+    cfg["logo_ext"] = save_ext
+    save_config(cfg)
+    
+    return {"ok": True, "logo": "/logo"}
+
+
+@app.get("/logo")
+def get_logo():
+    path, e = _current_logo_file()
+    if not path:
+        return JSONResponse({"error": "no logo"}, status_code=404)
+    return FileResponse(path, media_type=LOGO_MIME.get(e, "application/octet-stream"))
+
+
+@app.get("/api/branding")
+def branding():
+    path, _ = _current_logo_file()
+    return {"logo": "/logo" if path else ""}
 
 
 @app.get("/api/health")

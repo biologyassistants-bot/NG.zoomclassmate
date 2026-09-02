@@ -2191,11 +2191,25 @@ def teacher_pp_config(body: TeacherAuth):
     if not check_teacher(body.passcode):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
         
-    courses = sorted({r.get("unit") or "Unassigned" for r in RECORDINGS if (r.get("unit") or "Unassigned") != "Unassigned"})
+    courses = set()
+    
+    # 1. Grab courses from recordings (if you ever use the Unit box in the future)
+    for r in RECORDINGS:
+        u = r.get("unit")
+        if u and u.strip().lower() != "unassigned":
+            courses.add(u.strip())
+            
+    # 2. Grab courses already assigned to Students in the Roster (This populates the dropdown!)
+    for s in load_roster():
+        for c in s.get("courses", []):
+            if c and c.strip():
+                courses.add(c.strip())
+                
+    courses_list = sorted(list(courses))
     sols = load_past_paper_solutions()
     
     return {
-        "courses": courses, 
+        "courses": courses_list, 
         "syllabi": load_past_paper_config(), 
         "notes_library": [{"id": n["id"], "filename": n["filename"]} for n in load_notes_library()], 
         "solutions": [{"key": k, **v} for k, v in sols.items()]

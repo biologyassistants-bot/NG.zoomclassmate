@@ -394,7 +394,18 @@
           <label class="fld"><span>Answered Doc (Notes Lib)</span><select id="tqAnsweredDocSelect" style="width: 100%; padding: 8px; border-radius: 8px; border: 1.5px solid var(--line);"></select></label>
           <label class="fld"><span>Extra Notes (Notes Lib)</span><select id="tqExtraNoteSelect" style="width: 100%; padding: 8px; border-radius: 8px; border: 1.5px solid var(--line);"></select></label>
         </div>
-
+        
+<div style="display: flex; gap: 12px; align-items: center; margin-bottom: 16px; background: var(--panel2); padding: 12px; border-radius: 8px; border: 1.5px dashed var(--line);">
+          <label class="fld" style="flex: 1; margin: 0;">
+            <span style="display: block; margin-bottom: 6px;">Upload a New Document to Library (.pdf, .docx, .txt)</span>
+            <input type="file" id="tqNewNoteFile" accept=".pdf,.docx,.txt,.md" style="width: 100%; font-size: 13px;" />
+          </label>
+          <div style="display: flex; flex-direction: column; align-items: center;">
+            <button id="tqUploadNoteBtn" type="button" class="ghost-sm" style="margin-top: 18px; padding: 6px 12px;">Upload File</button>
+            <span id="tqUploadStatus" class="meta" style="font-size: 11px; margin-top: 6px;"></span>
+          </div>
+        </div>
+        
         <button id="saveQuestionAssetBtn" class="primary">+ Add to Library</button>
       </div>
 

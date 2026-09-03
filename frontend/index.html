@@ -4,11 +4,14 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>NG-ClassMate · Classes made easier</title>
-  <link rel="stylesheet" href="/style.css?v=13" />
+  <link rel="stylesheet" href="/style.css?v=2" />
 </head>
 <body>
 <div id="app">
 
+  <!-- ==========================================
+       LANDING & AUTHENTICATION GATES
+       ========================================== -->
   <section id="landing" class="gate">
     <div class="gate-card">
       <div class="logo" id="brandLogo">🎓</div>
@@ -29,6 +32,7 @@
     </div>
   </section>
 
+  <!-- Student email + password gate -->
   <section id="gate" class="gate hidden">
     <div class="gate-card">
       <button class="back" data-back="landing">← Back</button>
@@ -42,6 +46,7 @@
     </div>
   </section>
 
+  <!-- Teacher passcode gate -->
   <section id="teacherGate" class="gate hidden">
     <div class="gate-card">
       <button class="back" data-back="landing">← Back</button>
@@ -55,6 +60,9 @@
     </div>
   </section>
 
+  <!-- ==========================================
+       STUDENT WORKSPACE
+       ========================================== -->
   <section id="main" class="main hidden">
     <header class="topbar">
       <div class="brand"><span class="logo-sm">🎓</span> NG-ClassMate</div>
@@ -71,6 +79,7 @@
       </div>
     </header>
 
+    <!-- Pane 1: Dashboard -->
     <div id="studentDashPane" class="student-pane" style="padding: 26px 30px; overflow-y: auto;">
       <div class="pane-head" style="margin-bottom: 24px;">
         <h2 style="font-size: 26px; margin-bottom: 8px;">Welcome back, <span id="dashName">Student</span>! 👋</h2>
@@ -83,6 +92,7 @@
       <div id="studentStatsBar" class="stats-bar" style="max-width: 900px;"></div>
     </div>
 
+    <!-- Pane 2: AI Tutor -->
     <div id="studentTutorPane" class="layout hidden">
       <aside class="sidebar">
         <div class="sidebar-head">
@@ -120,6 +130,7 @@
       </main>
     </div>
 
+    <!-- Pane 3: Study Planner -->
     <div id="studentPlannerPane" class="student-pane hidden" style="padding: 26px 30px; overflow-y: auto;">
       <div class="pane-head" style="margin-bottom: 20px;">
         <h2>📅 Your Study Plan</h2>
@@ -174,6 +185,7 @@
       </div>
     </div>
 
+   <!-- Pane 4: Past Paper Solver -->
     <div id="studentPastPapersPane" class="student-pane hidden" style="padding: 26px 30px; overflow-y: auto;">
       <div class="pane-head" style="margin-bottom: 20px;">
         <h2>📝 Past Paper Solver & Examiner Insight</h2>
@@ -181,8 +193,11 @@
       </div>
 
       <div class="planner-layout">
+        <!-- Question Picker Form -->
         <div class="planner-setup">
           <div style="background: var(--panel); border: 1.5px solid var(--line); border-radius: 14px; padding: 18px;">
+            
+            <!-- Mode Toggle -->
             <div style="display: flex; gap: 10px; margin-bottom: 16px; background: var(--bg); padding: 4px; border-radius: 8px;">
               <button id="modeLibBtn" class="ghost" style="flex: 1; background: var(--panel); box-shadow: var(--shadow-sm); font-weight: 800; color: var(--brand-d);">📚 Library</button>
               <button id="modeSnapBtn" class="ghost" style="flex: 1; font-weight: 600; color: var(--muted);">📸 Screenshot</button>
@@ -196,6 +211,7 @@
               <span id="ppSyllabusBadge" class="meta" style="font-size: 11.5px; margin-top: 4px; display: block; color: var(--brand-d);"></span>
             </label>
 
+            <!-- LIBRARY MODE FILTERS -->
             <div id="ppLibraryFilters">
               <div style="display: flex; gap: 10px; margin-bottom: 12px;">
                 <label class="fld" style="flex: 1;">
@@ -219,6 +235,7 @@
               </div>
             </div>
 
+            <!-- SNAPSHOT MODE UPLOAD -->
             <div id="ppSnapshotUpload" class="hidden" style="margin-bottom: 12px;">
               <label class="fld" style="display: block;">
                 <span style="font-weight: 800; font-size: 13px; display: block; margin-bottom: 6px;">Upload Exam Screenshot</span>
@@ -235,6 +252,7 @@
           </div>
         </div>
 
+        <!-- Result Section -->
         <div class="planner-result">
           <div id="ppEmptyState" class="empty">
             <div class="empty-emoji">📄</div>
@@ -245,34 +263,55 @@
       </div>
     </div>
 
+    <!-- Pane 5: Alerts & Reminders -->
     <div id="studentAlertsPane" class="student-pane hidden" style="padding: 26px 30px; overflow-y: auto;">
       <div class="pane-head" style="margin-bottom: 20px;">
         <h2>🔔 Alerts & Study Reminders</h2>
         <p class="meta">Review scheduled spaced repetition cards and stay ahead of your memory decay.</p>
       </div>
+
       <div id="alertsContainer" style="max-width: 850px; display: flex; flex-direction: column; gap: 14px;"></div>
     </div>
   </section>
 
+  <!-- ==========================================
+       TEACHER WORKSPACE
+       ========================================== -->
   <section id="teacher" class="main hidden">
     <header class="topbar">
       <div class="brand"><span class="logo-sm">👩‍🏫</span> NG-ClassMate · Teacher</div>
       <div class="who">
-        <button id="tabRecordings" class="tab active">Recordings</button>
-        <button id="tabStudents" class="tab">Students</button>
-        <button id="tabPastPapers" class="tab">Past Paper Hub</button>
-        <button id="tabQuestions" class="tab">Student questions</button>
-        <button id="tabAnalytics" class="tab">Analytics</button>
-        <button id="tabSettings" class="tab">Settings</button>
-        <button class="link" id="teacherSignOut">Sign out</button>
-      </div>
+        <div id="teacherRecordings" class="teacher-pane">
+      <!-- Recordings content -->
+    </div>
+
+    <div id="teacherPastPapers" class="teacher-pane" style="display: none;">
+      <!-- Past Paper Hub content -->
+    </div>
+
+    <div id="teacherStudents" class="teacher-pane" style="display: none;">
+      <!-- Students content -->
+    </div>
+
+    <div id="teacherQuestions" class="teacher-pane" style="display: none;">
+      <!-- Questions content -->
+    </div>
+
+    <div id="teacherAnalytics" class="teacher-pane" style="display: none;">
+      <!-- Analytics content -->
+    </div>
+
+    <div id="teacherSettings" class="teacher-pane" style="display: none;">
+      <!-- Settings content -->
+    </div>
     </header>
 
     <div id="teacherRecordings" class="teacher-pane">
       <div id="statsBar" class="stats-bar"></div>
+
       <div class="pane-head">
         <h2>Manage recordings</h2>
-        <p class="meta">New Zoom recordings arrive here automatically and start hidden. Rename them, assign a unit/course, then toggle Visible so the right students can see them.</p>
+        <p class="meta">New Zoom recordings arrive here automatically and start hidden. Rename them, assign a unit/course, then toggle Visible so the right students can see them. Changes save instantly.</p>
         <div class="import-rec-bar" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:12px;">
           <button id="importRecBtn" type="button" class="primary">⬇️ Import cloud recordings</button>
           <button id="transcribeAllBtn" type="button" class="ghost">🎙️ Transcribe all missing</button>
@@ -283,6 +322,10 @@
           <input id="importOneInput" type="text" class="filter-input" placeholder="Import one recording — paste a Zoom Meeting ID / UUID or recording link" />
           <button id="importOneBtn" type="button" class="ghost">➕ Import this recording</button>
           <span id="importOneStatus" class="meta"></span>
+        </div>
+        <div id="bulkProgress" class="bulk-progress hidden">
+          <div class="bulk-bar"><div id="bulkBarFill" class="bulk-bar-fill"></div></div>
+          <span id="bulkProgressText" class="meta"></span>
         </div>
       </div>
       <div class="rec-filters">
@@ -299,73 +342,18 @@
           <option value="date_asc" selected>Class date (oldest first)</option>
           <option value="date_desc">Class date (newest first)</option>
           <option value="added_desc">Date added (newest first)</option>
+          <option value="added_asc">Date added (oldest first)</option>
+          <option value="course_az">Course (A–Z)</option>
+          <option value="title_az">Title (A–Z)</option>
         </select>
         <span id="recCount" class="rec-count"></span>
       </div>
       <div id="tRecList" class="t-rec-list"></div>
     </div>
 
-    <div id="teacherStudents" class="teacher-pane hidden">
-      <div class="pane-head">
-        <h2>Class roster</h2>
-        <p class="meta">Only students on this list can sign in. Import a sheet of students, or add one manually.</p>
-      </div>
-      <div class="add-student">
-        <input id="newStudentName" type="text" placeholder="Student name" />
-        <input id="newStudentEmail" type="text" placeholder="Email" />
-        <input id="newStudentPassword" type="text" placeholder="Password" />
-        <input id="newStudentCourses" type="text" placeholder="Courses (separate with ;)" />
-        <button id="addStudentBtn" class="primary">+ Add student</button>
-      </div>
-      <p id="addStudentErr" class="err hidden"></p>
-      <div class="export-bar" style="margin-top:6px;gap:10px;">
-        <button id="exportRosterCsv" type="button" class="ghost">⬇️ Export roster (CSV)</button>
-        <button id="dedupeBtn" type="button" class="ghost">🔎 Merge duplicate accounts</button>
-      </div>
-      <div class="import-box" style="margin-top:14px;padding:12px;border:1px dashed #bbb;border-radius:10px;">
-        <strong>📥 Import students from Excel</strong>
-        <input type="file" id="excelFile" accept=".xlsx" />
-        <button id="importBtn" class="primary">Upload &amp; import</button>
-        <p id="importMsg" class="ok-msg hidden"></p>
-        <p id="importErr" class="err hidden"></p>
-      </div>
-      <div style="margin-top: 20px; margin-bottom: 12px;">
-        <input id="studentSearchInput" type="text" class="filter-input" placeholder="🔍 Search students by name or email…" style="width: 100%;" />
-      </div>
-      <div id="studentList" class="student-list"></div>
-    </div>
-
-    <div id="teacherPastPapers" class="teacher-pane hidden">
-      <div class="pane-head">
-        <h2>Past Paper Hub: Syllabus & Library</h2>
-        <p class="meta">Configure which syllabus the AI references for each course, and upload complete exam files into your library.</p>
-      </div>
-
-      <div class="setting-card" style="margin-bottom: 24px;">
-        <h3>1. Course Syllabus & Exam Board Mapping</h3>
-        <p class="meta" style="margin-bottom: 12px;">Lock your courses to official exam board standards so the AI uses precise mark scheme terminology.</p>
-        <div style="display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-end;">
-          <label class="fld" style="flex: 1; min-width: 200px;">
-            <span>Course / Unit Name</span>
-            <select id="tppCourseSelect" style="width: 100%; padding: 10px; border-radius: 8px; border: 1.5px solid var(--line);"></select>
-          </label>
-          <label class="fld" style="flex: 1; min-width: 200px;">
-            <span>Exam Board & Syllabus Code</span>
-            <select id="tppSyllabusCode" style="width: 100%; padding: 10px; border-radius: 8px; border: 1.5px solid var(--line);">
-              <option value="Cambridge 9700 (A/AS Level Biology)">Cambridge 9700 (A/AS Level Biology)</option>
-              <option value="Cambridge 0610 (IGCSE Biology)">Cambridge 0610 (IGCSE Biology)</option>
-              <option value="Edexcel IAL WBI11/WBI12 (Biology)">Edexcel IAL WBI11/WBI12 (Biology)</option>
-              <option value="Edexcel IAL WBI13 (Unit 3 Biology)">Edexcel IAL WBI13 (Unit 3 Biology)</option>
-              <option value="Edexcel IGCSE 4BI1 (Biology)">Edexcel IGCSE 4BI1 (Biology)</option>
-              <option value="Oxford AQA 9610 (Biology)">Oxford AQA 9610 (Biology)</option>
-            </select>
-          </label>
-          <button id="saveSyllabusBtn" class="primary" style="height: 42px;">Save Syllabus Mapping</button>
-        </div>
-      </div>
-
+    <!-- Bulk Exam Upload Card -->
       <div class="setting-card">
-        <h3>2. Bulk Upload Complete Exam Files</h3>
+        <h3>📄 Bulk Upload Complete Exam Files</h3>
         <p class="meta" style="margin-bottom: 14px;">Upload a complete Question Paper (QP) and Mark Scheme (MS). The system will automatically parse and index the questions into the student dropdown library.</p>
         
         <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; margin-bottom: 12px;">
@@ -398,8 +386,107 @@
         <button id="processBulkExamBtn" class="primary">🚀 Upload & Auto-Extract Exam Questions</button>
       </div>
 
+      <!-- Course Syllabus Config Card -->
+      <div class="setting-card" style="margin-bottom: 24px;">
+        <h3>1. Course Syllabus & Exam Board Mapping</h3>
+        <p class="meta" style="margin-bottom: 12px;">Lock your courses to official exam board standards so the AI uses precise mark scheme terminology.</p>
+        <div style="display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-end;">
+          <label class="fld" style="flex: 1; min-width: 200px;">
+            <span>Course / Unit Name</span>
+            <select id="tppCourseSelect" style="width: 100%; padding: 10px; border-radius: 8px; border: 1.5px solid var(--line);"></select>
+          </label>
+          <label class="fld" style="flex: 1; min-width: 200px;">
+            <span>Exam Board & Syllabus Code</span>
+            <select id="tppSyllabusCode" style="width: 100%; padding: 10px; border-radius: 8px; border: 1.5px solid var(--line);">
+              <option value="Cambridge 9700 (A/AS Level Biology)">Cambridge 9700 (A/AS Level Biology)</option>
+              <option value="Cambridge 0610 (IGCSE Biology)">Cambridge 0610 (IGCSE Biology)</option>
+              <option value="Edexcel IAL WBI11/WBI12 (Biology)">Edexcel IAL WBI11/WBI12 (Biology)</option>
+              <option value="Edexcel IAL WBI13 (Unit 3 Biology)">Edexcel IAL WBI13 (Unit 3 Biology)</option>
+              <option value="Edexcel IGCSE 4BI1 (Biology)">Edexcel IGCSE 4BI1 (Biology)</option>
+              <option value="Oxford AQA 9610 (Biology)">Oxford AQA 9610 (Biology)</option>
+            </select>
+          </label>
+          <button id="saveSyllabusBtn" class="primary" style="height: 42px;">Save Syllabus Mapping</button>
+        </div>
+      </div>
+
+      <!-- Question Solution Upload / Override Card -->
+      <div class="setting-card">
+        <h3>2. Add Question to Teacher Library</h3>
+        <p class="meta" style="margin-bottom: 14px;">Build your curated library. Students can filter by these details to instantly load your specific resources and AI context.</p>
+        
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 10px; margin-bottom: 12px;">
+          <label class="fld"><span>Course</span><select id="tqCourseSelect" style="width: 100%; padding: 8px; border-radius: 8px; border: 1.5px solid var(--line);"></select></label>
+          <label class="fld"><span>Year</span><input id="tqYearInput" type="number" placeholder="2023" style="width: 100%; padding: 8px; border-radius: 8px; border: 1.5px solid var(--line);" /></label>
+          <label class="fld"><span>Series</span>
+            <select id="tqSeriesSelect" style="width: 100%; padding: 8px; border-radius: 8px; border: 1.5px solid var(--line);">
+              <option value="May/June">May/June</option><option value="Oct/Nov">Oct/Nov</option><option value="Feb/March">Feb/March</option><option value="Jan">Jan</option>
+            </select>
+          </label>
+          <label class="fld"><span>Paper (Variant)</span><input id="tqPaperInput" type="text" placeholder="e.g. 21" style="width: 100%; padding: 8px; border-radius: 8px; border: 1.5px solid var(--line);" /></label>
+          <label class="fld"><span>Question</span><input id="tqQuestionInput" type="text" placeholder="e.g. 1(a)" style="width: 100%; padding: 8px; border-radius: 8px; border: 1.5px solid var(--line);" /></label>
+        </div>
+
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px;">
+          <label class="fld"><span>Question Paper (QP) Text</span><textarea id="tqQpText" rows="2" placeholder="Paste the question text here..." style="width: 100%; padding: 8px; border-radius: 8px; border: 1.5px solid var(--line); font-size:12px;"></textarea></label>
+          <label class="fld"><span>Mark Scheme (MS) Text</span><textarea id="tqMsText" rows="2" placeholder="Paste the official mark scheme here..." style="width: 100%; padding: 8px; border-radius: 8px; border: 1.5px solid var(--line); font-size:12px;"></textarea></label>
+        </div>
+
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin-bottom: 14px;">
+          <label class="fld"><span>Video Solution URL</span><input id="tqVideoUrl" type="url" placeholder="https://youtube..." style="width: 100%; padding: 8px; border-radius: 8px; border: 1.5px solid var(--line);" /></label>
+          <label class="fld"><span>Answered Doc (Notes Lib)</span><select id="tqAnsweredDocSelect" style="width: 100%; padding: 8px; border-radius: 8px; border: 1.5px solid var(--line);"></select></label>
+          <label class="fld"><span>Extra Notes (Notes Lib)</span><select id="tqExtraNoteSelect" style="width: 100%; padding: 8px; border-radius: 8px; border: 1.5px solid var(--line);"></select></label>
+        </div>
+        
+<div style="display: flex; gap: 12px; align-items: center; margin-bottom: 16px; background: var(--panel2); padding: 12px; border-radius: 8px; border: 1.5px dashed var(--line);">
+          <label class="fld" style="flex: 1; margin: 0;">
+            <span style="display: block; margin-bottom: 6px;">Upload a New Document to Library (.pdf, .docx, .txt)</span>
+            <input type="file" id="tqNewNoteFile" accept=".pdf,.docx,.txt,.md" style="width: 100%; font-size: 13px;" />
+          </label>
+          <div style="display: flex; flex-direction: column; align-items: center;">
+            <button id="tqUploadNoteBtn" type="button" class="ghost-sm" style="margin-top: 18px; padding: 6px 12px;">Upload File</button>
+            <span id="tqUploadStatus" class="meta" style="font-size: 11px; margin-top: 6px;"></span>
+          </div>
+        </div>
+        
+        <button id="saveQuestionAssetBtn" class="primary">+ Add to Library</button>
+      </div>
+
       <h3 style="margin-top: 26px; margin-bottom: 12px; font-size: 17px;">Existing Teacher Overrides</h3>
       <div id="tppOverridesList" style="display: flex; flex-direction: column; gap: 10px;"></div>
+    </div>
+
+    <div id="teacherStudents" class="teacher-pane hidden">
+      <div class="pane-head">
+        <h2>Class roster</h2>
+        <p class="meta">Only students on this list can sign in. Import a sheet of students, or add one manually. Each student sees only the recordings for their assigned course(s).</p>
+      </div>
+      <div class="add-student">
+        <input id="newStudentName" type="text" placeholder="Student name" />
+        <input id="newStudentEmail" type="text" placeholder="Email" />
+        <input id="newStudentPassword" type="text" placeholder="Password" />
+        <input id="newStudentCourses" type="text" placeholder="Courses (separate with ;)" />
+        <button id="addStudentBtn" class="primary">+ Add student</button>
+      </div>
+      <p id="addStudentErr" class="err hidden"></p>
+      <div class="export-bar" style="margin-top:6px;gap:10px;">
+        <button id="exportRosterCsv" type="button" class="ghost">⬇️ Export roster (CSV)</button>
+        <button id="dedupeBtn" type="button" class="ghost">🔎 Merge duplicate accounts</button>
+      </div>
+      <div class="import-box" style="margin-top:14px;padding:12px;border:1px dashed #bbb;border-radius:10px;">
+        <strong>📥 Import students from Excel</strong>
+        <p class="meta">Columns: <code>email</code>, <code>password</code>, <code>name</code> (optional), <code>courses</code> (separate multiple with <code>;</code>). Course names must match the unit you assign to recordings.</p>
+        <input type="file" id="excelFile" accept=".xlsx" />
+        <button id="importBtn" class="primary">Upload &amp; import</button>
+        <p id="importMsg" class="ok-msg hidden"></p>
+        <p id="importErr" class="err hidden"></p>
+      </div>
+      
+      <div style="margin-top: 20px; margin-bottom: 12px;">
+        <input id="studentSearchInput" type="text" class="filter-input" placeholder="🔍 Search students by name or email…" style="width: 100%;" />
+      </div>
+
+      <div id="studentList" class="student-list"></div>
     </div>
 
     <div id="teacherQuestions" class="teacher-pane hidden">
@@ -432,7 +519,8 @@
       </div>
       <div class="setting-card" style="margin-top:16px;">
         <h3>Website logo</h3>
-        <p class="meta" style="margin-bottom:12px;">Upload a PNG, JPG, WEBP, GIF or SVG (max 2 MB).</p>
+        <p class="meta" style="margin-bottom:12px;">Upload a PNG, JPG, WEBP, GIF or SVG (max 2 MB). It replaces the 🎓 emoji across the site.</p>
+        <img id="logoPreview" alt="Current logo" class="hidden" style="max-height:64px;max-width:180px;border-radius:12px;border:1px solid var(--line);padding:6px;background:var(--panel2);margin-bottom:12px;display:block;" />
         <input type="file" id="logoFile" accept="image/png,image/jpeg,image/webp,image/gif,image/svg+xml" style="margin-bottom:12px;" />
         <button id="saveLogo" class="primary">Upload logo</button>
         <p id="logoSaved" class="ok-msg hidden">Logo updated ✓</p>
@@ -441,6 +529,9 @@
     </div>
   </section>
 
+  <!-- ==========================================
+       MODALS & OVERLAYS
+       ========================================== -->
   <div id="studentModal" class="modal hidden">
     <div class="modal-card">
       <div class="modal-head">
@@ -531,6 +622,6 @@
 
 </div>
 <div id="toastHost" class="toast-host"></div>
-<script src="/app.js?v=13"></script>
+<script src="/app.js?v=12"></script>
 </body>
 </html>

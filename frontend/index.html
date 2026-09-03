@@ -1,17 +1,15 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>NG-ClassMate · Classes made easier</title>
-  <link rel="stylesheet" href="/style.css?v=20" />
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>NG-ClassMate · Classes made easier</title>
+<link rel="stylesheet" href="/style.css?v=2" />
 </head>
 <body>
 <div id="app">
 
-  <!-- ==========================================
-       LANDING & AUTHENTICATION GATES
-       ========================================== -->
+  <!-- Role landing -->
   <section id="landing" class="gate">
     <div class="gate-card">
       <div class="logo" id="brandLogo">🎓</div>
@@ -24,7 +22,7 @@
           <span class="role-d">Ask questions & take quizzes</span>
         </button>
         <button id="roleTeacher" class="role-btn">
-          <span class="role-emoji">👩‍🏫</span>
+          <span class="role-emoji">👩🏫</span>
           <span class="role-t">I'm the teacher</span>
           <span class="role-d">Manage recordings & see questions</span>
         </button>
@@ -50,7 +48,7 @@
   <section id="teacherGate" class="gate hidden">
     <div class="gate-card">
       <button class="back" data-back="landing">← Back</button>
-      <div class="logo">👩‍🏫</div>
+      <div class="logo">👩🏫</div>
       <h1>Teacher access</h1>
       <p class="tagline">Enter your passcode.</p>
       <input id="passInput" type="password" placeholder="Passcode" autocomplete="off" />
@@ -60,9 +58,7 @@
     </div>
   </section>
 
-  <!-- ==========================================
-       STUDENT WORKSPACE
-       ========================================== -->
+  <!-- Student app -->
   <section id="main" class="main hidden">
     <header class="topbar">
       <div class="brand"><span class="logo-sm">🎓</span> NG-ClassMate</div>
@@ -70,10 +66,7 @@
         <button id="tabStudentDash" class="tab active">Dashboard</button>
         <button id="tabStudentTutor" class="tab">AI Tutor</button>
         <button id="tabStudentPlanner" class="tab">Study Planner</button>
-        <button id="tabStudentAlerts" class="tab">
-          🔔 Alerts 
-          <span id="navAlertBadge" class="badge-count hidden" style="background: #e03131; color: #fff; font-size: 10px; padding: 2px 7px; border-radius: 10px; margin-left: 4px; font-weight: 800;">0</span>
-        </button>
+        <button id="tabStudentAlerts" class="tab">🔔 Alerts <span id="navAlertBadge" class="badge-count hidden" style="background: #e03131; color: #fff; font-size: 10px; padding: 2px 7px; border-radius: 10px; margin-left: 4px; font-weight: 800;">0</span></button>
         <button class="link" id="studentSignOut" style="margin-left: 12px;">Sign out</button>
       </div>
     </header>
@@ -137,6 +130,7 @@
       </div>
 
       <div class="planner-layout">
+        <!-- Setup Sidebar -->
         <div class="planner-setup">
           <div id="planSetup">
             <label class="fld" style="margin-bottom: 12px; display: block;">
@@ -163,14 +157,18 @@
               <select id="planFocus" style="width: 100%; padding: 11px 13px; border-radius: 11px; border: 1.5px solid var(--line); background: var(--panel2); font-weight: 600;">
                 <option value="First-time learning">🟢 First-Time Learning (Deep Concept Breakdown)</option>
                 <option value="Reviewing and memorizing definitions" selected>🟡 Review & Memorization (Active Recall & Terms)</option>
-                <option value="Past paper and exam practice">🔴 Exam Practice (Definitions & Concept Drills)</option>
+                <option value="Past paper and exam practice">🔴 Exam & Past Paper Practice (Mark Schemes & Drills)</option>
               </select>
+              <p id="focusHint" class="meta" style="font-size: 12px; margin-top: 6px; color: var(--brand-d);">
+                💡 Combines rapid topic overviews with active recall, flashcards, and definition checks.
+              </p>
             </label>
             <button id="generatePlanBtn" class="primary" style="width: 100%;">Generate My Plan</button>
             <button id="resetPlanBtn" class="ghost hidden" style="width: 100%; margin-top: 8px;">🗑️ Delete Plan & Start Over</button>
           </div>
         </div>
 
+        <!-- Result Workspace -->
         <div class="planner-result">
           <div id="planEmptyState" class="empty">
             <div class="empty-emoji">🗓️</div>
@@ -187,16 +185,15 @@
         <h2>🔔 Alerts & Study Reminders</h2>
         <p class="meta">Review scheduled spaced repetition cards and stay ahead of your memory decay.</p>
       </div>
+
       <div id="alertsContainer" style="max-width: 850px; display: flex; flex-direction: column; gap: 14px;"></div>
     </div>
   </section>
 
-  <!-- ==========================================
-       TEACHER WORKSPACE
-       ========================================== -->
+  <!-- Teacher dashboard -->
   <section id="teacher" class="main hidden">
     <header class="topbar">
-      <div class="brand"><span class="logo-sm">👩‍🏫</span> NG-ClassMate · Teacher</div>
+      <div class="brand"><span class="logo-sm">👩🏫</span> NG-ClassMate · Teacher</div>
       <div class="who">
         <button id="tabRecordings" class="tab active">Recordings</button>
         <button id="tabStudents" class="tab">Students</button>
@@ -207,12 +204,12 @@
       </div>
     </header>
 
-    <!-- Teacher Pane 1: Recordings -->
     <div id="teacherRecordings" class="teacher-pane">
       <div id="statsBar" class="stats-bar"></div>
+
       <div class="pane-head">
         <h2>Manage recordings</h2>
-        <p class="meta">New Zoom recordings arrive here automatically and start hidden. Rename them, assign a unit/course, then toggle Visible so the right students can see them.</p>
+        <p class="meta">New Zoom recordings arrive here automatically and start hidden. Rename them, assign a unit/course, then toggle Visible so the right students can see them. Changes save instantly.</p>
         <div class="import-rec-bar" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:12px;">
           <button id="importRecBtn" type="button" class="primary">⬇️ Import cloud recordings</button>
           <button id="transcribeAllBtn" type="button" class="ghost">🎙️ Transcribe all missing</button>
@@ -223,6 +220,10 @@
           <input id="importOneInput" type="text" class="filter-input" placeholder="Import one recording — paste a Zoom Meeting ID / UUID or recording link" />
           <button id="importOneBtn" type="button" class="ghost">➕ Import this recording</button>
           <span id="importOneStatus" class="meta"></span>
+        </div>
+        <div id="bulkProgress" class="bulk-progress hidden">
+          <div class="bulk-bar"><div id="bulkBarFill" class="bulk-bar-fill"></div></div>
+          <span id="bulkProgressText" class="meta"></span>
         </div>
       </div>
       <div class="rec-filters">
@@ -239,17 +240,19 @@
           <option value="date_asc" selected>Class date (oldest first)</option>
           <option value="date_desc">Class date (newest first)</option>
           <option value="added_desc">Date added (newest first)</option>
+          <option value="added_asc">Date added (oldest first)</option>
+          <option value="course_az">Course (A–Z)</option>
+          <option value="title_az">Title (A–Z)</option>
         </select>
         <span id="recCount" class="rec-count"></span>
       </div>
       <div id="tRecList" class="t-rec-list"></div>
     </div>
 
-    <!-- Teacher Pane 2: Students -->
     <div id="teacherStudents" class="teacher-pane hidden">
       <div class="pane-head">
         <h2>Class roster</h2>
-        <p class="meta">Only students on this list can sign in. Import a sheet of students, or add one manually.</p>
+        <p class="meta">Only students on this list can sign in. Import a sheet of students, or add one manually. Each student sees only the recordings for their assigned course(s).</p>
       </div>
       <div class="add-student">
         <input id="newStudentName" type="text" placeholder="Student name" />
@@ -265,18 +268,20 @@
       </div>
       <div class="import-box" style="margin-top:14px;padding:12px;border:1px dashed #bbb;border-radius:10px;">
         <strong>📥 Import students from Excel</strong>
+        <p class="meta">Columns: <code>email</code>, <code>password</code>, <code>name</code> (optional), <code>courses</code> (separate multiple with <code>;</code>). Course names must match the unit you assign to recordings.</p>
         <input type="file" id="excelFile" accept=".xlsx" />
         <button id="importBtn" class="primary">Upload &amp; import</button>
         <p id="importMsg" class="ok-msg hidden"></p>
         <p id="importErr" class="err hidden"></p>
       </div>
+      
       <div style="margin-top: 20px; margin-bottom: 12px;">
         <input id="studentSearchInput" type="text" class="filter-input" placeholder="🔍 Search students by name or email…" style="width: 100%;" />
       </div>
+
       <div id="studentList" class="student-list"></div>
     </div>
 
-    <!-- Teacher Pane 3: Student Questions -->
     <div id="teacherQuestions" class="teacher-pane hidden">
       <div class="pane-head">
         <h2>Student questions</h2>
@@ -289,7 +294,6 @@
       <div id="qLog" class="q-log"></div>
     </div>
 
-    <!-- Teacher Pane 4: Analytics -->
     <div id="teacherAnalytics" class="teacher-pane hidden">
       <div class="pane-head">
         <h2>Question analytics</h2>
@@ -298,7 +302,6 @@
       <div id="analyticsBody" class="analytics-body"></div>
     </div>
 
-    <!-- Teacher Pane 5: Settings -->
     <div id="teacherSettings" class="teacher-pane hidden">
       <div class="pane-head"><h2>Settings</h2></div>
       <div class="setting-card">
@@ -309,7 +312,8 @@
       </div>
       <div class="setting-card" style="margin-top:16px;">
         <h3>Website logo</h3>
-        <p class="meta" style="margin-bottom:12px;">Upload a PNG, JPG, WEBP, GIF or SVG (max 2 MB).</p>
+        <p class="meta" style="margin-bottom:12px;">Upload a PNG, JPG, WEBP, GIF or SVG (max 2 MB). It replaces the 🎓 emoji across the site.</p>
+        <img id="logoPreview" alt="Current logo" class="hidden" style="max-height:64px;max-width:180px;border-radius:12px;border:1px solid var(--line);padding:6px;background:var(--panel2);margin-bottom:12px;display:block;" />
         <input type="file" id="logoFile" accept="image/png,image/jpeg,image/webp,image/gif,image/svg+xml" style="margin-bottom:12px;" />
         <button id="saveLogo" class="primary">Upload logo</button>
         <p id="logoSaved" class="ok-msg hidden">Logo updated ✓</p>
@@ -318,9 +322,7 @@
     </div>
   </section>
 
-  <!-- ==========================================
-       MODALS & OVERLAYS
-       ========================================== -->
+  <!-- Edit student modal -->
   <div id="studentModal" class="modal hidden">
     <div class="modal-card">
       <div class="modal-head">
@@ -330,17 +332,19 @@
       <div class="modal-body student-edit">
         <label class="fld"><span>Name</span><input id="edName" type="text" /></label>
         <label class="fld"><span>Email</span><input id="edEmail" type="email" /></label>
+
         <div class="fld">
           <span>Courses</span>
           <div id="edCourseList" class="ed-course-list"></div>
           <div class="ed-course-add">
-            <input id="edCourseInput" type="text" placeholder="Add a course" />
+            <input id="edCourseInput" type="text" placeholder="Add a course (must match a recording's course name)" />
             <button id="edCourseAddBtn" type="button" class="ghost-sm">+ Add</button>
           </div>
         </div>
+
         <label class="fld"><span>New password <em>(leave blank to keep current)</em></span>
           <div class="ed-pw-row">
-            <input id="edPassword" type="text" placeholder="Type new password" />
+            <input id="edPassword" type="text" placeholder="Type a new password, or generate one" />
             <button id="edGenPw" type="button" class="ghost-sm">🎲 Generate</button>
           </div>
         </label>
@@ -355,6 +359,7 @@
     </div>
   </div>
 
+  <!-- Dedupe modal -->
   <div id="dedupeModal" class="modal hidden">
     <div class="modal-card">
       <div class="modal-head">
@@ -370,6 +375,7 @@
     </div>
   </div>
 
+  <!-- Quiz modal -->
   <div id="quizModal" class="modal hidden">
     <div class="modal-card">
       <div class="modal-head">
@@ -384,6 +390,7 @@
     </div>
   </div>
 
+  <!-- Flashcard (Spaced Repetition SRS) modal -->
   <div id="flashcardModal" class="modal hidden">
     <div class="modal-card" style="max-width: 550px; text-align: center;">
       <div class="modal-head">
@@ -395,6 +402,7 @@
         <button id="genFreshCardsBtn" class="ghost-sm" style="font-size: 11.5px; padding: 4px 10px;">✨ Generate New Cards</button>
       </div>
       <div id="flashcardBody" style="padding: 18px 20px; min-height: 190px; display: flex; align-items: center; justify-content: center;"></div>
+      <!-- Rating options for Spaced Repetition -->
       <div id="srsRatingControls" class="modal-foot hidden" style="justify-content: center; gap: 8px; flex-wrap: wrap;">
         <button id="srsAgainBtn" class="ghost-sm danger-btn" style="flex: 1; padding: 8px 4px; font-weight: 800;">🔴 Again (1d)</button>
         <button id="srsHardBtn" class="ghost-sm" style="flex: 1; padding: 8px 4px; font-weight: 800; border-color: #f59f00; color: #f59f00;">🟡 Hard (2d)</button>
@@ -411,6 +419,6 @@
 
 </div>
 <div id="toastHost" class="toast-host"></div>
-<script src="/app.js?v=20"></script>
+<script src="/app.js"></script>
 </body>
 </html>

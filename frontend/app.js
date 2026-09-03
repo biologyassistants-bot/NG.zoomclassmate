@@ -1335,6 +1335,7 @@ if(el("tabAnalytics")) el("tabAnalytics").addEventListener("click", () => switch
 if(el("tabSettings")) el("tabSettings").addEventListener("click", () => switchTab("Settings"));
 
 function switchTab(name) {
+  function switchTab(name) {
   // Highlight active tab button
   if(el("tabRecordings")) el("tabRecordings").classList.toggle("active", name === "Recordings");
   if(el("tabStudents")) el("tabStudents").classList.toggle("active", name === "Students");
@@ -1343,13 +1344,13 @@ function switchTab(name) {
   if(el("tabAnalytics")) el("tabAnalytics").classList.toggle("active", name === "Analytics");
   if(el("tabSettings")) el("tabSettings").classList.toggle("active", name === "Settings");
   
-  // Hide or show the panes properly
-  if(el("teacherRecordings")) el("teacherRecordings").style.display = (name === "Recordings" ? "block" : "none");
-  if(el("teacherStudents")) el("teacherStudents").style.display = (name === "Students" ? "block" : "none");
-  if(el("teacherPastPapers")) el("teacherPastPapers").style.display = (name === "PastPapers" ? "block" : "none");
-  if(el("teacherQuestions")) el("teacherQuestions").style.display = (name === "Questions" ? "block" : "none");
-  if(el("teacherAnalytics")) el("teacherAnalytics").style.display = (name === "Analytics" ? "block" : "none");
-  if(el("teacherSettings")) el("teacherSettings").style.display = (name === "Settings" ? "block" : "none");
+  // Toggle visibility using the standard .hidden class
+  if(el("teacherRecordings")) el("teacherRecordings").classList.toggle("hidden", name !== "Recordings");
+  if(el("teacherStudents")) el("teacherStudents").classList.toggle("hidden", name !== "Students");
+  if(el("teacherPastPapers")) el("teacherPastPapers").classList.toggle("hidden", name !== "PastPapers");
+  if(el("teacherQuestions")) el("teacherQuestions").classList.toggle("hidden", name !== "Questions");
+  if(el("teacherAnalytics")) el("teacherAnalytics").classList.toggle("hidden", name !== "Analytics");
+  if(el("teacherSettings")) el("teacherSettings").classList.toggle("hidden", name !== "Settings");
   
   // Load data for the active tab
   if (name === "Questions") loadQuestions();

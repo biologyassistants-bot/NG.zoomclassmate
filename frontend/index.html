@@ -1,205 +1,185 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>NG-ClassMate · Classes made easier</title>
-<link rel="stylesheet" href="/style.css?v=2" />
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>NG-ClassMate · Classes made easier</title>
+  <link rel="stylesheet" href="/style.css?v=20" />
 </head>
 <body>
-<!--
-  ========== ADD YOUR LOGO ==========
-  1. Put your logo image in the "frontend" folder, e.g. frontend/logo.png
-  2. Replace the emoji inside <div class="logo" id="brandLogo">🎓</div> below with:
-        <img src="/logo.png" alt="logo" />
-  3. And in the two top bars, replace <span class="logo-sm">🎓</span> with:
-        <span class="logo-sm"><img src="/logo.png" alt="logo" /></span>
-  The CSS already sizes images inside .logo / .logo-sm automatically.
-  ===================================
--->
 <div id="app">
 
-<!-- Role landing -->
-<section id="landing" class="gate">
-<div class="gate-card">
-<div class="logo" id="brandLogo">🎓</div>
-<h1>NG-ClassMate</h1>
-<p class="tagline">Classes made easier</p>
-<div class="role-pick">
-<button id="roleStudent" class="role-btn">
-<span class="role-emoji">🎒</span>
-<span class="role-t">I'm a student</span>
-<span class="role-d">Ask questions & take quizzes</span>
-</button>
-<button id="roleTeacher" class="role-btn">
-<span class="role-emoji">👩🏫</span>
-<span class="role-t">I'm the teacher</span>
-<span class="role-d">Manage recordings & see questions</span>
-</button>
-</div>
-</div>
-</section>
-
-<!-- Student email + password gate -->
-<section id="gate" class="gate hidden">
-<div class="gate-card">
-<button class="back" data-back="landing">← Back</button>
-<div class="logo">🎒</div>
-<h1>Welcome!</h1>
-<p class="tagline">Sign in with the email and password your teacher gave you.</p>
-<input id="emailInput" type="email" placeholder="Your email" autocomplete="username" />
-<input id="passwordInput" type="password" placeholder="Password" autocomplete="current-password" />
-<button id="enterBtn" class="primary">Let's go →</button>
-<p id="studentErr" class="err hidden"></p>
-</div>
-</section>
-
-<!-- Teacher passcode gate -->
-<section id="teacherGate" class="gate hidden">
-<div class="gate-card">
-<button class="back" data-back="landing">← Back</button>
-<div class="logo">👩🏫</div>
-<h1>Teacher access</h1>
-<p class="tagline">Enter your passcode.</p>
-<input id="passInput" type="password" placeholder="Passcode" autocomplete="off" />
-<button id="passBtn" class="primary">Unlock →</button>
-<p id="passErr" class="err hidden">Wrong passcode. Try again.</p>
-<p class="hint">Default passcode is <code>teach123</code> — change it inside the dashboard.</p>
-</div>
-</section>
-
- <!-- Student app -->
-  <!-- Student app -->
-<section id="main" class="main hidden">
-<header class="topbar">
-<div class="brand"><span class="logo-sm">🎓</span> NG-ClassMate</div>
-<div class="who">
-<button id="tabStudentDash" class="tab active">Dashboard</button>
-        <button id="tabStudentTutor" class="tab">AI Tutor & Quizzes</button>
-        <button id="tabStudentTutor" class="tab">AI Tutor</button>
-<button id="tabStudentPlanner" class="tab">Study Planner</button>
-        <button id="tabStudentAlerts" class="tab">🔔 Alerts <span id="navAlertBadge" class="badge-count hidden" style="background: #e03131; color: #fff; font-size: 10px; padding: 2px 7px; border-radius: 10px; margin-left: 4px; font-weight: 800;">0</span></button>
-<button class="link" id="studentSignOut" style="margin-left: 12px;">Sign out</button>
-</div>
-</header>
-
-<!-- Pane 1: Dashboard -->
-<div id="studentDashPane" class="student-pane" style="padding: 26px 30px; overflow-y: auto;">
-<div class="pane-head" style="margin-bottom: 24px;">
-<h2 style="font-size: 26px; margin-bottom: 8px;">Welcome back, <span id="dashName">Student</span>! 👋</h2>
-<div id="dailyQuote" style="background: rgba(11,191,191,.10); border-left: 4px solid var(--brand); padding: 12px 16px; border-radius: 8px; font-weight: 700; color: var(--brand-d); max-width: 800px;">
-"Success is like cellular respiration—it takes a little activation energy to start, but the payoff is massive."
-</div>
-</div>
-
-<h3 style="margin-bottom: 12px; font-size: 18px; font-weight: 800;">Your Learning Overview</h3>
-      <div id="studentStatsBar" class="stats-bar" style="max-width: 900px;">
-        <!-- Stats injected by JS -->
+  <!-- ==========================================
+       LANDING & AUTHENTICATION GATES
+       ========================================== -->
+  <section id="landing" class="gate">
+    <div class="gate-card">
+      <div class="logo" id="brandLogo">🎓</div>
+      <h1>NG-ClassMate</h1>
+      <p class="tagline">Classes made easier</p>
+      <div class="role-pick">
+        <button id="roleStudent" class="role-btn">
+          <span class="role-emoji">🎒</span>
+          <span class="role-t">I'm a student</span>
+          <span class="role-d">Ask questions & take quizzes</span>
+        </button>
+        <button id="roleTeacher" class="role-btn">
+          <span class="role-emoji">👩‍🏫</span>
+          <span class="role-t">I'm the teacher</span>
+          <span class="role-d">Manage recordings & see questions</span>
+        </button>
       </div>
+    </div>
+  </section>
+
+  <!-- Student email + password gate -->
+  <section id="gate" class="gate hidden">
+    <div class="gate-card">
+      <button class="back" data-back="landing">← Back</button>
+      <div class="logo">🎒</div>
+      <h1>Welcome!</h1>
+      <p class="tagline">Sign in with the email and password your teacher gave you.</p>
+      <input id="emailInput" type="email" placeholder="Your email" autocomplete="username" />
+      <input id="passwordInput" type="password" placeholder="Password" autocomplete="current-password" />
+      <button id="enterBtn" class="primary">Let's go →</button>
+      <p id="studentErr" class="err hidden"></p>
+    </div>
+  </section>
+
+  <!-- Teacher passcode gate -->
+  <section id="teacherGate" class="gate hidden">
+    <div class="gate-card">
+      <button class="back" data-back="landing">← Back</button>
+      <div class="logo">👩‍🏫</div>
+      <h1>Teacher access</h1>
+      <p class="tagline">Enter your passcode.</p>
+      <input id="passInput" type="password" placeholder="Passcode" autocomplete="off" />
+      <button id="passBtn" class="primary">Unlock →</button>
+      <p id="passErr" class="err hidden">Wrong passcode. Try again.</p>
+      <p class="hint">Default passcode is <code>teach123</code> — change it inside the dashboard.</p>
+    </div>
+  </section>
+
+  <!-- ==========================================
+       STUDENT WORKSPACE
+       ========================================== -->
+  <section id="main" class="main hidden">
+    <header class="topbar">
+      <div class="brand"><span class="logo-sm">🎓</span> NG-ClassMate</div>
+      <div class="who">
+        <button id="tabStudentDash" class="tab active">Dashboard</button>
+        <button id="tabStudentTutor" class="tab">AI Tutor</button>
+        <button id="tabStudentPlanner" class="tab">Study Planner</button>
+        <button id="tabStudentAlerts" class="tab">
+          🔔 Alerts 
+          <span id="navAlertBadge" class="badge-count hidden" style="background: #e03131; color: #fff; font-size: 10px; padding: 2px 7px; border-radius: 10px; margin-left: 4px; font-weight: 800;">0</span>
+        </button>
+        <button class="link" id="studentSignOut" style="margin-left: 12px;">Sign out</button>
+      </div>
+    </header>
+
+    <!-- Pane 1: Dashboard -->
+    <div id="studentDashPane" class="student-pane" style="padding: 26px 30px; overflow-y: auto;">
+      <div class="pane-head" style="margin-bottom: 24px;">
+        <h2 style="font-size: 26px; margin-bottom: 8px;">Welcome back, <span id="dashName">Student</span>! 👋</h2>
+        <div id="dailyQuote" style="background: rgba(11,191,191,.10); border-left: 4px solid var(--brand); padding: 12px 16px; border-radius: 8px; font-weight: 700; color: var(--brand-d); max-width: 800px;">
+          "Success is like cellular respiration—it takes a little activation energy to start, but the payoff is massive."
+        </div>
+      </div>
+      
+      <h3 style="margin-bottom: 12px; font-size: 18px; font-weight: 800;">Your Learning Overview</h3>
       <div id="studentStatsBar" class="stats-bar" style="max-width: 900px;"></div>
-</div>
+    </div>
 
-    <!-- Pane 2: AI Tutor & Quizzes -->
     <!-- Pane 2: AI Tutor -->
-<div id="studentTutorPane" class="layout hidden">
-<aside class="sidebar">
-<div class="sidebar-head">
-<h2>Class recordings</h2>
-<input id="search" type="text" placeholder="Search classes…" style="margin-bottom: 8px;" />
-<select id="studentCourseFilter" class="filter-select" title="Filter by course" style="width: 100%;">
-<option value="">All courses</option>
-</select>
-</div>
-<div id="recList" class="rec-list"></div>
-</aside>
-<main class="content">
-<div id="emptyState" class="empty">
-<div class="empty-emoji">📚</div>
-<p>Pick a class recording on the left to start asking questions or generating quizzes.</p>
-</div>
-<div id="workspace" class="workspace hidden">
-<div class="ws-head">
-<div>
-<h2 id="wsTitle">Recording</h2>
-<p id="wsMeta" class="meta"></p>
-</div>
-<div class="ws-actions">
-<button id="clearChatBtn" class="ghost-sm" title="Clear chat history for this class">🗑️ Clear Chat</button>
-<button id="flashcardBtn" class="ghost">🃏 Flashcards (SRS)</button>
-<button id="quizBtn" class="ghost">📝 Generate quiz</button>
-</div>
-</div>
-<div id="chat" class="chat"></div>
-<form id="askForm" class="ask-bar">
-<input id="questionInput" type="text" placeholder="Ask about this class… e.g. What is BMI?" autocomplete="off" />
-<button type="submit" class="primary" id="askBtn">Ask</button>
-</form>
-</div>
-</main>
-</div>
+    <div id="studentTutorPane" class="layout hidden">
+      <aside class="sidebar">
+        <div class="sidebar-head">
+          <h2>Class recordings</h2>
+          <input id="search" type="text" placeholder="Search classes…" style="margin-bottom: 8px;" />
+          <select id="studentCourseFilter" class="filter-select" title="Filter by course" style="width: 100%;">
+            <option value="">All courses</option>
+          </select>
+        </div>
+        <div id="recList" class="rec-list"></div>
+      </aside>
+      <main class="content">
+        <div id="emptyState" class="empty">
+          <div class="empty-emoji">📚</div>
+          <p>Pick a class recording on the left to start asking questions or generating quizzes.</p>
+        </div>
+        <div id="workspace" class="workspace hidden">
+          <div class="ws-head">
+            <div>
+              <h2 id="wsTitle">Recording</h2>
+              <p id="wsMeta" class="meta"></p>
+            </div>
+            <div class="ws-actions">
+              <button id="clearChatBtn" class="ghost-sm" title="Clear chat history for this class">🗑️ Clear Chat</button>
+              <button id="flashcardBtn" class="ghost">🃏 Flashcards (SRS)</button>
+              <button id="quizBtn" class="ghost">📝 Generate quiz</button>
+            </div>
+          </div>
+          <div id="chat" class="chat"></div>
+          <form id="askForm" class="ask-bar">
+            <input id="questionInput" type="text" placeholder="Ask about this class… e.g. What is BMI?" autocomplete="off" />
+            <button type="submit" class="primary" id="askBtn">Ask</button>
+          </form>
+        </div>
+      </main>
+    </div>
 
-<!-- Pane 3: Study Planner -->
-<div id="studentPlannerPane" class="student-pane hidden" style="padding: 26px 30px; overflow-y: auto;">
-<div class="pane-head" style="margin-bottom: 20px;">
-<h2>📅 Your Study Plan</h2>
-<p class="meta">Build a structured, day-by-day roadmap to conquer your syllabus.</p>
-</div>
+    <!-- Pane 3: Study Planner -->
+    <div id="studentPlannerPane" class="student-pane hidden" style="padding: 26px 30px; overflow-y: auto;">
+      <div class="pane-head" style="margin-bottom: 20px;">
+        <h2>📅 Your Study Plan</h2>
+        <p class="meta">Build a structured, day-by-day roadmap to conquer your syllabus.</p>
+      </div>
 
-<div class="planner-layout">
-<!-- Setup Sidebar -->
-<div class="planner-setup">
-<div id="planSetup">
-<label class="fld" style="margin-bottom: 12px; display: block;">
-<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
-<span style="font-weight: 800; font-size: 13px;">Classes to review</span>
-<div style="display: flex; gap: 6px;">
-<button type="button" class="ghost-sm" style="font-size: 11px; padding: 2px 8px;" onclick="toggleAllClasses(false)">Deselect All</button>
-</div>
-</div>
-              <div id="planClassSelect" style="max-height: 220px; overflow-y: auto; background: var(--panel2); border: 1.5px solid var(--line); border-radius: 11px; padding: 10px; margin-top: 6px;">
-                <!-- Checkboxes injected by JS -->
+      <div class="planner-layout">
+        <div class="planner-setup">
+          <div id="planSetup">
+            <label class="fld" style="margin-bottom: 12px; display: block;">
+              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                <span style="font-weight: 800; font-size: 13px;">Classes to review</span>
+                <div style="display: flex; gap: 6px;">
+                  <button type="button" class="ghost-sm" style="font-size: 11px; padding: 2px 8px;" onclick="toggleAllClasses(false)">Deselect All</button>
+                </div>
               </div>
               <div id="planClassSelect" style="max-height: 220px; overflow-y: auto; background: var(--panel2); border: 1.5px solid var(--line); border-radius: 11px; padding: 10px; margin-top: 6px;"></div>
-</label>
-<div style="display: flex; gap: 12px; margin-bottom: 12px;">
-<label class="fld" style="flex: 1;">
-<span style="font-weight: 800; font-size: 13px; display: block; margin-bottom: 6px;">Days until goal</span>
-<input id="planDays" type="number" min="1" max="30" value="7" style="width: 100%; padding: 11px 13px; border-radius: 11px; border: 1.5px solid var(--line); background: var(--panel2); font-weight: 600;" />
-</label>
-<label class="fld" style="flex: 1;">
-<span style="font-weight: 800; font-size: 13px; display: block; margin-bottom: 6px;">Hours/day</span>
-<input id="planHours" type="number" step="0.5" min="0.5" max="12" value="2" style="width: 100%; padding: 11px 13px; border-radius: 11px; border: 1.5px solid var(--line); background: var(--panel2); font-weight: 600;" />
-</label>
-</div>
-<label class="fld" style="margin-bottom: 16px; display: block;">
-<span style="font-weight: 800; font-size: 13px; display: block; margin-bottom: 6px;">Study Focus</span>
-<select id="planFocus" style="width: 100%; padding: 11px 13px; border-radius: 11px; border: 1.5px solid var(--line); background: var(--panel2); font-weight: 600;">
-<option value="First-time learning">🟢 First-Time Learning (Deep Concept Breakdown)</option>
-<option value="Reviewing and memorizing definitions" selected>🟡 Review & Memorization (Active Recall & Terms)</option>
-<option value="Past paper and exam practice">🔴 Exam & Past Paper Practice (Mark Schemes & Drills)</option>
-</select>
-<p id="focusHint" class="meta" style="font-size: 12px; margin-top: 6px; color: var(--brand-d);">
-💡 Combines rapid topic overviews with active recall, flashcards, and definition checks.
-</p>
-</label>
-<button id="generatePlanBtn" class="primary" style="width: 100%;">Generate My Plan</button>
-<button id="resetPlanBtn" class="ghost hidden" style="width: 100%; margin-top: 8px;">🗑️ Delete Plan & Start Over</button>
-</div>
-</div>
+            </label>
+            <div style="display: flex; gap: 12px; margin-bottom: 12px;">
+              <label class="fld" style="flex: 1;">
+                <span style="font-weight: 800; font-size: 13px; display: block; margin-bottom: 6px;">Days until goal</span>
+                <input id="planDays" type="number" min="1" max="30" value="7" style="width: 100%; padding: 11px 13px; border-radius: 11px; border: 1.5px solid var(--line); background: var(--panel2); font-weight: 600;" />
+              </label>
+              <label class="fld" style="flex: 1;">
+                <span style="font-weight: 800; font-size: 13px; display: block; margin-bottom: 6px;">Hours/day</span>
+                <input id="planHours" type="number" step="0.5" min="0.5" max="12" value="2" style="width: 100%; padding: 11px 13px; border-radius: 11px; border: 1.5px solid var(--line); background: var(--panel2); font-weight: 600;" />
+              </label>
+            </div>
+            <label class="fld" style="margin-bottom: 16px; display: block;">
+              <span style="font-weight: 800; font-size: 13px; display: block; margin-bottom: 6px;">Study Focus</span>
+              <select id="planFocus" style="width: 100%; padding: 11px 13px; border-radius: 11px; border: 1.5px solid var(--line); background: var(--panel2); font-weight: 600;">
+                <option value="First-time learning">🟢 First-Time Learning (Deep Concept Breakdown)</option>
+                <option value="Reviewing and memorizing definitions" selected>🟡 Review & Memorization (Active Recall & Terms)</option>
+                <option value="Past paper and exam practice">🔴 Exam Practice (Definitions & Concept Drills)</option>
+              </select>
+            </label>
+            <button id="generatePlanBtn" class="primary" style="width: 100%;">Generate My Plan</button>
+            <button id="resetPlanBtn" class="ghost hidden" style="width: 100%; margin-top: 8px;">🗑️ Delete Plan & Start Over</button>
+          </div>
+        </div>
 
-<!-- Result Workspace -->
-<div class="planner-result">
-<div id="planEmptyState" class="empty">
-<div class="empty-emoji">🗓️</div>
-<p>No active plan. Select your classes and time limit on the left to generate one!</p>
-</div>
-          <div id="planResult" class="hidden">
-            <!-- Checklist injected here -->
+        <div class="planner-result">
+          <div id="planEmptyState" class="empty">
+            <div class="empty-emoji">🗓️</div>
+            <p>No active plan. Select your classes and time limit on the left to generate one!</p>
           </div>
           <div id="planResult" class="hidden"></div>
-</div>
-</div>
-</div>
+        </div>
+      </div>
+    </div>
 
     <!-- Pane 4: Alerts & Reminders -->
     <div id="studentAlertsPane" class="student-pane hidden" style="padding: 26px 30px; overflow-y: auto;">
@@ -207,245 +187,230 @@
         <h2>🔔 Alerts & Study Reminders</h2>
         <p class="meta">Review scheduled spaced repetition cards and stay ahead of your memory decay.</p>
       </div>
-
       <div id="alertsContainer" style="max-width: 850px; display: flex; flex-direction: column; gap: 14px;"></div>
     </div>
-</section>
+  </section>
 
-<!-- Teacher dashboard -->
-<section id="teacher" class="main hidden">
-<header class="topbar">
-<div class="brand"><span class="logo-sm">👩🏫</span> NG-ClassMate · Teacher</div>
-<div class="who">
-<button id="tabRecordings" class="tab active">Recordings</button>
-<button id="tabStudents" class="tab">Students</button>
-<button id="tabQuestions" class="tab">Student questions</button>
-<button id="tabAnalytics" class="tab">Analytics</button>
-<button id="tabSettings" class="tab">Settings</button>
-<button class="link" id="teacherSignOut">Sign out</button>
-</div>
-</header>
+  <!-- ==========================================
+       TEACHER WORKSPACE
+       ========================================== -->
+  <section id="teacher" class="main hidden">
+    <header class="topbar">
+      <div class="brand"><span class="logo-sm">👩‍🏫</span> NG-ClassMate · Teacher</div>
+      <div class="who">
+        <button id="tabRecordings" class="tab active">Recordings</button>
+        <button id="tabStudents" class="tab">Students</button>
+        <button id="tabQuestions" class="tab">Student questions</button>
+        <button id="tabAnalytics" class="tab">Analytics</button>
+        <button id="tabSettings" class="tab">Settings</button>
+        <button class="link" id="teacherSignOut">Sign out</button>
+      </div>
+    </header>
 
-<div id="teacherRecordings" class="teacher-pane">
-<div id="statsBar" class="stats-bar"></div>
+    <!-- Teacher Pane 1: Recordings -->
+    <div id="teacherRecordings" class="teacher-pane">
+      <div id="statsBar" class="stats-bar"></div>
+      <div class="pane-head">
+        <h2>Manage recordings</h2>
+        <p class="meta">New Zoom recordings arrive here automatically and start hidden. Rename them, assign a unit/course, then toggle Visible so the right students can see them.</p>
+        <div class="import-rec-bar" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:12px;">
+          <button id="importRecBtn" type="button" class="primary">⬇️ Import cloud recordings</button>
+          <button id="transcribeAllBtn" type="button" class="ghost">🎙️ Transcribe all missing</button>
+          <button id="deleteUnassignedBtn" type="button" class="ghost danger-btn">🗑️ Delete unassigned</button>
+          <span id="importRecStatus" class="meta" style="font-size:0.9em;"></span>
+        </div>
+        <div class="import-one-bar">
+          <input id="importOneInput" type="text" class="filter-input" placeholder="Import one recording — paste a Zoom Meeting ID / UUID or recording link" />
+          <button id="importOneBtn" type="button" class="ghost">➕ Import this recording</button>
+          <span id="importOneStatus" class="meta"></span>
+        </div>
+      </div>
+      <div class="rec-filters">
+        <input id="recSearch" type="text" class="filter-input" placeholder="Search recordings…" />
+        <select id="recCourseFilter" class="filter-select" title="Filter by course">
+          <option value="">All courses</option>
+        </select>
+        <select id="recTypeFilter" class="filter-select" title="Filter by type">
+          <option value="">All types</option>
+          <option value="meeting">Meetings only</option>
+          <option value="webinar">Webinars only</option>
+        </select>
+        <select id="recSort" class="filter-select" title="Sort recordings">
+          <option value="date_asc" selected>Class date (oldest first)</option>
+          <option value="date_desc">Class date (newest first)</option>
+          <option value="added_desc">Date added (newest first)</option>
+        </select>
+        <span id="recCount" class="rec-count"></span>
+      </div>
+      <div id="tRecList" class="t-rec-list"></div>
+    </div>
 
-<div class="pane-head">
-<h2>Manage recordings</h2>
-<p class="meta">New Zoom recordings arrive here automatically and start hidden. Rename them, assign a unit/course, then toggle Visible so the right students can see them. Changes save instantly.</p>
-<div class="import-rec-bar" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:12px;">
-<button id="importRecBtn" type="button" class="primary">⬇️ Import cloud recordings</button>
-<button id="transcribeAllBtn" type="button" class="ghost">🎙️ Transcribe all missing</button>
-<button id="deleteUnassignedBtn" type="button" class="ghost danger-btn">🗑️ Delete unassigned</button>
-<span id="importRecStatus" class="meta" style="font-size:0.9em;"></span>
-</div>
-<div class="import-one-bar">
-<input id="importOneInput" type="text" class="filter-input" placeholder="Import one recording — paste a Zoom Meeting ID / UUID or recording link" />
-<button id="importOneBtn" type="button" class="ghost">➕ Import this recording</button>
-<span id="importOneStatus" class="meta"></span>
-</div>
-<div id="bulkProgress" class="bulk-progress hidden">
-<div class="bulk-bar"><div id="bulkBarFill" class="bulk-bar-fill"></div></div>
-<span id="bulkProgressText" class="meta"></span>
-</div>
-</div>
-<div class="rec-filters">
-<input id="recSearch" type="text" class="filter-input" placeholder="Search recordings…" />
-<select id="recCourseFilter" class="filter-select" title="Filter by course">
-<option value="">All courses</option>
-</select>
-<select id="recTypeFilter" class="filter-select" title="Filter by type">
-<option value="">All types</option>
-<option value="meeting">Meetings only</option>
-<option value="webinar">Webinars only</option>
-</select>
-<select id="recSort" class="filter-select" title="Sort recordings">
-<option value="date_asc" selected>Class date (oldest first)</option>
-<option value="date_desc">Class date (newest first)</option>
-<option value="added_desc">Date added (newest first)</option>
-<option value="added_asc">Date added (oldest first)</option>
-<option value="course_az">Course (A–Z)</option>
-<option value="title_az">Title (A–Z)</option>
-</select>
-<span id="recCount" class="rec-count"></span>
-</div>
-<div id="tRecList" class="t-rec-list"></div>
-</div>
+    <!-- Teacher Pane 2: Students -->
+    <div id="teacherStudents" class="teacher-pane hidden">
+      <div class="pane-head">
+        <h2>Class roster</h2>
+        <p class="meta">Only students on this list can sign in. Import a sheet of students, or add one manually.</p>
+      </div>
+      <div class="add-student">
+        <input id="newStudentName" type="text" placeholder="Student name" />
+        <input id="newStudentEmail" type="text" placeholder="Email" />
+        <input id="newStudentPassword" type="text" placeholder="Password" />
+        <input id="newStudentCourses" type="text" placeholder="Courses (separate with ;)" />
+        <button id="addStudentBtn" class="primary">+ Add student</button>
+      </div>
+      <p id="addStudentErr" class="err hidden"></p>
+      <div class="export-bar" style="margin-top:6px;gap:10px;">
+        <button id="exportRosterCsv" type="button" class="ghost">⬇️ Export roster (CSV)</button>
+        <button id="dedupeBtn" type="button" class="ghost">🔎 Merge duplicate accounts</button>
+      </div>
+      <div class="import-box" style="margin-top:14px;padding:12px;border:1px dashed #bbb;border-radius:10px;">
+        <strong>📥 Import students from Excel</strong>
+        <input type="file" id="excelFile" accept=".xlsx" />
+        <button id="importBtn" class="primary">Upload &amp; import</button>
+        <p id="importMsg" class="ok-msg hidden"></p>
+        <p id="importErr" class="err hidden"></p>
+      </div>
+      <div style="margin-top: 20px; margin-bottom: 12px;">
+        <input id="studentSearchInput" type="text" class="filter-input" placeholder="🔍 Search students by name or email…" style="width: 100%;" />
+      </div>
+      <div id="studentList" class="student-list"></div>
+    </div>
 
-<div id="teacherStudents" class="teacher-pane hidden">
-<div class="pane-head">
-<h2>Class roster</h2>
-<p class="meta">Only students on this list can sign in. Import a sheet of students, or add one manually. Each student sees only the recordings for their assigned course(s).</p>
-</div>
-<div class="add-student">
-<input id="newStudentName" type="text" placeholder="Student name" />
-<input id="newStudentEmail" type="text" placeholder="Email" />
-<input id="newStudentPassword" type="text" placeholder="Password" />
-<input id="newStudentCourses" type="text" placeholder="Courses (separate with ;)" />
-<button id="addStudentBtn" class="primary">+ Add student</button>
-</div>
-<p id="addStudentErr" class="err hidden"></p>
-<div class="export-bar" style="margin-top:6px;gap:10px;">
-<button id="exportRosterCsv" type="button" class="ghost">⬇️ Export roster (CSV)</button>
-<button id="dedupeBtn" type="button" class="ghost">🔎 Merge duplicate accounts</button>
-</div>
-<div class="import-box" style="margin-top:14px;padding:12px;border:1px dashed #bbb;border-radius:10px;">
-<strong>📥 Import students from Excel</strong>
-<p class="meta">Columns: <code>email</code>, <code>password</code>, <code>name</code> (optional), <code>courses</code> (separate multiple with <code>;</code>). Course names must match the unit you assign to recordings.</p>
-<input type="file" id="excelFile" accept=".xlsx" />
-<button id="importBtn" class="primary">Upload &amp; import</button>
-<p id="importMsg" class="ok-msg hidden"></p>
-<p id="importErr" class="err hidden"></p>
-</div>
+    <!-- Teacher Pane 3: Student Questions -->
+    <div id="teacherQuestions" class="teacher-pane hidden">
+      <div class="pane-head">
+        <h2>Student questions</h2>
+        <p class="meta">Everything your students have asked, newest first.</p>
+        <div class="export-bar">
+          <button id="exportQCsv" type="button" class="ghost">⬇️ Export CSV</button>
+          <button id="exportQPdf" type="button" class="ghost">⬇️ Export PDF</button>
+        </div>
+      </div>
+      <div id="qLog" class="q-log"></div>
+    </div>
 
-      <!-- Student Search Bar -->
-<div style="margin-top: 20px; margin-bottom: 12px;">
-<input id="studentSearchInput" type="text" class="filter-input" placeholder="🔍 Search students by name or email…" style="width: 100%;" />
-</div>
+    <!-- Teacher Pane 4: Analytics -->
+    <div id="teacherAnalytics" class="teacher-pane hidden">
+      <div class="pane-head">
+        <h2>Question analytics</h2>
+        <p class="meta">What your students are asking most — spot the topics they struggle with.</p>
+      </div>
+      <div id="analyticsBody" class="analytics-body"></div>
+    </div>
 
-<div id="studentList" class="student-list"></div>
-</div>
+    <!-- Teacher Pane 5: Settings -->
+    <div id="teacherSettings" class="teacher-pane hidden">
+      <div class="pane-head"><h2>Settings</h2></div>
+      <div class="setting-card">
+        <h3>Change teacher passcode</h3>
+        <input id="newPass" type="text" placeholder="New passcode" />
+        <button id="savePass" class="primary">Save passcode</button>
+        <p id="passSaved" class="ok-msg hidden">Passcode updated ✓</p>
+      </div>
+      <div class="setting-card" style="margin-top:16px;">
+        <h3>Website logo</h3>
+        <p class="meta" style="margin-bottom:12px;">Upload a PNG, JPG, WEBP, GIF or SVG (max 2 MB).</p>
+        <input type="file" id="logoFile" accept="image/png,image/jpeg,image/webp,image/gif,image/svg+xml" style="margin-bottom:12px;" />
+        <button id="saveLogo" class="primary">Upload logo</button>
+        <p id="logoSaved" class="ok-msg hidden">Logo updated ✓</p>
+        <p id="logoErr" class="err hidden"></p>
+      </div>
+    </div>
+  </section>
 
-<div id="teacherQuestions" class="teacher-pane hidden">
-<div class="pane-head">
-<h2>Student questions</h2>
-<p class="meta">Everything your students have asked, newest first.</p>
-<div class="export-bar">
-<button id="exportQCsv" type="button" class="ghost">⬇️ Export CSV</button>
-<button id="exportQPdf" type="button" class="ghost">⬇️ Export PDF</button>
-</div>
-</div>
-<div id="qLog" class="q-log"></div>
-</div>
+  <!-- ==========================================
+       MODALS & OVERLAYS
+       ========================================== -->
+  <div id="studentModal" class="modal hidden">
+    <div class="modal-card">
+      <div class="modal-head">
+        <h2>Edit student</h2>
+        <button id="closeStudentModal" class="close">✕</button>
+      </div>
+      <div class="modal-body student-edit">
+        <label class="fld"><span>Name</span><input id="edName" type="text" /></label>
+        <label class="fld"><span>Email</span><input id="edEmail" type="email" /></label>
+        <div class="fld">
+          <span>Courses</span>
+          <div id="edCourseList" class="ed-course-list"></div>
+          <div class="ed-course-add">
+            <input id="edCourseInput" type="text" placeholder="Add a course" />
+            <button id="edCourseAddBtn" type="button" class="ghost-sm">+ Add</button>
+          </div>
+        </div>
+        <label class="fld"><span>New password <em>(leave blank to keep current)</em></span>
+          <div class="ed-pw-row">
+            <input id="edPassword" type="text" placeholder="Type new password" />
+            <button id="edGenPw" type="button" class="ghost-sm">🎲 Generate</button>
+          </div>
+        </label>
+        <p id="edStatus" class="ed-status"></p>
+      </div>
+      <div class="modal-foot student-edit-foot">
+        <button id="edDelete" class="ghost danger-btn">🗑️ Delete student</button>
+        <div style="flex:1"></div>
+        <button id="edCancel" class="ghost">Cancel</button>
+        <button id="edSave" class="primary">Save changes</button>
+      </div>
+    </div>
+  </div>
 
-<div id="teacherAnalytics" class="teacher-pane hidden">
-<div class="pane-head">
-<h2>Question analytics</h2>
-<p class="meta">What your students are asking most — spot the topics they struggle with.</p>
-</div>
-<div id="analyticsBody" class="analytics-body"></div>
-</div>
+  <div id="dedupeModal" class="modal hidden">
+    <div class="modal-card">
+      <div class="modal-head">
+        <h2>Merge duplicate accounts</h2>
+        <button id="closeDedupe" class="close">✕</button>
+      </div>
+      <div id="dedupeBody" class="modal-body dedupe-body"></div>
+      <div class="modal-foot">
+        <div style="flex:1"></div>
+        <button id="dedupeCancel" class="ghost">Cancel</button>
+        <button id="dedupeApply" class="primary hidden">Merge & delete duplicates</button>
+      </div>
+    </div>
+  </div>
 
-<div id="teacherSettings" class="teacher-pane hidden">
-<div class="pane-head"><h2>Settings</h2></div>
-<div class="setting-card">
-<h3>Change teacher passcode</h3>
-<input id="newPass" type="text" placeholder="New passcode" />
-<button id="savePass" class="primary">Save passcode</button>
-<p id="passSaved" class="ok-msg hidden">Passcode updated ✓</p>
-</div>
-<div class="setting-card" style="margin-top:16px;">
-<h3>Website logo</h3>
-<p class="meta" style="margin-bottom:12px;">Upload a PNG, JPG, WEBP, GIF or SVG (max 2 MB). It replaces the 🎓 emoji across the site.</p>
-<img id="logoPreview" alt="Current logo" class="hidden" style="max-height:64px;max-width:180px;border-radius:12px;border:1px solid var(--line);padding:6px;background:var(--panel2);margin-bottom:12px;display:block;" />
-<input type="file" id="logoFile" accept="image/png,image/jpeg,image/webp,image/gif,image/svg+xml" style="margin-bottom:12px;" />
-<button id="saveLogo" class="primary">Upload logo</button>
-<p id="logoSaved" class="ok-msg hidden">Logo updated ✓</p>
-<p id="logoErr" class="err hidden"></p>
-</div>
-</div>
-</section>
+  <div id="quizModal" class="modal hidden">
+    <div class="modal-card">
+      <div class="modal-head">
+        <h2>📝 Quiz</h2>
+        <button id="closeQuiz" class="close">✕</button>
+      </div>
+      <div id="quizBody" class="quiz-body"></div>
+      <div class="modal-foot">
+        <button id="submitQuiz" class="primary hidden">Check my answers</button>
+        <button id="retryQuiz" class="ghost hidden">Try another quiz</button>
+      </div>
+    </div>
+  </div>
 
-<!-- Edit student modal -->
-<div id="studentModal" class="modal hidden">
-<div class="modal-card">
-<div class="modal-head">
-<h2>Edit student</h2>
-<button id="closeStudentModal" class="close">✕</button>
-</div>
-<div class="modal-body student-edit">
-<label class="fld"><span>Name</span><input id="edName" type="text" /></label>
-<label class="fld"><span>Email</span><input id="edEmail" type="email" /></label>
-
-<div class="fld">
-<span>Courses</span>
-<div id="edCourseList" class="ed-course-list"></div>
-<div class="ed-course-add">
-<input id="edCourseInput" type="text" placeholder="Add a course (must match a recording's course name)" />
-<button id="edCourseAddBtn" type="button" class="ghost-sm">+ Add</button>
-</div>
-</div>
-
-<label class="fld"><span>New password <em>(leave blank to keep current)</em></span>
-<div class="ed-pw-row">
-<input id="edPassword" type="text" placeholder="Type a new password, or generate one" />
-<button id="edGenPw" type="button" class="ghost-sm">🎲 Generate</button>
-</div>
-</label>
-<p id="edStatus" class="ed-status"></p>
-</div>
-<div class="modal-foot student-edit-foot">
-<button id="edDelete" class="ghost danger-btn">🗑️ Delete student</button>
-<div style="flex:1"></div>
-<button id="edCancel" class="ghost">Cancel</button>
-<button id="edSave" class="primary">Save changes</button>
-</div>
-</div>
-</div>
-
-  <!-- Dedupe (merge duplicates) modal -->
-  <!-- Dedupe modal -->
-<div id="dedupeModal" class="modal hidden">
-<div class="modal-card">
-<div class="modal-head">
-<h2>Merge duplicate accounts</h2>
-<button id="closeDedupe" class="close">✕</button>
-</div>
-<div id="dedupeBody" class="modal-body dedupe-body"></div>
-<div class="modal-foot">
-<div style="flex:1"></div>
-<button id="dedupeCancel" class="ghost">Cancel</button>
-<button id="dedupeApply" class="primary hidden">Merge & delete duplicates</button>
-</div>
-</div>
-</div>
-
-<!-- Quiz modal -->
-<div id="quizModal" class="modal hidden">
-<div class="modal-card">
-<div class="modal-head">
-<h2>📝 Quiz</h2>
-<button id="closeQuiz" class="close">✕</button>
-</div>
-<div id="quizBody" class="quiz-body"></div>
-<div class="modal-foot">
-<button id="submitQuiz" class="primary hidden">Check my answers</button>
-<button id="retryQuiz" class="ghost hidden">Try another quiz</button>
-</div>
-</div>
-</div>
-
-<!-- Flashcard (Spaced Repetition SRS) modal -->
-<div id="flashcardModal" class="modal hidden">
-<div class="modal-card" style="max-width: 550px; text-align: center;">
-<div class="modal-head">
-<h2>🃏 Spaced Repetition Flashcards</h2>
-<button id="closeFlashcards" class="close">✕</button>
-</div>
-<div style="display: flex; justify-content: space-between; align-items: center; padding: 4px 16px; margin-top: 6px;">
-<span id="srsStatusText" class="meta" style="font-weight: 700; color: var(--brand-d);">Due Cards: 0</span>
-<button id="genFreshCardsBtn" class="ghost-sm" style="font-size: 11.5px; padding: 4px 10px;">✨ Generate New Cards</button>
-</div>
-      <div id="flashcardBody" style="padding: 18px 20px; min-height: 190px; display: flex; align-items: center; justify-content: center;">
-        <!-- Card flipper injected by JS -->
+  <div id="flashcardModal" class="modal hidden">
+    <div class="modal-card" style="max-width: 550px; text-align: center;">
+      <div class="modal-head">
+        <h2>🃏 Spaced Repetition Flashcards</h2>
+        <button id="closeFlashcards" class="close">✕</button>
+      </div>
+      <div style="display: flex; justify-content: space-between; align-items: center; padding: 4px 16px; margin-top: 6px;">
+        <span id="srsStatusText" class="meta" style="font-weight: 700; color: var(--brand-d);">Due Cards: 0</span>
+        <button id="genFreshCardsBtn" class="ghost-sm" style="font-size: 11.5px; padding: 4px 10px;">✨ Generate New Cards</button>
       </div>
       <div id="flashcardBody" style="padding: 18px 20px; min-height: 190px; display: flex; align-items: center; justify-content: center;"></div>
-<!-- Rating options for Spaced Repetition -->
-<div id="srsRatingControls" class="modal-foot hidden" style="justify-content: center; gap: 8px; flex-wrap: wrap;">
-<button id="srsAgainBtn" class="ghost-sm danger-btn" style="flex: 1; padding: 8px 4px; font-weight: 800;">🔴 Again (1d)</button>
-<button id="srsHardBtn" class="ghost-sm" style="flex: 1; padding: 8px 4px; font-weight: 800; border-color: #f59f00; color: #f59f00;">🟡 Hard (2d)</button>
-<button id="srsGoodBtn" class="ghost-sm" style="flex: 1; padding: 8px 4px; font-weight: 800; border-color: var(--brand); color: var(--brand-d);">🟢 Good (4d)</button>
-<button id="srsEasyBtn" class="ghost-sm" style="flex: 1; padding: 8px 4px; font-weight: 800; border-color: var(--ok); color: var(--ok);">🔵 Easy (7d)</button>
-</div>
-<div id="srsNavControls" class="modal-foot" style="justify-content: center; gap: 12px; margin-top: 4px;">
-<button id="prevCardBtn" class="ghost">← Prev</button>
-<span id="cardCountIndicator" class="meta" style="font-weight: 800;">1 / 1</span>
-<button id="nextCardBtn" class="ghost">Next →</button>
-</div>
-</div>
-</div>
+      <div id="srsRatingControls" class="modal-foot hidden" style="justify-content: center; gap: 8px; flex-wrap: wrap;">
+        <button id="srsAgainBtn" class="ghost-sm danger-btn" style="flex: 1; padding: 8px 4px; font-weight: 800;">🔴 Again (1d)</button>
+        <button id="srsHardBtn" class="ghost-sm" style="flex: 1; padding: 8px 4px; font-weight: 800; border-color: #f59f00; color: #f59f00;">🟡 Hard (2d)</button>
+        <button id="srsGoodBtn" class="ghost-sm" style="flex: 1; padding: 8px 4px; font-weight: 800; border-color: var(--brand); color: var(--brand-d);">🟢 Good (4d)</button>
+        <button id="srsEasyBtn" class="ghost-sm" style="flex: 1; padding: 8px 4px; font-weight: 800; border-color: var(--ok); color: var(--ok);">🔵 Easy (7d)</button>
+      </div>
+      <div id="srsNavControls" class="modal-foot" style="justify-content: center; gap: 12px; margin-top: 4px;">
+        <button id="prevCardBtn" class="ghost">← Prev</button>
+        <span id="cardCountIndicator" class="meta" style="font-weight: 800;">1 / 1</span>
+        <button id="nextCardBtn" class="ghost">Next →</button>
+      </div>
+    </div>
+  </div>
 
 </div>
 <div id="toastHost" class="toast-host"></div>
-<script src="/app.js"></script>
+<script src="/app.js?v=20"></script>
 </body>
 </html>

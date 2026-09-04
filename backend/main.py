@@ -2649,3 +2649,215 @@ if os.path.isdir(FRONTEND_DIR):
     def index():
         return FileResponse(os.path.join(FRONTEND_DIR, "index.html"))
     app.mount("/", StaticFiles(directory=FRONTEND_DIR), name="static")
+
+# ==============================================================================
+# PAST PAPER SOLVER MODULE (SEPARATE STORAGE & ENGINE)
+# ==============================================================================
+PAST_PAPER_CONFIG_PATH = os.path.join(DATA_DIR, "past_paper_config.json")
+PAST_PAPER_SOLUTIONS_PATH = os.path.join(DATA_DIR, "past_paper_solutions.json")
+PAST_PAPER_LIB_PATH = os.path.join(DATA_DIR, "pastpaper_library.json")
+
+# --- Past Paper Isolated Data Helpers ---
+def load_pp_json(path):
+    if os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {} if "config" in path or "solutions" in path else []
+
+def save_pp_json(path, data):
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+def pp_doc_by_id(doc_id):
+    lib = load_pp_json(PAST_PAPER_LIB_PATH)
+    for doc in lib:
+        if doc.get("id") == doc_id:
+            return doc
+    return None
+
+# --- Student Metadata Endpoint ---
+@app.post("/api/student/pastpaper/meta")
+def student_pp_meta(body: RecListBody):
+    sess = valid_session(body.token)
+    if not sess:
+        return JSONResponse({"error": "Unauthorized"}, status_code=401)
+    
+    courses = sess.get("courses", [])
+    if not courses:
+        courses = [r.get("unit") for r in RECORDINGS if r.get("unit") and r.get("unit").strip().lower() != "unassigned"]
+    
+    sols = load_pp_json(PAST_PAPER_SOLUTIONS_PATH)
+    library = [
+        {
+            "course": v["course"],
+            "year": str(v["year"]),
+            "series": v["series"],
+            "paper": str(v["paper"]),
+            "question": str(v["question"])
+        }
+        for v in sols.values()
+    ]
+    return {
+        "courses": sorted(list(set(courses))),
+        "syllabi": load_pp_json(PAST_PAPER_CONFIG_PATH),
+        "library": library
+    }
+
+# --- Student Solver Endpoint ---
+@app.post("/api/student/pastpaper/solve")
+async def student_pp_solve(
+    token: str = Form(...),
+    mode: str = Form(...),  # "library" or "snapshot"
+    course: str = Form(...),
+    year: str = Form(""),
+    series: str = Form(""),
+    paper: str = Form(""),
+    question: str = Form(""),
+    doubt: str = Form(""),
+    image: UploadFile = File(None)
+):
+    sess = valid_session(token)
+    if not sess:
+        return JSONResponse({"error": "Unauthorized"}, status_code=401)
+    
+    syllabi = load_pp_json(PAST_PAPER_CONFIG_PATH)
+    syllabus = syllabi.get(course, "Standard Exam Board Specification")
+    
+    sols = load_pp_json(PAST_PAPER_SOLUTIONS_PATH)
+    key = f"{course.strip().lower()}:{year.strip().lower()}:{series.strip().lower()}:{paper.strip().lower()}:{question.strip().lower()}"
+    custom_asset = sols.get(key)
+
+    exam_ref = f"{year} {series} P{paper} Q{question}".strip() if mode == "library" else "Uploaded Screenshot"
+    
+    system = (
+        f"You are an elite academic examiner and senior Biology tutor. Course: '{course}', Syllabus: '{syllabus}'.\n"
+        "STRICT STRUCTURED OUTPUT:\n"
+        "### 1. Mark Scheme Breakdown & Mandatory Keywords\n"
+        "- Detail exact point criteria. Bold compulsory marking keywords.\n"
+        "### 2. Conceptual Link & Explanation\n"
+        "- Explain underlying biological principles clearly.\n"
+        "### 3. Examiner Traps & Common Mistakes\n"
+        "- Highlight frequent student errors on this question type."
+    )
+
+    user_text = f"Exam Ref: {exam_ref}\nStudent Doubt: {doubt or 'Provide a full breakdown and solution.'}\n\n"
+    
+    if mode == "library" and custom_asset:
+        if custom_asset.get("qp_text"):
+            user_text += f"OFFICIAL QUESTION PROMPT:\n{custom_asset['qp_text']}\n\n"
+        if custom_asset.get("ms_text"):
+            user_text += f"OFFICIAL MARK SCHEME:\n{custom_asset['ms_text']}\n\n"
+            
+        # Pull text from the dedicated Past Paper Library only
+        doc_id = custom_asset.get("answered_doc_id")
+        if doc_id:
+            pp_doc = pp_doc_by_id(doc_id)
+            if pp_doc:
+                user_text += f"[MODEL ANSWER / EXAM DOC: {pp_doc.get('filename')}]:\n"
+                user_text += "\n".join(pp_doc.get("chunks", [])[:5]) + "\n\n"
+
+    content = [{"type": "text", "text": user_text}]
+    if mode == "snapshot" and image:
+        import base64
+        img_bytes = await image.read()
+        b64_img = base64.b64encode(img_bytes).decode("utf-8")
+        mime = image.content_type or "image/jpeg"
+        content.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64_img}"}})
+
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            resp = await client.post(
+                f"{OPENAI_BASE_URL}/chat/completions",
+                headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
+                json={
+                    "model": OPENAI_MODEL,
+                    "messages": [{"role": "system", "content": system}, {"role": "user", "content": content}],
+                    "max_tokens": 1200,
+                    "temperature": 0.1
+                }
+            )
+            resp.raise_for_status()
+            explanation = resp.json()["choices"][0]["message"]["content"]
+    except Exception as e:
+        return JSONResponse({"error": f"AI Solver Error: {str(e)}"}, status_code=503)
+
+    return {
+        "ok": True,
+        "exam_ref": exam_ref,
+        "syllabus": syllabus,
+        "solution_markdown": explanation,
+        "teacher_asset": custom_asset
+    }
+
+# --- Teacher Past Paper Management Endpoints ---
+@app.post("/api/teacher/pastpaper/config")
+def teacher_pp_config(body: TeacherAuth):
+    if not check_teacher(body.passcode):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+        
+    courses = {r.get("unit").strip() for r in RECORDINGS if r.get("unit") and r.get("unit").strip().lower() != "unassigned"}
+    for s in load_roster():
+        for c in s.get("courses", []):
+            if c and c.strip():
+                courses.add(c.strip())
+
+    sols = load_pp_json(PAST_PAPER_SOLUTIONS_PATH)
+    pp_lib = load_pp_json(PAST_PAPER_LIB_PATH)
+    
+    return {
+        "courses": sorted(list(courses)),
+        "syllabi": load_pp_json(PAST_PAPER_CONFIG_PATH),
+        "pp_library": [{"id": d["id"], "filename": d["filename"]} for d in pp_lib],
+        "solutions": [{"key": k, **v} for k, v in sols.items()]
+    }
+
+@app.post("/api/teacher/pastpaper/doc/upload")
+async def teacher_pp_upload_doc(passcode: str = Form(...), file: UploadFile = File(...)):
+    """Uploads documents strictly to the Past Paper Library, not recording notes."""
+    if not check_teacher(passcode):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+        
+    data = await file.read()
+    try:
+        text = extract_text_from_upload(data, file.filename or "exam_doc")
+    except Exception as e:
+        return JSONResponse({"error": f"Failed to extract document: {e}"}, status_code=400)
+
+    chunks = chunk_note_text(text)
+    if not chunks:
+        return JSONResponse({"error": "No readable text found."}, status_code=422)
+
+    pp_lib = load_pp_json(PAST_PAPER_LIB_PATH)
+    doc_id = secrets.token_hex(6)
+    doc_entry = {
+        "id": doc_id,
+        "filename": file.filename or "exam_doc",
+        "chunks": chunks,
+        "chars": sum(len(c) for c in chunks)
+    }
+    pp_lib.append(doc_entry)
+    save_pp_json(PAST_PAPER_LIB_PATH, pp_lib)
+
+    return {"ok": True, "doc": {"id": doc_id, "filename": doc_entry["filename"]}}
+
+@app.post("/api/teacher/pastpaper/config/save")
+def teacher_pp_save_syllabus(body: dict):
+    if not check_teacher(body.get("passcode", "")):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    cfg = load_pp_json(PAST_PAPER_CONFIG_PATH)
+    cfg[body["course"]] = body["syllabus"]
+    save_pp_json(PAST_PAPER_CONFIG_PATH, cfg)
+    return {"ok": True}
+
+@app.post("/api/teacher/pastpaper/solutions/delete")
+def teacher_pp_delete_solution(body: dict):
+    if not check_teacher(body.get("passcode", "")):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    sols = load_pp_json(PAST_PAPER_SOLUTIONS_PATH)
+    sols.pop(body.get("key", ""), None)
+    save_pp_json(PAST_PAPER_SOLUTIONS_PATH, sols)
+    return {"ok": True}

@@ -238,17 +238,20 @@ if(el("passInput")) el("passInput").addEventListener("keydown", e => { if (e.key
 if(el("tabStudentDash")) el("tabStudentDash").addEventListener("click", () => switchStudentTab("Dash"));
 if(el("tabStudentTutor")) el("tabStudentTutor").addEventListener("click", () => switchStudentTab("Tutor"));
 if(el("tabStudentPlanner")) el("tabStudentPlanner").addEventListener("click", () => switchStudentTab("Planner"));
+if(el("tabPastpapers")) el("tabPastpapers").addEventListener("click", () => switchStudentTab("Pastpapers"));
 if(el("tabStudentAlerts")) el("tabStudentAlerts").addEventListener("click", () => switchStudentTab("Alerts"));
 
 function switchStudentTab(name) {
   if(el("tabStudentDash")) el("tabStudentDash").classList.toggle("active", name === "Dash");
   if(el("tabStudentTutor")) el("tabStudentTutor").classList.toggle("active", name === "Tutor");
   if(el("tabStudentPlanner")) el("tabStudentPlanner").classList.toggle("active", name === "Planner");
+  if(el("tabPastpapers")) el("tabPastpapers").classList.toggle("active", name === "Pastpapers");
   if(el("tabStudentAlerts")) el("tabStudentAlerts").classList.toggle("active", name === "Alerts");
   
   if(el("studentDashPane")) el("studentDashPane").classList.toggle("hidden", name !== "Dash");
   if(el("studentTutorPane")) el("studentTutorPane").classList.toggle("hidden", name !== "Tutor");
   if(el("studentPlannerPane")) el("studentPlannerPane").classList.toggle("hidden", name !== "Planner");
+  if(el("studentPastpapers")) el("studentPastpapers").classList.toggle("hidden", name !== "Pastpapers");
   if(el("studentAlertsPane")) el("studentAlertsPane").classList.toggle("hidden", name !== "Alerts");
 
   if (name === "Dash") renderStudentDashboard();
@@ -259,6 +262,18 @@ function switchStudentTab(name) {
       initPlanner();
     }
   }
+  studentTabs.forEach(t => {
+  const btn = el(`tabStudent${t}`);
+  if(btn) {
+    btn.addEventListener("click", () => {
+      studentTabs.forEach(oth => {
+        if(el(`tabStudent${oth}`)) el(`tabStudent${oth}`).classList.toggle("active", oth === t);
+        if(el(`student${oth}Pane`)) el(`student${oth}Pane`).classList.toggle("hidden", oth !== t);
+      });
+      if (t === "PastPapers") initStudentPastPapers();
+    });
+  }
+});
   if (name === "Alerts") renderAlertsPane();
 }
 
@@ -1900,6 +1915,191 @@ async function loadBranding() {
     const data = await res.json();
     if (data.logo) applyLogo(data.logo + "?t=" + Date.now());
   } catch (e) {}
+}
+// ==============================================================================
+// STUDENT PAST PAPER SOLVER
+// ==============================================================================
+let ppStudentLibrary = [];
+let ppStudentMode = "library";
+
+if (el("modeLibBtn")) {
+  el("modeLibBtn").addEventListener("click", () => setStudentPpMode("library"));
+}
+if (el("modeSnapBtn")) {
+  el("modeSnapBtn").addEventListener("click", () => setStudentPpMode("snapshot"));
+}
+
+function setStudentPpMode(mode) {
+  ppStudentMode = mode;
+  if (mode === "library") {
+    el("modeLibBtn").style.cssText = "flex: 1; background: var(--panel); box-shadow: var(--shadow-sm); font-weight: 800; color: var(--brand-d);";
+    el("modeSnapBtn").style.cssText = "flex: 1; font-weight: 600; color: var(--muted);";
+    el("ppLibraryFilters").classList.remove("hidden");
+    el("ppSnapshotUpload").classList.add("hidden");
+  } else {
+    el("modeSnapBtn").style.cssText = "flex: 1; background: var(--panel); box-shadow: var(--shadow-sm); font-weight: 800; color: var(--brand-d);";
+    el("modeLibBtn").style.cssText = "flex: 1; font-weight: 600; color: var(--muted);";
+    el("ppSnapshotUpload").classList.remove("hidden");
+    el("ppLibraryFilters").classList.add("hidden");
+  }
+}
+
+async function initStudentPastPapers() {
+  const sel = el("ppCourseSelect");
+  if (!sel) return;
+
+  try {
+    const res = await fetch(`${API}/api/student/pastpaper/meta`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token: state.token })
+    });
+    const data = await res.json();
+    state.courseSyllabi = data.syllabi || {};
+    ppStudentLibrary = data.library || [];
+
+    sel.innerHTML = '<option value="">Select course...</option>';
+    (data.courses || []).forEach(c => sel.appendChild(new Option(c, c)));
+
+    sel.onchange = () => {
+      const chosen = sel.value;
+      const badge = el("ppSyllabusBadge");
+      if (badge) {
+        badge.textContent = state.courseSyllabi[chosen] 
+          ? `🎯 Syllabus: ${state.courseSyllabi[chosen]}` 
+          : "Standard Exam Board Specification";
+      }
+      populateStudentCascade("year");
+    };
+  } catch (e) {
+    console.error("Error loading past paper metadata:", e);
+  }
+}
+
+function populateStudentCascade(level) {
+  const course = el("ppCourseSelect").value;
+  const yearSel = el("ppYearSelect");
+  const seriesSel = el("ppSeriesSelect");
+  const paperSel = el("ppPaperSelect");
+  const qSel = el("ppQuestionSelect");
+
+  if (!course) return;
+
+  if (level === "year") {
+    const years = [...new Set(ppStudentLibrary.filter(x => x.course === course).map(x => x.year))];
+    yearSel.innerHTML = '<option value="">Select Year...</option>';
+    years.forEach(y => yearSel.appendChild(new Option(y, y)));
+    yearSel.disabled = years.length === 0;
+    seriesSel.disabled = true; paperSel.disabled = true; qSel.disabled = true;
+    yearSel.onchange = () => populateStudentCascade("series");
+  } else if (level === "series") {
+    const year = yearSel.value;
+    const series = [...new Set(ppStudentLibrary.filter(x => x.course === course && x.year === year).map(x => x.series))];
+    seriesSel.innerHTML = '<option value="">Select Series...</option>';
+    series.forEach(s => seriesSel.appendChild(new Option(s, s)));
+    seriesSel.disabled = series.length === 0;
+    paperSel.disabled = true; qSel.disabled = true;
+    seriesSel.onchange = () => populateStudentCascade("paper");
+  } else if (level === "paper") {
+    const year = yearSel.value;
+    const series = seriesSel.value;
+    const papers = [...new Set(ppStudentLibrary.filter(x => x.course === course && x.year === year && x.series === series).map(x => x.paper))];
+    paperSel.innerHTML = '<option value="">Select Paper...</option>';
+    papers.forEach(p => paperSel.appendChild(new Option(p, p)));
+    paperSel.disabled = papers.length === 0;
+    qSel.disabled = true;
+    paperSel.onchange = () => populateStudentCascade("question");
+  } else if (level === "question") {
+    const year = yearSel.value;
+    const series = seriesSel.value;
+    const paper = paperSel.value;
+    const qs = [...new Set(ppStudentLibrary.filter(x => x.course === course && x.year === year && x.series === series && x.paper === paper).map(x => x.question))];
+    qSel.innerHTML = '<option value="">Select Question...</option>';
+    qs.forEach(q => qSel.appendChild(new Option(q, q)));
+    qSel.disabled = qs.length === 0;
+  }
+}
+
+if (el("solvePastPaperBtn")) {
+  el("solvePastPaperBtn").addEventListener("click", async () => {
+    const course = el("ppCourseSelect").value;
+    if (!course) { toast("Please select a course first.", "info"); return; }
+
+    const fd = new FormData();
+    fd.append("token", state.token);
+    fd.append("mode", ppStudentMode);
+    fd.append("course", course);
+    fd.append("doubt", el("ppDoubtInput").value.trim());
+
+    if (ppStudentMode === "library") {
+      const q = el("ppQuestionSelect").value;
+      if (!q) { toast("Please complete the dropdowns to pick a question.", "info"); return; }
+      fd.append("year", el("ppYearSelect").value);
+      fd.append("series", el("ppSeriesSelect").value);
+      fd.append("paper", el("ppPaperSelect").value);
+      fd.append("question", q);
+    } else {
+      const fileInput = el("ppImageFile");
+      if (!fileInput.files.length) { toast("Please select an exam screenshot to solve.", "info"); return; }
+      fd.append("image", fileInput.files[0]);
+    }
+
+    const btn = el("solvePastPaperBtn");
+    const origText = btn.innerText;
+    btn.innerText = "⏳ Connecting to Examiner AI...";
+    btn.disabled = true;
+
+    try {
+      const res = await fetch(`${API}/api/student/pastpaper/solve`, { method: "POST", body: fd });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Solving failed.");
+      renderStudentPastPaperSolution(data);
+    } catch (err) {
+      toast(err.message, "error");
+    } finally {
+      btn.innerText = origText;
+      btn.disabled = false;
+    }
+  });
+}
+
+function renderStudentPastPaperSolution(data) {
+  if (el("ppEmptyState")) el("ppEmptyState").classList.add("hidden");
+  const resBox = el("ppSolutionResult");
+  if (!resBox) return;
+  resBox.classList.remove("hidden");
+  resBox.innerHTML = "";
+
+  if (data.teacher_asset) {
+    const asset = data.teacher_asset;
+    const assetCard = document.createElement("div");
+    assetCard.style.cssText = "background: linear-gradient(135deg, rgba(11,191,191,0.1), rgba(12,166,120,0.12)); border: 1.5px solid var(--brand); border-radius: 12px; padding: 14px;";
+    
+    let links = "";
+    if (asset.video_url) {
+      links += `<a href="${escapeHtml(asset.video_url)}" target="_blank" class="primary" style="display:inline-flex; align-items:center; gap:6px; padding:6px 12px; font-size:12px; text-decoration:none; margin-right:8px;">🎥 Watch Teacher Video</a>`;
+    }
+    if (asset.answered_doc_name) {
+      links += `<span class="ghost-sm" style="padding:6px 12px; font-size:12px;">📄 Linked Exam Doc: <strong>${escapeHtml(asset.answered_doc_name)}</strong></span>`;
+    }
+
+    assetCard.innerHTML = `
+      <div style="font-weight:800; font-size:13.5px; color:var(--brand-d); margin-bottom:6px;">👨‍🏫 Teacher Resources Available</div>
+      <div style="margin-top:6px;">${links || '<span class="meta">Teacher notes indexed for this question.</span>'}</div>
+    `;
+    resBox.appendChild(assetCard);
+  }
+
+  const solutionCard = document.createElement("div");
+  solutionCard.className = "q-block";
+  solutionCard.style.padding = "20px";
+  solutionCard.innerHTML = `
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px; border-bottom:1px solid var(--line); padding-bottom:8px;">
+      <span class="q-num" style="font-size:13px;">${escapeHtml(data.exam_ref)}</span>
+      <span class="meta" style="font-weight:800; color:var(--brand-d); font-size:12px;">${escapeHtml(data.syllabus)}</span>
+    </div>
+    <div style="line-height:1.6; font-size:13.5px;">${escapeHtml(data.solution_markdown).replace(/\n/g, '<br>')}</div>
+  `;
+  resBox.appendChild(solutionCard);
 }
 // ==============================================================================
 // TEACHER PAST PAPER HUB (ISOLATED LIBRARY)

@@ -66,6 +66,7 @@
         <button id="tabStudentDash" class="tab active">Dashboard</button>
         <button id="tabStudentTutor" class="tab">AI Tutor</button>
         <button id="tabStudentPlanner" class="tab">Study Planner</button>
+        <button id="tabStudentPastPapers" class="tab">📝 Past Papers</button>
         <button id="tabStudentAlerts" class="tab">🔔 Alerts <span id="navAlertBadge" class="badge-count hidden" style="background: #e03131; color: #fff; font-size: 10px; padding: 2px 7px; border-radius: 10px; margin-left: 4px; font-weight: 800;">0</span></button>
         <button class="link" id="studentSignOut" style="margin-left: 12px;">Sign out</button>
       </div>
@@ -179,6 +180,95 @@
       </div>
     </div>
 
+    <!-- Student Pane: Past Paper Solver -->
+    <div id="studentPastPapersPane" class="student-pane hidden" style="padding: 26px 30px; overflow-y: auto;">
+      <div class="pane-head" style="margin-bottom: 20px;">
+        <h2>📝 Past Paper Solver & Examiner Breakdown</h2>
+        <p class="meta">Filter through curated questions from your teacher's exam bank, or upload a screenshot of any problem.</p>
+      </div>
+
+      <div class="planner-layout">
+        <!-- Setup Column -->
+        <div class="planner-setup">
+          <div style="background: var(--panel); border: 1.5px solid var(--line); border-radius: 14px; padding: 18px;">
+            
+            <!-- Mode Toggle -->
+            <div style="display: flex; gap: 8px; margin-bottom: 16px; background: var(--bg); padding: 4px; border-radius: 8px;">
+              <button id="modeLibBtn" type="button" class="ghost" style="flex: 1; background: var(--panel); box-shadow: var(--shadow-sm); font-weight: 800; color: var(--brand-d);">📚 Library Filter</button>
+              <button id="modeSnapBtn" type="button" class="ghost" style="flex: 1; font-weight: 600; color: var(--muted);">📸 Screenshot</button>
+            </div>
+
+            <!-- Course Selector -->
+            <label class="fld" style="margin-bottom: 12px; display: block;">
+              <span style="font-weight: 800; font-size: 13px; display: block; margin-bottom: 6px;">Course</span>
+              <select id="ppCourseSelect" style="width: 100%; padding: 10px 12px; border-radius: 10px; border: 1.5px solid var(--line); background: var(--panel2); font-weight: 600;">
+                <option value="">Select course...</option>
+              </select>
+              <span id="ppSyllabusBadge" class="meta" style="font-size: 11.5px; margin-top: 4px; display: block; color: var(--brand-d);"></span>
+            </label>
+
+            <!-- Mode A: Cascading Dropdowns -->
+            <div id="ppLibraryFilters">
+              <div style="display: flex; gap: 10px; margin-bottom: 12px;">
+                <label class="fld" style="flex: 1;">
+                  <span style="font-weight: 800; font-size: 13px; display: block; margin-bottom: 6px;">Year</span>
+                  <select id="ppYearSelect" style="width: 100%; padding: 10px 12px; border-radius: 10px; border: 1.5px solid var(--line); background: var(--panel2); font-weight: 600;" disabled>
+                    <option value="">-</option>
+                  </select>
+                </label>
+                <label class="fld" style="flex: 1;">
+                  <span style="font-weight: 800; font-size: 13px; display: block; margin-bottom: 6px;">Series</span>
+                  <select id="ppSeriesSelect" style="width: 100%; padding: 10px 12px; border-radius: 10px; border: 1.5px solid var(--line); background: var(--panel2); font-weight: 600;" disabled>
+                    <option value="">-</option>
+                  </select>
+                </label>
+              </div>
+
+              <div style="display: flex; gap: 10px; margin-bottom: 12px;">
+                <label class="fld" style="flex: 1;">
+                  <span style="font-weight: 800; font-size: 13px; display: block; margin-bottom: 6px;">Paper (Variant)</span>
+                  <select id="ppPaperSelect" style="width: 100%; padding: 10px 12px; border-radius: 10px; border: 1.5px solid var(--line); background: var(--panel2); font-weight: 600;" disabled>
+                    <option value="">-</option>
+                  </select>
+                </label>
+                <label class="fld" style="flex: 1;">
+                  <span style="font-weight: 800; font-size: 13px; display: block; margin-bottom: 6px;">Question</span>
+                  <select id="ppQuestionSelect" style="width: 100%; padding: 10px 12px; border-radius: 10px; border: 1.5px solid var(--line); background: var(--panel2); font-weight: 600;" disabled>
+                    <option value="">-</option>
+                  </select>
+                </label>
+              </div>
+            </div>
+
+            <!-- Mode B: Screenshot Upload -->
+            <div id="ppSnapshotUpload" class="hidden" style="margin-bottom: 14px;">
+              <label class="fld" style="display: block;">
+                <span style="font-weight: 800; font-size: 13px; display: block; margin-bottom: 6px;">Upload Exam Image</span>
+                <input type="file" id="ppImageFile" accept="image/*" style="width: 100%; padding: 10px; border-radius: 10px; border: 1.5px dashed var(--brand); background: rgba(11,191,191,0.05); font-size: 12.5px;" />
+              </label>
+            </div>
+
+            <!-- Doubt Textarea -->
+            <label class="fld" style="margin-bottom: 16px; display: block;">
+              <span style="font-weight: 800; font-size: 13px; display: block; margin-bottom: 6px;">Your Specific Doubt (Optional)</span>
+              <textarea id="ppDoubtInput" rows="2" placeholder="e.g. Why is the second mark point rejected? Or explain why enzyme activity plateaued..." style="width: 100%; padding: 10px 12px; border-radius: 10px; border: 1.5px solid var(--line); background: var(--panel2); font-weight: 500; font-size: 13px;"></textarea>
+            </label>
+
+            <button id="solvePastPaperBtn" class="primary" style="width: 100%; padding: 12px;">🔍 Solve & Explain Question</button>
+          </div>
+        </div>
+
+        <!-- Result Column -->
+        <div class="planner-result">
+          <div id="ppEmptyState" class="empty">
+            <div class="empty-emoji">📄</div>
+            <p>Pick a question from the library or upload a screenshot to see the official mark scheme, teacher walkthroughs, and examiner tips.</p>
+          </div>
+          <div id="ppSolutionResult" class="hidden" style="display: flex; flex-direction: column; gap: 16px;"></div>
+        </div>
+      </div>
+    </div>
+    
     <!-- Pane 4: Alerts & Reminders -->
     <div id="studentAlertsPane" class="student-pane hidden" style="padding: 26px 30px; overflow-y: auto;">
       <div class="pane-head" style="margin-bottom: 20px;">

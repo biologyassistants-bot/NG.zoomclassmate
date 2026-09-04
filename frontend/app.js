@@ -1140,6 +1140,7 @@ if (resetPlanBtn) {
 // ================= TEACHER VIEW =================
 if(el("tabRecordings")) el("tabRecordings").addEventListener("click", () => switchTab("Recordings"));
 if(el("tabStudents")) el("tabStudents").addEventListener("click", () => switchTab("Students"));
+if(el("tabSPastpapers")) el("tabSPastpapers").addEventListener("click", () => switchTab("Pastpapers"));
 if(el("tabQuestions")) el("tabQuestions").addEventListener("click", () => switchTab("Questions"));
 if(el("tabAnalytics")) el("tabAnalytics").addEventListener("click", () => switchTab("Analytics"));
 if(el("tabSettings")) el("tabSettings").addEventListener("click", () => switchTab("Settings"));
@@ -1147,12 +1148,14 @@ if(el("tabSettings")) el("tabSettings").addEventListener("click", () => switchTa
 function switchTab(name) {
   if(el("tabRecordings")) el("tabRecordings").classList.toggle("active", name === "Recordings");
   if(el("tabStudents")) el("tabStudents").classList.toggle("active", name === "Students");
+  if(el("tabPastpapers")) el("tabPastpapers").classList.toggle("active", name === "Pastpapers");
   if(el("tabQuestions")) el("tabQuestions").classList.toggle("active", name === "Questions");
   if(el("tabAnalytics")) el("tabAnalytics").classList.toggle("active", name === "Analytics");
   if(el("tabSettings")) el("tabSettings").classList.toggle("active", name === "Settings");
   
   if(el("teacherRecordings")) el("teacherRecordings").classList.toggle("hidden", name !== "Recordings");
   if(el("teacherStudents")) el("teacherStudents").classList.toggle("hidden", name !== "Students");
+  if(el("tabPastpapers")) el("tabPastpapers").classList.toggle("active", name === "Pastpapers");
   if(el("teacherQuestions")) el("teacherQuestions").classList.toggle("hidden", name !== "Questions");
   if(el("teacherAnalytics")) el("teacherAnalytics").classList.toggle("hidden", name !== "Analytics");
   if(el("teacherSettings")) el("teacherSettings").classList.toggle("hidden", name !== "Settings");
@@ -1160,6 +1163,7 @@ function switchTab(name) {
   if (name === "Questions") loadQuestions();
   if (name === "Recordings") { loadTeacherRecordings(); loadStats(); }
   if (name === "Students") loadStudents();
+  if (name === "PastPapers") loadTeacherPastPaperHub();
   if (name === "Analytics") loadAnalytics();
 }
 
@@ -1896,5 +1900,171 @@ async function loadBranding() {
     const data = await res.json();
     if (data.logo) applyLogo(data.logo + "?t=" + Date.now());
   } catch (e) {}
+}
+// ==============================================================================
+// TEACHER PAST PAPER HUB (ISOLATED LIBRARY)
+// ==============================================================================
+async function loadTeacherPastPaperHub() {
+  const courseSel = el("tppCourseSelect");
+  const tqCourseSel = el("tqCourseSelect");
+  const ansDocSel = el("tqAnsweredDocSelect");
+
+  try {
+    const res = await fetch(`${API}/api/teacher/pastpaper/config`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ passcode: state.passcode })
+    });
+    const data = await res.json();
+
+    if (courseSel) {
+      courseSel.innerHTML = '<option value="">Select course...</option>';
+      (data.courses || []).forEach(c => courseSel.appendChild(new Option(c, c)));
+    }
+
+    if (tqCourseSel) {
+      tqCourseSel.innerHTML = '<option value="">Select course...</option>';
+      (data.courses || []).forEach(c => tqCourseSel.appendChild(new Option(c, c)));
+    }
+
+    if (ansDocSel) {
+      ansDocSel.innerHTML = '<option value="">None</option>';
+      (data.pp_library || []).forEach(d => ansDocSel.appendChild(new Option(d.filename, d.id)));
+    }
+
+    renderTeacherOverrides(data.solutions || []);
+  } catch (e) {
+    console.error("Error loading Past Paper Hub:", e);
+  }
+}
+
+// 1. Save Syllabus Mapping
+if (el("saveSyllabusBtn")) {
+  el("saveSyllabusBtn").addEventListener("click", async () => {
+    const course = el("tppCourseSelect").value;
+    const syllabus = el("tppSyllabusCode").value;
+    if (!course) { toast("Select a course first.", "info"); return; }
+
+    try {
+      const res = await fetch(`${API}/api/teacher/pastpaper/config/save`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ passcode: state.passcode, course, syllabus })
+      });
+      if (res.ok) toast("Syllabus mapping saved ✓", "success");
+    } catch (e) { toast("Error saving syllabus.", "error"); }
+  });
+}
+
+// 2. Upload Document into Isolated Past Paper Library
+if (el("tppUploadDocBtn")) {
+  el("tppUploadDocBtn").addEventListener("click", async () => {
+    const fileInput = el("tppDocFile");
+    const status = el("tppUploadStatus");
+    if (!fileInput || !fileInput.files.length) {
+      toast("Please choose a file to upload.", "info");
+      return;
+    }
+
+    const btn = el("tppUploadDocBtn");
+    btn.disabled = true;
+    status.textContent = "Uploading to Past Paper Library...";
+
+    const fd = new FormData();
+    fd.append("passcode", state.passcode);
+    fd.append("file", fileInput.files[0]);
+
+    try {
+      const res = await fetch(`${API}/api/teacher/pastpaper/doc/upload`, { method: "POST", body: fd });
+      const data = await res.json();
+      if (res.ok) {
+        status.textContent = "Uploaded ✓";
+        toast("Document added to Past Paper Library!", "success");
+        fileInput.value = "";
+        loadTeacherPastPaperHub();
+        setTimeout(() => { status.textContent = ""; }, 3000);
+      } else {
+        toast(data.error || "Upload failed.", "error");
+        status.textContent = "";
+      }
+    } catch (e) {
+      toast("Upload error.", "error");
+      status.textContent = "";
+    } finally {
+      btn.disabled = false;
+    }
+  });
+}
+
+// 3. Save Question Asset
+if (el("saveQuestionAssetBtn")) {
+  el("saveQuestionAssetBtn").addEventListener("click", async () => {
+    const course = el("tqCourseSelect").value;
+    const year = el("tqYearInput").value.trim();
+    const series = el("tqSeriesSelect").value;
+    const paper = el("tqPaperInput").value.trim();
+    const question = el("tqQuestionInput").value.trim();
+
+    if (!course || !paper || !question) {
+      toast("Course, Paper, and Question are required.", "info");
+      return;
+    }
+
+    const payload = {
+      passcode: state.passcode,
+      course, year, series, paper, question,
+      qp_text: el("tqQpText").value.trim(),
+      ms_text: el("tqMsText").value.trim(),
+      video_url: el("tqVideoUrl").value.trim(),
+      answered_doc_id: el("tqAnsweredDocSelect").value
+    };
+
+    try {
+      const res = await fetch(`${API}/api/teacher/pastpaper/solutions/save`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+      if (res.ok) {
+        toast("Question added to library ✓", "success");
+        el("tqQpText").value = "";
+        el("tqMsText").value = "";
+        el("tqQuestionInput").value = "";
+        el("tqVideoUrl").value = "";
+        loadTeacherPastPaperHub();
+      } else {
+        toast("Failed to save question.", "error");
+      }
+    } catch (e) { toast("Network error.", "error"); }
+  });
+}
+
+function renderTeacherOverrides(list) {
+  const container = el("tppOverridesList");
+  if (!container) return;
+  container.innerHTML = "";
+
+  if (!list.length) {
+    container.innerHTML = '<p class="meta">No questions added to the library yet.</p>';
+    return;
+  }
+
+  list.forEach(item => {
+    const card = document.createElement("div");
+    card.className = "student-row";
+    card.innerHTML = `
+      <div>
+        <div style="font-weight:800; font-size:14px; color:var(--brand-d);">${escapeHtml(item.course)} · ${escapeHtml(item.year)} ${escapeHtml(item.series)} P${escapeHtml(item.paper)} Q${escapeHtml(item.question)}</div>
+        <div class="meta">${item.video_url ? `🎥 Video linked` : 'No video'} | ${item.answered_doc_name ? `📄 Doc: ${escapeHtml(item.answered_doc_name)}` : 'No doc'}</div>
+      </div>
+      <button class="ghost-sm danger-btn">🗑️ Delete</button>
+    `;
+    card.querySelector("button").addEventListener("click", async () => {
+      if (!confirm("Remove this question from the library?")) return;
+      await fetch(`${API}/api/teacher/pastpaper/solutions/delete`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ passcode: state.passcode, key: item.key })
+      });
+      loadTeacherPastPaperHub();
+    });
+    container.appendChild(card);
+  });
 }
 loadBranding();

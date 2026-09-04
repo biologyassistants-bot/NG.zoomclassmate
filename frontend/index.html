@@ -197,6 +197,7 @@
       <div class="who">
         <button id="tabRecordings" class="tab active">Recordings</button>
         <button id="tabStudents" class="tab">Students</button>
+        <button id="tabPastPapers" class="tab">Past Paper Hub</button>
         <button id="tabQuestions" class="tab">Student questions</button>
         <button id="tabAnalytics" class="tab">Analytics</button>
         <button id="tabSettings" class="tab">Settings</button>
@@ -254,6 +255,84 @@
         <h2>Class roster</h2>
         <p class="meta">Only students on this list can sign in. Import a sheet of students, or add one manually. Each student sees only the recordings for their assigned course(s).</p>
       </div>
+      <!-- Teacher Pane: Past Paper Hub -->
+    <div id="teacherPastPapers" class="teacher-pane hidden">
+      <div class="pane-head">
+        <h2>Past Paper Hub: Syllabus & Dedicated Exam Library</h2>
+        <p class="meta">Manage official syllabus specifications, upload exam documents (isolated from recording notes), and add questions to your student library.</p>
+      </div>
+
+      <!-- 1. Syllabus Mapping Card -->
+      <div class="setting-card" style="margin-bottom: 20px;">
+        <h3>1. Course Syllabus & Exam Board Mapping</h3>
+        <p class="meta" style="margin-bottom: 12px;">Ensure the AI applies the exact mark scheme rules and criteria for each course.</p>
+        <div style="display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-end;">
+          <label class="fld" style="flex: 1; min-width: 200px;">
+            <span>Course / Unit Name</span>
+            <select id="tppCourseSelect" style="width: 100%; padding: 10px; border-radius: 8px; border: 1.5px solid var(--line);"></select>
+          </label>
+          <label class="fld" style="flex: 1; min-width: 200px;">
+            <span>Exam Board & Syllabus</span>
+            <select id="tppSyllabusCode" style="width: 100%; padding: 10px; border-radius: 8px; border: 1.5px solid var(--line);">
+              <option value="Cambridge 9700 (A/AS Level Biology)">Cambridge 9700 (A/AS Level Biology)</option>
+              <option value="Cambridge 0610 (IGCSE Biology)">Cambridge 0610 (IGCSE Biology)</option>
+              <option value="Edexcel IAL WBI11/WBI12 (Biology)">Edexcel IAL WBI11/WBI12 (Biology)</option>
+              <option value="Edexcel IAL WBI13 (Unit 3 Biology)">Edexcel IAL WBI13 (Unit 3 Biology)</option>
+              <option value="Edexcel IGCSE 4BI1 (Biology)">Edexcel IGCSE 4BI1 (Biology)</option>
+              <option value="Oxford AQA 9610 (Biology)">Oxford AQA 9610 (Biology)</option>
+            </select>
+          </label>
+          <button id="saveSyllabusBtn" class="primary" style="height: 42px;">Save Syllabus</button>
+        </div>
+      </div>
+
+      <!-- 2. Upload to Dedicated Past Paper Library -->
+      <div class="setting-card" style="margin-bottom: 20px; background: rgba(11,191,191,0.04); border: 1.5px dashed var(--brand);">
+        <h3>2. Upload Document to Dedicated Past Paper Library</h3>
+        <p class="meta" style="margin-bottom: 12px;">Upload model answers, exam packs, or mark schemes here. These stay strictly separate from class lecture notes.</p>
+        <div style="display: flex; gap: 12px; align-items: center;">
+          <input type="file" id="tppDocFile" accept=".pdf,.docx,.txt" style="flex: 1; font-size: 13px;" />
+          <button id="tppUploadDocBtn" type="button" class="ghost-sm" style="padding: 9px 16px;">Upload Exam Doc</button>
+        </div>
+        <span id="tppUploadStatus" class="meta" style="font-size: 12px; margin-top: 6px; display: block;"></span>
+      </div>
+
+      <!-- 3. Question Override Card -->
+      <div class="setting-card">
+        <h3>3. Add Curated Question to Library</h3>
+        <p class="meta" style="margin-bottom: 14px;">Students can filter directly to this question and immediately view your official text, mark scheme, video, or linked exam doc.</p>
+        
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 10px; margin-bottom: 12px;">
+          <label class="fld"><span>Course</span><select id="tqCourseSelect" style="width: 100%; padding: 8px; border-radius: 8px; border: 1.5px solid var(--line);"></select></label>
+          <label class="fld"><span>Year</span><input id="tqYearInput" type="number" placeholder="2023" value="2023" style="width: 100%; padding: 8px; border-radius: 8px; border: 1.5px solid var(--line);" /></label>
+          <label class="fld"><span>Series</span>
+            <select id="tqSeriesSelect" style="width: 100%; padding: 8px; border-radius: 8px; border: 1.5px solid var(--line);">
+              <option value="May/June">May/June</option>
+              <option value="Oct/Nov">Oct/Nov</option>
+              <option value="Feb/March">Feb/March</option>
+              <option value="Jan">Jan</option>
+            </select>
+          </label>
+          <label class="fld"><span>Paper</span><input id="tqPaperInput" type="text" placeholder="e.g. 21" style="width: 100%; padding: 8px; border-radius: 8px; border: 1.5px solid var(--line);" /></label>
+          <label class="fld"><span>Question</span><input id="tqQuestionInput" type="text" placeholder="e.g. 1(a)" style="width: 100%; padding: 8px; border-radius: 8px; border: 1.5px solid var(--line);" /></label>
+        </div>
+
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px;">
+          <label class="fld"><span>Question Paper Prompt (QP)</span><textarea id="tqQpText" rows="3" placeholder="Paste exact question text..." style="width: 100%; padding: 8px; border-radius: 8px; border: 1.5px solid var(--line); font-size:12.5px;"></textarea></label>
+          <label class="fld"><span>Mark Scheme Points (MS)</span><textarea id="tqMsText" rows="3" placeholder="Paste official mark scheme criteria..." style="width: 100%; padding: 8px; border-radius: 8px; border: 1.5px solid var(--line); font-size:12.5px;"></textarea></label>
+        </div>
+
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 14px;">
+          <label class="fld"><span>Video Walkthrough URL (Optional)</span><input id="tqVideoUrl" type="url" placeholder="https://youtube..." style="width: 100%; padding: 8px; border-radius: 8px; border: 1.5px solid var(--line);" /></label>
+          <label class="fld"><span>Linked Exam Doc (From Past Paper Library)</span><select id="tqAnsweredDocSelect" style="width: 100%; padding: 8px; border-radius: 8px; border: 1.5px solid var(--line);"></select></label>
+        </div>
+
+        <button id="saveQuestionAssetBtn" class="primary">+ Add to Student Library</button>
+      </div>
+
+      <h3 style="margin-top: 24px; margin-bottom: 12px; font-size: 16px;">Current Curated Questions</h3>
+      <div id="tppOverridesList" style="display: flex; flex-direction: column; gap: 10px;"></div>
+    </div>
       <div class="add-student">
         <input id="newStudentName" type="text" placeholder="Student name" />
         <input id="newStudentEmail" type="text" placeholder="Email" />

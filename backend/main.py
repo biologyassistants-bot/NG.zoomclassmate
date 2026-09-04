@@ -2861,3 +2861,36 @@ def teacher_pp_delete_solution(body: dict):
     sols.pop(body.get("key", ""), None)
     save_pp_json(PAST_PAPER_SOLUTIONS_PATH, sols)
     return {"ok": True}
+class SavePPSolutionBody(BaseModel):
+    passcode: str
+    course: str
+    year: str
+    series: str
+    paper: str
+    question: str
+    qp_text: str | None = ""
+    ms_text: str | None = ""
+    video_url: str | None = ""
+    answered_doc_id: str | None = ""
+
+@app.post("/api/teacher/pastpaper/solutions/save")
+def teacher_pp_save_solution(body: SavePPSolutionBody):
+    if not check_teacher(body.passcode):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    sols = load_pp_json(PAST_PAPER_SOLUTIONS_PATH)
+    key = f"{body.course.strip().lower()}:{body.year.strip().lower()}:{body.series.strip().lower()}:{body.paper.strip().lower()}:{body.question.strip().lower()}"
+    doc = pp_doc_by_id(body.answered_doc_id) if body.answered_doc_id else None
+    sols[key] = {
+        "course": body.course,
+        "year": body.year,
+        "series": body.series,
+        "paper": body.paper,
+        "question": body.question,
+        "qp_text": body.qp_text or "",
+        "ms_text": body.ms_text or "",
+        "video_url": body.video_url or "",
+        "answered_doc_id": body.answered_doc_id or "",
+        "answered_doc_name": doc.get("filename", "") if doc else ""
+    }
+    save_pp_json(PAST_PAPER_SOLUTIONS_PATH, sols)
+    return {"ok": True}

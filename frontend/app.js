@@ -290,15 +290,84 @@ function updateAlertBadge() {
   }
 }
 
+function getStudentWeakSpots() {
+  const spots = [];
+  const now = new Date();
+
+  // 1. Identify topics from flashcards with low intervals or overdue reviews
+  const failedRecCounts = {};
+  (state.flashcardDeck || []).forEach(c => {
+    if (c.interval <= 1 || new Date(c.dueDate) <= now) {
+      failedRecCounts[c.recording_id] = (failedRecCounts[c.recording_id] || 0) + 1;
+    }
+  });
+
+  Object.entries(failedRecCounts).forEach(([recId, count]) => {
+    const rec = state.recordings.find(r => r.id === recId);
+    if (rec) {
+      spots.push({
+        label: `${rec.title} (${count} cards struggling)`,
+        badge: rec.unit || "Review",
+        color: "danger"
+      });
+    }
+  });
+
+  // 2. Identify topics from active chat history where the student asked multiple questions
+  if (state.chatHistory) {
+    Object.entries(state.chatHistory).forEach(([recId, messages]) => {
+      const qCount = messages.filter(m => m.role === "user").length;
+      if (qCount >= 3) {
+        const rec = state.recordings.find(r => r.id === recId);
+        if (rec && !spots.some(s => s.label.startsWith(rec.title))) {
+          spots.push({
+            label: `${rec.title} (${qCount} doubts raised)`,
+            badge: rec.unit || "Doubts",
+            color: "warning"
+          });
+        }
+      }
+    });
+  }
+
+  // 3. Identify incomplete study plan tasks
+  if (currentStudyPlan) {
+    currentStudyPlan.forEach(day => {
+      (day.tasks || []).forEach(t => {
+        if (!t.completed && spots.length < 4) {
+          spots.push({
+            label: t.title,
+            badge: `Day ${day.day} Plan`,
+            color: "warning"
+          });
+        }
+      });
+    });
+  }
+
+  // 4. Fallback for new students: pull the latest classes from their enrolled courses
+  if (spots.length === 0 && state.recordings.length > 0) {
+    state.recordings.slice(0, 3).forEach(r => {
+      spots.push({
+        label: r.title,
+        badge: r.unit || "Recommended",
+        color: "info"
+      });
+    });
+  }
+
+  return spots;
+}
+
 function renderStudentDashboard() {
   const planPct = calculatePlanProgress();
   const statsBar = el("studentStatsBar");
-  if(!statsBar) return;
-  
+  if (!statsBar) return;
+
   const courses = new Set(state.recordings.map(r => r.unit || "Unassigned"));
   const now = new Date();
   const dueCardsCount = (state.flashcardDeck || []).filter(c => new Date(c.dueDate) <= now).length;
-  
+
   const cards = [
     { label: "Enrolled Courses", value: courses.size },
     { label: "Classes Available", value: state.recordings.length },
@@ -306,8 +375,8 @@ function renderStudentDashboard() {
     { label: "Study Plan Progress", value: `${planPct}%`, sub: planPct === 100 ? "Completed! 🎉" : (currentStudyPlan ? "In progress" : "No active plan") },
     { label: "AI Questions Asked", value: studentStats.questions }
   ];
-  
-  let html = cards.map(c => 
+
+  let html = cards.map(c =>
     `<div class="stat-card">
       <div class="stat-value">${escapeHtml(String(c.value))}</div>
       <div class="stat-label">${escapeHtml(c.label)}</div>
@@ -315,13 +384,31 @@ function renderStudentDashboard() {
     </div>`
   ).join("");
 
+  const weakSpots = getStudentWeakSpots();
+  let chipsHtml = "";
+
+  if (weakSpots.length === 0) {
+    chipsHtml = '<span class="meta">No weak spots identified yet. Ask questions, complete quizzes, or build a study plan to see recommendations.</span>';
+  } else {
+    chipsHtml = weakSpots.map(s => {
+      const isDanger = s.color === "danger";
+      const isWarn = s.color === "warning";
+      const bg = isDanger ? "rgba(255,107,107,0.1)" : isWarn ? "rgba(245,159,0,0.1)" : "rgba(11,191,191,0.1)";
+      const color = isDanger ? "#e03131" : isWarn ? "#f59f00" : "var(--brand-d)";
+      const border = isDanger ? "rgba(255,107,107,0.3)" : isWarn ? "rgba(245,159,0,0.3)" : "rgba(11,191,191,0.3)";
+
+      return `<span class="course-chip" style="background: ${bg}; color: ${color}; border-color: ${border}; font-weight: 700;">
+        [${escapeHtml(s.badge)}] ${escapeHtml(s.label)}
+      </span>`;
+    }).join("");
+  }
+
   html += `
     <div style="grid-column: 1 / -1; margin-top: 10px; background: var(--panel); border: 1.5px solid var(--line); padding: 18px; border-radius: 14px;">
       <h3 style="font-size: 16px; font-weight: 800; margin-bottom: 8px;">🎯 Suggested Focus & Weak Spots</h3>
-      <p class="meta" style="margin-bottom: 12px;">Based on your recent activity and questions, here are topics to review:</p>
+      <p class="meta" style="margin-bottom: 12px;">Dynamically calculated from your enrolled course activity, spaced repetition review decay, and asked questions:</p>
       <div style="display: flex; gap: 8px; flex-wrap: wrap;">
-        <span class="course-chip" style="background: rgba(255,107,107,0.1); color: #e03131; border-color: rgba(255,107,107,0.3);">⚠️ Enzyme Kinetics & Inhibition</span>
-        <span class="course-chip" style="background: rgba(255,107,107,0.1); color: #e03131; border-color: rgba(255,107,107,0.3);">⚠️ Oxidative Phosphorylation</span>
+        ${chipsHtml}
       </div>
     </div>
   `;

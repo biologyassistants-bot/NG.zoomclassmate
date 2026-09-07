@@ -2894,3 +2894,71 @@ def teacher_pp_save_solution(body: SavePPSolutionBody):
     }
     save_pp_json(PAST_PAPER_SOLUTIONS_PATH, sols)
     return {"ok": True}
+
+@app.post("/api/teacher/pastpaper/bulk-upload")
+async def teacher_pp_bulk_upload(
+    passcode: str = Form(...),
+    course: str = Form(...),
+    year: str = Form(...),
+    series: str = Form(...),
+    paper: str = Form(...),
+    video_url: str = Form(""),
+    answered_doc_id: str = Form(""),
+    qp_file: UploadFile = File(...),
+    ms_file: UploadFile = File(...)
+):
+    if not check_teacher(passcode):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+
+    try:
+        qp_bytes = await qp_file.read()
+        ms_bytes = await ms_file.read()
+        qp_text = extract_text_from_upload(qp_bytes, qp_file.filename or "qp.pdf")
+        ms_text = extract_text_from_upload(ms_bytes, ms_file.filename or "ms.pdf")
+    except Exception as e:
+        return JSONResponse({"error": f"PDF extraction failed: {str(e)}"}, status_code=400)
+
+    system_prompt = (
+        "You are an expert exam ingestion parser. Segment the provided Question Paper text and "
+        "corresponding Mark Scheme text into individual question items.\n"
+        "Return STRICT JSON only matching this schema:\n"
+        '{"questions": [{"question_number": "1(a)", "question_text": "...", "mark_scheme": "..."}]}'
+    )
+    user_prompt = f"QUESTION PAPER (Truncated):\n{qp_text[:14000]}\n\nMARK SCHEME (Truncated):\n{ms_text[:14000]}"
+
+    try:
+        raw = await llm(
+            [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
+            max_tokens=3500,
+            temperature=0.1
+        )
+        data = json.loads(raw[raw.find("{"):raw.rfind("}")+1])
+        parsed_questions = data.get("questions", [])
+    except Exception as e:
+        return JSONResponse({"error": f"AI Parsing failed: {str(e)}"}, status_code=500)
+
+    sols = load_pp_json(PAST_PAPER_SOLUTIONS_PATH)
+    doc = pp_doc_by_id(answered_doc_id) if answered_doc_id else None
+    count = 0
+
+    for item in parsed_questions:
+        q_num = item.get("question_number", "").strip()
+        if not q_num:
+            continue
+        key = f"{course.strip().lower()}:{year.strip().lower()}:{series.strip().lower()}:{paper.strip().lower()}:{q_num.lower()}"
+        sols[key] = {
+            "course": course,
+            "year": year,
+            "series": series,
+            "paper": paper,
+            "question": q_num,
+            "qp_text": item.get("question_text", ""),
+            "ms_text": item.get("mark_scheme", ""),
+            "video_url": video_url.strip(),
+            "answered_doc_id": answered_doc_id,
+            "answered_doc_name": doc.get("filename", "") if doc else ""
+        }
+        count += 1
+
+    save_pp_json(PAST_PAPER_SOLUTIONS_PATH, sols)
+    return {"ok": True, "indexed": count}

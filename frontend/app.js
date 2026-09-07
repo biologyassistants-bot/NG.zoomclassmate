@@ -2379,9 +2379,14 @@ function renderStudentPastPaperSolution(data) {
 // TEACHER PAST PAPER HUB (ISOLATED LIBRARY)
 // ==============================================================================
 async function loadTeacherPastPaperHub() {
+  // 1. Syllabus & Individual Selectors
   const courseSel = el("tppCourseSelect");
   const tqCourseSel = el("tqCourseSelect");
   const ansDocSel = el("tqAnsweredDocSelect");
+
+  // 2. Bulk Upload Selectors
+  const bulkCourseSel = el("bulkCourseSelect");
+  const bulkDocSel = el("bulkDocSelect");
 
   try {
     const res = await fetch(`${API}/api/teacher/pastpaper/config`, {
@@ -2390,21 +2395,33 @@ async function loadTeacherPastPaperHub() {
     });
     const data = await res.json();
 
+    // Populate Course Dropdowns
+    const courses = data.courses || [];
     if (courseSel) {
       courseSel.innerHTML = '<option value="">Select course...</option>';
-      (data.courses || []).forEach(c => courseSel.appendChild(new Option(c, c)));
+      courses.forEach(c => courseSel.appendChild(new Option(c, c)));
     }
-
     if (tqCourseSel) {
       tqCourseSel.innerHTML = '<option value="">Select course...</option>';
-      (data.courses || []).forEach(c => tqCourseSel.appendChild(new Option(c, c)));
+      courses.forEach(c => tqCourseSel.appendChild(new Option(c, c)));
+    }
+    if (bulkCourseSel) {
+      bulkCourseSel.innerHTML = '<option value="">Select course...</option>';
+      courses.forEach(c => bulkCourseSel.appendChild(new Option(c, c)));
     }
 
+    // Populate Document Dropdowns (from Past Paper Library)
+    const docs = data.pp_library || [];
     if (ansDocSel) {
       ansDocSel.innerHTML = '<option value="">None</option>';
-      (data.pp_library || []).forEach(d => ansDocSel.appendChild(new Option(d.filename, d.id)));
+      docs.forEach(d => ansDocSel.appendChild(new Option(d.filename, d.id)));
+    }
+    if (bulkDocSel) {
+      bulkDocSel.innerHTML = '<option value="">None</option>';
+      docs.forEach(d => bulkDocSel.appendChild(new Option(d.filename, d.id)));
     }
 
+    // Render Question List
     renderTeacherOverrides(data.solutions || []);
   } catch (e) {
     console.error("Error loading Past Paper Hub:", e);

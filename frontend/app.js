@@ -264,18 +264,21 @@ function switchStudentTab(name) {
   }
   studentTabs.forEach(t => {
   const btn = el(`tabStudent${t}`);
-  if(btn) {
+  if (btn) {
     btn.addEventListener("click", () => {
       studentTabs.forEach(oth => {
-        if(el(`tabStudent${oth}`)) el(`tabStudent${oth}`).classList.toggle("active", oth === t);
-        if(el(`student${oth}Pane`)) el(`student${oth}Pane`).classList.toggle("hidden", oth !== t);
+        if (el(`tabStudent${oth}`)) el(`tabStudent${oth}`).classList.toggle("active", oth === t);
+        if (el(`student${oth}Pane`)) el(`student${oth}Pane`).classList.toggle("hidden", oth !== t);
       });
-      if (t === "PastPapers") initStudentPastPapers();
+      if (t === "PastPapers" && typeof initStudentPastPapers === "function") {
+        initStudentPastPapers();
+      }
+      if (t === "Alerts" && typeof renderAlerts === "function") {
+        renderAlerts();
+      }
     });
   }
 });
-  if (name === "Alerts") renderAlertsPane();
-}
 
 function calculatePlanProgress() {
   if (!currentStudyPlan) return 0;
@@ -392,41 +395,88 @@ function renderAlertsPane() {
   }
 
   // 2. Study Plan Daily Task Reminders
-  if (currentStudyPlan) {
-    let uncompletedCount = 0;
-    currentStudyPlan.forEach(d => {
-      d.tasks.forEach(t => { if (!t.completed) uncompletedCount++; });
-    });
+ function renderAlerts() {
+  const container = el("alertsContainer");
+  const badge = el("navAlertBadge");
+  if (!container) return;
 
-    if (uncompletedCount > 0) {
-      hasAlerts = true;
-      const planAlert = document.createElement("div");
-      planAlert.className = "q-block";
-      planAlert.style.cssText = "display: flex; justify-content: space-between; align-items: center; padding: 18px; border-left: 4px solid var(--brand);";
-      planAlert.innerHTML = `
-        <div>
-          <div style="font-weight: 800; font-size: 15px; margin-bottom: 4px;">
-            📅 Active Study Plan in Progress
-          </div>
-          <div class="meta">
-            You have <strong>${uncompletedCount} task${uncompletedCount > 1 ? 's' : ''}</strong> left to complete your scheduled goal.
-          </div>
-        </div>
-        <button class="ghost" style="padding: 8px 16px; font-size: 13px;">Open Planner →</button>
-      `;
-      planAlert.querySelector("button").addEventListener("click", () => switchStudentTab("Planner"));
-      container.appendChild(planAlert);
+  container.innerHTML = "";
+  const now = Date.now();
+  let alertCount = 0;
+
+  // 1. Check for Due Flashcards (SRS)
+  const deck = (state.studentProfile && state.studentProfile.flashcard_deck) || state.flashcardDeck || [];
+  const dueCards = deck.filter(c => !c.next_review || new Date(c.next_review).getTime() <= now);
+
+  if (dueCards.length > 0) {
+    alertCount += dueCards.length;
+    const card = document.createElement("div");
+    card.className = "setting-card";
+    card.style.cssText = "display: flex; justify-content: space-between; align-items: center; border-left: 4px solid var(--brand); background: var(--panel);";
+    card.innerHTML = `
+      <div>
+        <h4 style="margin: 0 0 4px 0; font-size: 15px; color: var(--brand-d);">🃏 Spaced Repetition Due</h4>
+        <p class="meta" style="margin: 0;">You have <strong>${dueCards.length}</strong> flashcard${dueCards.length > 1 ? "s" : ""} scheduled for active recall review today.</p>
+      </div>
+      <button id="openDueFlashcardsBtn" class="primary" style="padding: 8px 16px; font-size: 13px;">Review Now →</button>
+    `;
+    container.appendChild(card);
+
+    const btn = card.querySelector("#openDueFlashcardsBtn");
+    if (btn) {
+      btn.addEventListener("click", () => {
+        if (typeof openFlashcardsModal === "function") openFlashcardsModal();
+        else if (el("flashcardModal")) el("flashcardModal").classList.remove("hidden");
+      });
     }
   }
 
-  if (!hasAlerts) {
+  // 2. Check for Study Planner Tasks
+  const plan = (state.studentProfile && state.studentProfile.study_plan) || state.currentPlan || [];
+  const pendingTasks = [];
+  plan.forEach(day => {
+    (day.tasks || []).forEach(task => {
+      if (!task.completed) pendingTasks.push({ ...task, day: day.day });
+    });
+  });
+
+  if (pendingTasks.length > 0) {
+    alertCount += 1;
+    const planCard = document.createElement("div");
+    planCard.className = "setting-card";
+    planCard.style.cssText = "display: flex; justify-content: space-between; align-items: center; border-left: 4px solid #f59f00; background: var(--panel);";
+    planCard.innerHTML = `
+      <div>
+        <h4 style="margin: 0 0 4px 0; font-size: 15px; color: #f59f00;">📅 Active Study Plan Tasks</h4>
+        <p class="meta" style="margin: 0;">You have <strong>${pendingTasks.length}</strong> task${pendingTasks.length > 1 ? "s" : ""} waiting to be checked off your revision timetable.</p>
+      </div>
+      <button id="jumpToPlannerBtn" class="ghost" style="padding: 8px 16px; font-size: 13px;">Open Planner →</button>
+    `;
+    container.appendChild(planCard);
+
+    const planBtn = planCard.querySelector("#jumpToPlannerBtn");
+    if (planBtn) {
+      planBtn.addEventListener("click", () => {
+        if (el("tabStudentPlanner")) el("tabStudentPlanner").click();
+      });
+    }
+  }
+
+  // 3. Fallback when all caught up
+  if (alertCount === 0) {
     container.innerHTML = `
-      <div class="empty" style="padding: 40px 20px;">
+      <div class="empty" style="padding: 40px 0;">
         <div class="empty-emoji">🎉</div>
-        <h3>You are completely caught up!</h3>
-        <p class="meta">No spaced repetition flashcards or pending plan alerts right now. Keep up the momentum!</p>
+        <h3>All caught up!</h3>
+        <p class="meta">No overdue flashcards or revision tasks scheduled right now.</p>
       </div>
     `;
+    if (badge) badge.classList.add("hidden");
+  } else {
+    if (badge) {
+      badge.textContent = alertCount;
+      badge.classList.remove("hidden");
+    }
   }
 }
 

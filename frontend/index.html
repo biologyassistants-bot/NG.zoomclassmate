@@ -376,6 +376,50 @@
         </div>
       </div>
 
+      <!-- Bulk Exam Upload Card -->
+      <div class="setting-card" style="margin-bottom: 20px;">
+        <h3>📄 Bulk Upload Complete Exam (QP + MS)</h3>
+        <p class="meta" style="margin-bottom: 12px;">Upload the full Question Paper and official Mark Scheme. The system will automatically split and index each question into your student library.</p>
+        
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; margin-bottom: 12px;">
+          <label class="fld"><span>Course</span><select id="bulkCourseSelect" style="width: 100%; padding: 8px; border-radius: 8px; border: 1.5px solid var(--line);"></select></label>
+          <label class="fld"><span>Year</span><input id="bulkYearInput" type="number" placeholder="2023" value="2023" style="width: 100%; padding: 8px; border-radius: 8px; border: 1.5px solid var(--line);" /></label>
+          <label class="fld"><span>Series</span>
+            <select id="bulkSeriesSelect" style="width: 100%; padding: 8px; border-radius: 8px; border: 1.5px solid var(--line);">
+              <option value="May/June">May/June</option>
+              <option value="Oct/Nov">Oct/Nov</option>
+              <option value="Feb/March">Feb/March</option>
+              <option value="Jan">Jan</option>
+            </select>
+          </label>
+          <label class="fld"><span>Paper (e.g. 21)</span><input id="bulkPaperInput" type="text" placeholder="21" style="width: 100%; padding: 8px; border-radius: 8px; border: 1.5px solid var(--line);" /></label>
+        </div>
+
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px; background: var(--panel2); padding: 12px; border-radius: 8px; border: 1.5px dashed var(--line);">
+          <label class="fld">
+            <span style="display: block; margin-bottom: 4px; font-weight: 700;">Question Paper PDF</span>
+            <input type="file" id="bulkQpFile" accept=".pdf" style="width: 100%; font-size: 12px;" />
+          </label>
+          <label class="fld">
+            <span style="display: block; margin-bottom: 4px; font-weight: 700;">Mark Scheme PDF</span>
+            <input type="file" id="bulkMsFile" accept=".pdf" style="width: 100%; font-size: 12px;" />
+          </label>
+        </div>
+
+        <div style="display: flex; gap: 12px; margin-bottom: 14px; flex-wrap: wrap;">
+          <label class="fld" style="flex: 1; min-width: 220px;">
+            <span>Video Walkthrough URL (Optional)</span>
+            <input id="bulkVideoUrl" type="url" placeholder="https://youtube.com/..." style="width: 100%; padding: 8px; border-radius: 8px; border: 1.5px solid var(--line);" />
+          </label>
+          <label class="fld" style="flex: 1; min-width: 220px;">
+            <span>Link Model Answer Doc (Optional)</span>
+            <select id="bulkDocSelect" style="width: 100%; padding: 8px; border-radius: 8px; border: 1.5px solid var(--line);"></select>
+          </label>
+        </div>
+
+        <button id="processBulkBtn" class="primary">🚀 Upload & Auto-Extract Exam Questions</button>
+      </div>
+      
       <!-- 2. Upload to Dedicated Past Paper Library -->
       <div class="setting-card" style="margin-bottom: 20px; background: rgba(11,191,191,0.04); border: 1.5px dashed var(--brand);">
         <h3>2. Upload Document to Dedicated Past Paper Library</h3>

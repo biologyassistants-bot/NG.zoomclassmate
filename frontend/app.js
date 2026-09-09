@@ -2231,28 +2231,55 @@ async function initStudentPastPapers() {
   const sel = el("ppCourseSelect");
   if (!sel) return;
 
+  // 1. Read courses directly from the student's available recordings
+  const courseSet = new Set();
+  (state.recordings || []).forEach(r => {
+    const u = (r.unit || "").trim();
+    if (u && u.toLowerCase() !== "unassigned") {
+      courseSet.add(u);
+    }
+  });
+
+  // 2. Fetch syllabus mapping & question library
   try {
     const res = await fetch(`${API}/api/student/pastpaper/meta`, {
-      method: "POST", headers: { "Content-Type": "application/json" },
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ token: state.token })
     });
-    const data = await res.json();
-    state.courseSyllabi = data.syllabi || {};
-    ppStudentLibrary = data.library || [];
+    if (res.ok) {
+      const data = await res.json();
+      state.courseSyllabi = data.syllabi || {};
+      ppStudentLibrary = data.library || [];
+      (data.courses || []).forEach(c => {
+        if (c && c.trim() && c.trim().toLowerCase() !== "unassigned") {
+          courseSet.add(c.trim());
+        }
+      });
+    }
+  } catch (e) {
+    console.error("Error loading student past paper metadata:", e);
+  }
 
-    sel.innerHTML = '<option value="">Select course...</option>';
-    (data.courses || []).forEach(c => sel.appendChild(new Option(c, c)));
+  const courses = Array.from(courseSet).sort();
+  sel.innerHTML = '<option value="">Select course...</option>';
+  if (courses.length === 0) {
+    sel.innerHTML += '<option value="" disabled>(No courses available)</option>';
+  } else {
+    courses.forEach(c => sel.appendChild(new Option(c, c)));
+  }
 
-    sel.onchange = () => {
-      const chosen = sel.value;
-      const badge = el("ppSyllabusBadge");
-      if (badge) {
-        badge.textContent = state.courseSyllabi[chosen] 
-          ? `🎯 Syllabus: ${state.courseSyllabi[chosen]}` 
-          : "Standard Exam Board Specification";
-      }
-      populateStudentCascade("year");
-    };
+  sel.onchange = () => {
+    const chosen = sel.value;
+    const badge = el("ppSyllabusBadge");
+    if (badge) {
+      badge.textContent = state.courseSyllabi[chosen]
+        ? `🎯 Syllabus: ${state.courseSyllabi[chosen]}`
+        : "Standard Exam Board Specification";
+    }
+    populateStudentCascade("year");
+  };
+}
   } catch (e) {
     console.error("Error loading past paper metadata:", e);
   }
@@ -2389,51 +2416,84 @@ function renderStudentPastPaperSolution(data) {
 // TEACHER PAST PAPER HUB (ISOLATED LIBRARY)
 // ==============================================================================
 async function loadTeacherPastPaperHub() {
-  // 1. Syllabus & Individual Selectors
   const courseSel = el("tppCourseSelect");
   const tqCourseSel = el("tqCourseSelect");
-  const ansDocSel = el("tqAnsweredDocSelect");
-
-  // 2. Bulk Upload Selectors
   const bulkCourseSel = el("bulkCourseSelect");
+  const ansDocSel = el("tqAnsweredDocSelect");
   const bulkDocSel = el("bulkDocSelect");
 
+  // 1. Ensure recordings list is fully loaded
+  if (!teacherRecordings || teacherRecordings.length === 0) {
+    try {
+      await loadTeacherRecordings();
+    } catch (err) {
+      console.warn("Could not preload recordings:", err);
+    }
+  }
+
+  // 2. Read unique courses directly from the recordings list
+  const courseSet = new Set();
+  (teacherRecordings || []).forEach(r => {
+    const u = (r.unit || "").trim();
+    if (u && u.toLowerCase() !== "unassigned") {
+      courseSet.add(u);
+    }
+  });
+
+  // 3. Fetch server config for syllabus mappings and document library
+  let data = {};
   try {
     const res = await fetch(`${API}/api/teacher/pastpaper/config`, {
-      method: "POST", headers: { "Content-Type": "application/json" },
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ passcode: state.passcode })
     });
-    const data = await res.json();
-
-    // Populate Course Dropdowns
-    const courses = data.courses || [];
-    if (courseSel) {
-      courseSel.innerHTML = '<option value="">Select course...</option>';
-      courses.forEach(c => courseSel.appendChild(new Option(c, c)));
+    if (res.ok) {
+      data = await res.json();
+      (data.courses || []).forEach(c => {
+        if (c && c.trim() && c.trim().toLowerCase() !== "unassigned") {
+          courseSet.add(c.trim());
+        }
+      });
     }
-    if (tqCourseSel) {
-      tqCourseSel.innerHTML = '<option value="">Select course...</option>';
-      courses.forEach(c => tqCourseSel.appendChild(new Option(c, c)));
-    }
-    if (bulkCourseSel) {
-      bulkCourseSel.innerHTML = '<option value="">Select course...</option>';
-      courses.forEach(c => bulkCourseSel.appendChild(new Option(c, c)));
-    }
-
-    // Populate Document Dropdowns (from Past Paper Library)
-    const docs = data.pp_library || [];
-    if (ansDocSel) {
-      ansDocSel.innerHTML = '<option value="">None</option>';
-      docs.forEach(d => ansDocSel.appendChild(new Option(d.filename, d.id)));
-    }
-    if (bulkDocSel) {
-      bulkDocSel.innerHTML = '<option value="">None</option>';
-      docs.forEach(d => bulkDocSel.appendChild(new Option(d.filename, d.id)));
-    }
-
-    // Render Question List
-    renderTeacherOverrides(data.solutions || []);
   } catch (e) {
+    console.error("Error loading Past Paper config:", e);
+  }
+
+  const courses = Array.from(courseSet).sort();
+
+  // 4. Helper to populate dropdowns
+  function populateSelect(selectEl, placeholder) {
+    if (!selectEl) return;
+    const current = selectEl.value;
+    selectEl.innerHTML = `<option value="">${placeholder}</option>`;
+    if (courses.length === 0) {
+      selectEl.innerHTML += `<option value="" disabled>(No courses found — assign units to recordings first)</option>`;
+    } else {
+      courses.forEach(c => selectEl.appendChild(new Option(c, c)));
+    }
+    if (current && courses.includes(current)) selectEl.value = current;
+  }
+
+  populateSelect(courseSel, "Select course...");
+  populateSelect(tqCourseSel, "Select course...");
+  populateSelect(bulkCourseSel, "Select course...");
+
+  // 5. Populate document library dropdowns
+  const docs = data.pp_library || [];
+  function populateDocSelect(selectEl) {
+    if (!selectEl) return;
+    const current = selectEl.value;
+    selectEl.innerHTML = '<option value="">None</option>';
+    docs.forEach(d => selectEl.appendChild(new Option(d.filename, d.id)));
+    if (current) selectEl.value = current;
+  }
+
+  populateDocSelect(ansDocSel);
+  populateDocSelect(bulkDocSel);
+
+  renderTeacherOverrides(data.solutions || []);
+}catch (e) {
     console.error("Error loading Past Paper Hub:", e);
   }
 }

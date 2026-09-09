@@ -2265,20 +2265,20 @@ async function initStudentPastPapers() {
     courses.forEach(c => sel.appendChild(new Option(c, c)));
   }
 
-  sel.onchange = () => {
-    const chosen = sel.value;
-    const badge = el("ppSyllabusBadge");
-    if (badge) {
-      badge.textContent = state.courseSyllabi[chosen]
-        ? `🎯 Syllabus: ${state.courseSyllabi[chosen]}`
-        : "Standard Exam Board Specification";
-    }
-    populateStudentCascade("year");
-  };
-}
+ sel.onchange = () => {
+      const chosen = sel.value;
+      const badge = el("ppSyllabusBadge");
+      if (badge) {
+        badge.textContent = state.courseSyllabi[chosen]
+          ? `🎯 Syllabus: ${state.courseSyllabi[chosen]}`
+          : "Standard Exam Board Specification";
+      }
+      populateStudentCascade("year");
+    };
   } catch (e) {
-    console.error("Error loading past paper metadata:", e);
+    console.error("Error loading student past paper metadata:", e);
   }
+}
 
 function populateStudentCascade(level) {
   const course = el("ppCourseSelect").value;

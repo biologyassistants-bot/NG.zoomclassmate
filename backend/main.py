@@ -2794,6 +2794,79 @@ async def student_pp_solve(
     }
 
 # --- Teacher Past Paper Management Endpoints ---
+import uuid
+from pathlib import Path
+from fastapi import File, Form, UploadFile
+from fastapi.responses import JSONResponse
+
+PAST_PAPER_DOCS_PATH = Path("data") / "past_paper_docs.json"
+PAST_PAPER_FILES_DIR = Path("data") / "past_paper_files"
+
+def load_pp_docs():
+    if not PAST_PAPER_DOCS_PATH.exists():
+        return []
+    try:
+        with open(PAST_PAPER_DOCS_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return []
+
+def save_pp_docs(docs):
+    PAST_PAPER_DOCS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with open(PAST_PAPER_DOCS_PATH, "w", encoding="utf-8") as f:
+        json.dump(docs, f, indent=2, ensure_ascii=False)
+
+def pp_doc_by_id(doc_id: str):
+    for d in load_pp_docs():
+        if d.get("id") == doc_id:
+            return d
+    return None
+
+@app.post("/api/teacher/pastpaper/doc/upload")
+async def teacher_pp_upload_doc(
+    passcode: str = Form(...),
+    file: UploadFile = File(...)
+):
+    if not check_teacher(passcode):
+        return JSONResponse({"error": "Unauthorized passcode."}, status_code=401)
+
+    try:
+        content = await file.read()
+        filename = file.filename or "exam_doc.pdf"
+
+        PAST_PAPER_FILES_DIR.mkdir(parents=True, exist_ok=True)
+        doc_id = f"ppdoc_{uuid.uuid4().hex[:8]}"
+        file_path = PAST_PAPER_FILES_DIR / f"{doc_id}_{filename}"
+
+        with open(file_path, "wb") as f_out:
+            f_out.write(content)
+
+        # Safely extract text if your extractor exists; otherwise fallback gracefully
+        extracted_text = ""
+        try:
+            if "extract_text_from_upload" in globals():
+                extracted_text = extract_text_from_upload(content, filename)
+            else:
+                extracted_text = content.decode("utf-8", errors="ignore")
+        except Exception:
+            extracted_text = ""
+
+        doc_entry = {
+            "id": doc_id,
+            "filename": filename,
+            "file_path": str(file_path),
+            "text_chars": len(extracted_text),
+            "text": extracted_text[:25000]
+        }
+
+        docs = load_pp_docs()
+        docs.append(doc_entry)
+        save_pp_docs(docs)
+
+        return {"ok": True, "doc": doc_entry}
+    except Exception as e:
+        return JSONResponse({"error": f"Server failed to save document: {str(e)}"}, status_code=500)
+        
 @app.post("/api/teacher/pastpaper/config")
 def teacher_pp_config(body: TeacherAuth):
     if not check_teacher(body.passcode):

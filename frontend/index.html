@@ -280,10 +280,12 @@
     </div>
   </section>
 
-  <!-- Teacher dashboard -->
+  <!-- ==========================================
+       TEACHER WORKSPACE
+       ========================================== -->
   <section id="teacher" class="main hidden">
     <header class="topbar">
-      <div class="brand"><span class="logo-sm">👩🏫</span> NG-ClassMate · Teacher</div>
+      <div class="brand"><span class="logo-sm">👩‍🏫</span> NG-ClassMate · Teacher</div>
       <div class="who">
         <button id="tabRecordings" class="tab active">Recordings</button>
         <button id="tabStudents" class="tab">Students</button>
@@ -291,182 +293,52 @@
         <button id="tabQuestions" class="tab">Student questions</button>
         <button id="tabAnalytics" class="tab">Analytics</button>
         <button id="tabSettings" class="tab">Settings</button>
-        <button class="link" id="teacherSignOut">Sign out</button>
+        <button class="link" id="teacherSignOut" style="margin-left: 12px;">Sign out</button>
       </div>
     </header>
 
+    <!-- 1. Recordings Pane -->
     <div id="teacherRecordings" class="teacher-pane">
       <div id="statsBar" class="stats-bar"></div>
-
       <div class="pane-head">
         <h2>Manage recordings</h2>
-        <p class="meta">New Zoom recordings arrive here automatically and start hidden. Rename them, assign a unit/course, then toggle Visible so the right students can see them. Changes save instantly.</p>
+        <p class="meta">New Zoom recordings arrive here automatically and start hidden. Rename them, assign a unit/course, then toggle Visible so students can view them.</p>
         <div class="import-rec-bar" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:12px;">
           <button id="importRecBtn" type="button" class="primary">⬇️ Import cloud recordings</button>
           <button id="transcribeAllBtn" type="button" class="ghost">🎙️ Transcribe all missing</button>
           <button id="deleteUnassignedBtn" type="button" class="ghost danger-btn">🗑️ Delete unassigned</button>
           <span id="importRecStatus" class="meta" style="font-size:0.9em;"></span>
         </div>
-        <div class="import-one-bar">
-          <input id="importOneInput" type="text" class="filter-input" placeholder="Import one recording — paste a Zoom Meeting ID / UUID or recording link" />
-          <button id="importOneBtn" type="button" class="ghost">➕ Import this recording</button>
+        <div class="import-one-bar" style="margin-top: 10px;">
+          <input id="importOneInput" type="text" class="filter-input" placeholder="Import one recording — paste Meeting ID / UUID or URL" />
+          <button id="importOneBtn" type="button" class="ghost">➕ Import recording</button>
           <span id="importOneStatus" class="meta"></span>
-        </div>
-        <div id="bulkProgress" class="bulk-progress hidden">
-          <div class="bulk-bar"><div id="bulkBarFill" class="bulk-bar-fill"></div></div>
-          <span id="bulkProgressText" class="meta"></span>
         </div>
       </div>
       <div class="rec-filters">
         <input id="recSearch" type="text" class="filter-input" placeholder="Search recordings…" />
-        <select id="recCourseFilter" class="filter-select" title="Filter by course">
-          <option value="">All courses</option>
-        </select>
-        <select id="recTypeFilter" class="filter-select" title="Filter by type">
+        <select id="recCourseFilter" class="filter-select"><option value="">All courses</option></select>
+        <select id="recTypeFilter" class="filter-select">
           <option value="">All types</option>
           <option value="meeting">Meetings only</option>
           <option value="webinar">Webinars only</option>
         </select>
-        <select id="recSort" class="filter-select" title="Sort recordings">
+        <select id="recSort" class="filter-select">
           <option value="date_asc" selected>Class date (oldest first)</option>
           <option value="date_desc">Class date (newest first)</option>
           <option value="added_desc">Date added (newest first)</option>
-          <option value="added_asc">Date added (oldest first)</option>
-          <option value="course_az">Course (A–Z)</option>
-          <option value="title_az">Title (A–Z)</option>
         </select>
         <span id="recCount" class="rec-count"></span>
       </div>
       <div id="tRecList" class="t-rec-list"></div>
     </div>
 
+    <!-- 2. Students Pane -->
     <div id="teacherStudents" class="teacher-pane hidden">
       <div class="pane-head">
         <h2>Class roster</h2>
-        <p class="meta">Only students on this list can sign in. Import a sheet of students, or add one manually. Each student sees only the recordings for their assigned course(s).</p>
+        <p class="meta">Only students on this list can sign in. Import an Excel spreadsheet or add accounts manually.</p>
       </div>
-      <!-- Teacher Pane: Past Paper Hub -->
-    <div id="teacherPastPapers" class="teacher-pane hidden">
-      <div class="pane-head">
-        <h2>Past Paper Hub: Syllabus & Dedicated Exam Library</h2>
-        <p class="meta">Manage official syllabus specifications, upload exam documents (isolated from recording notes), and add questions to your student library.</p>
-      </div>
-
-      <!-- 1. Syllabus Mapping Card -->
-      <div class="setting-card" style="margin-bottom: 20px;">
-        <h3>1. Course Syllabus & Exam Board Mapping</h3>
-        <p class="meta" style="margin-bottom: 12px;">Ensure the AI applies the exact mark scheme rules and criteria for each course.</p>
-        <div style="display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-end;">
-          <label class="fld" style="flex: 1; min-width: 200px;">
-            <span>Course / Unit Name</span>
-            <select id="tppCourseSelect" style="width: 100%; padding: 10px; border-radius: 8px; border: 1.5px solid var(--line);"></select>
-          </label>
-          <label class="fld" style="flex: 1; min-width: 200px;">
-            <span>Exam Board & Syllabus</span>
-            <select id="tppSyllabusCode" style="width: 100%; padding: 10px; border-radius: 8px; border: 1.5px solid var(--line);">
-              <option value="Cambridge 9700 (A/AS Level Biology)">Cambridge 9700 (A/AS Level Biology)</option>
-              <option value="Cambridge 0610 (IGCSE Biology)">Cambridge 0610 (IGCSE Biology)</option>
-              <option value="Edexcel IAL WBI11/WBI12 (Biology)">Edexcel IAL WBI11/WBI12 (Biology)</option>
-              <option value="Edexcel IAL WBI13 (Unit 3 Biology)">Edexcel IAL WBI13 (Unit 3 Biology)</option>
-              <option value="Edexcel IGCSE 4BI1 (Biology)">Edexcel IGCSE 4BI1 (Biology)</option>
-              <option value="Oxford AQA 9610 (Biology)">Oxford AQA 9610 (Biology)</option>
-            </select>
-          </label>
-          <button id="saveSyllabusBtn" class="primary" style="height: 42px;">Save Syllabus</button>
-        </div>
-      </div>
-
-      <!-- Bulk Exam Upload Card -->
-      <div class="setting-card" style="margin-bottom: 20px;">
-        <h3>📄 Bulk Upload Complete Exam (QP + MS)</h3>
-        <p class="meta" style="margin-bottom: 12px;">Upload the full Question Paper and official Mark Scheme. The system will automatically split and index each question into your student library.</p>
-        
-        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; margin-bottom: 12px;">
-          <label class="fld"><span>Course</span><select id="bulkCourseSelect" style="width: 100%; padding: 8px; border-radius: 8px; border: 1.5px solid var(--line);"></select></label>
-          <label class="fld"><span>Year</span><input id="bulkYearInput" type="number" placeholder="2023" value="2023" style="width: 100%; padding: 8px; border-radius: 8px; border: 1.5px solid var(--line);" /></label>
-          <label class="fld"><span>Series</span>
-            <select id="bulkSeriesSelect" style="width: 100%; padding: 8px; border-radius: 8px; border: 1.5px solid var(--line);">
-              <option value="May/June">May/June</option>
-              <option value="Oct/Nov">Oct/Nov</option>
-              <option value="Feb/March">Feb/March</option>
-              <option value="Jan">Jan</option>
-            </select>
-          </label>
-          <label class="fld"><span>Paper (e.g. 21)</span><input id="bulkPaperInput" type="text" placeholder="21" style="width: 100%; padding: 8px; border-radius: 8px; border: 1.5px solid var(--line);" /></label>
-        </div>
-
-        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px; background: var(--panel2); padding: 12px; border-radius: 8px; border: 1.5px dashed var(--line);">
-          <label class="fld">
-            <span style="display: block; margin-bottom: 4px; font-weight: 700;">Question Paper PDF</span>
-            <input type="file" id="bulkQpFile" accept=".pdf" style="width: 100%; font-size: 12px;" />
-          </label>
-          <label class="fld">
-            <span style="display: block; margin-bottom: 4px; font-weight: 700;">Mark Scheme PDF</span>
-            <input type="file" id="bulkMsFile" accept=".pdf" style="width: 100%; font-size: 12px;" />
-          </label>
-        </div>
-
-        <div style="display: flex; gap: 12px; margin-bottom: 14px; flex-wrap: wrap;">
-          <label class="fld" style="flex: 1; min-width: 220px;">
-            <span>Video Walkthrough URL (Optional)</span>
-            <input id="bulkVideoUrl" type="url" placeholder="https://youtube.com/..." style="width: 100%; padding: 8px; border-radius: 8px; border: 1.5px solid var(--line);" />
-          </label>
-          <label class="fld" style="flex: 1; min-width: 220px;">
-            <span>Link Model Answer Doc (Optional)</span>
-            <select id="bulkDocSelect" style="width: 100%; padding: 8px; border-radius: 8px; border: 1.5px solid var(--line);"></select>
-          </label>
-        </div>
-
-        <button id="processBulkBtn" class="primary">🚀 Upload & Auto-Extract Exam Questions</button>
-      </div>
-      
-      <!-- 2. Upload to Dedicated Past Paper Library -->
-      <div class="setting-card" style="margin-bottom: 20px; background: rgba(11,191,191,0.04); border: 1.5px dashed var(--brand);">
-        <h3>2. Upload Document to Dedicated Past Paper Library</h3>
-        <p class="meta" style="margin-bottom: 12px;">Upload model answers, exam packs, or mark schemes here. These stay strictly separate from class lecture notes.</p>
-        <div style="display: flex; gap: 12px; align-items: center;">
-          <input type="file" id="tppDocFile" accept=".pdf,.docx,.txt" style="flex: 1; font-size: 13px;" />
-          <button id="tppUploadDocBtn" type="button" class="ghost-sm" style="padding: 9px 16px;">Upload Exam Doc</button>
-        </div>
-        <span id="tppUploadStatus" class="meta" style="font-size: 12px; margin-top: 6px; display: block;"></span>
-      </div>
-
-      <!-- 3. Question Override Card -->
-      <div class="setting-card">
-        <h3>3. Add Curated Question to Library</h3>
-        <p class="meta" style="margin-bottom: 14px;">Students can filter directly to this question and immediately view your official text, mark scheme, video, or linked exam doc.</p>
-        
-        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 10px; margin-bottom: 12px;">
-          <label class="fld"><span>Course</span><select id="tqCourseSelect" style="width: 100%; padding: 8px; border-radius: 8px; border: 1.5px solid var(--line);"></select></label>
-          <label class="fld"><span>Year</span><input id="tqYearInput" type="number" placeholder="2023" value="2023" style="width: 100%; padding: 8px; border-radius: 8px; border: 1.5px solid var(--line);" /></label>
-          <label class="fld"><span>Series</span>
-            <select id="tqSeriesSelect" style="width: 100%; padding: 8px; border-radius: 8px; border: 1.5px solid var(--line);">
-              <option value="May/June">May/June</option>
-              <option value="Oct/Nov">Oct/Nov</option>
-              <option value="Feb/March">Feb/March</option>
-              <option value="Jan">Jan</option>
-            </select>
-          </label>
-          <label class="fld"><span>Paper</span><input id="tqPaperInput" type="text" placeholder="e.g. 21" style="width: 100%; padding: 8px; border-radius: 8px; border: 1.5px solid var(--line);" /></label>
-          <label class="fld"><span>Question</span><input id="tqQuestionInput" type="text" placeholder="e.g. 1(a)" style="width: 100%; padding: 8px; border-radius: 8px; border: 1.5px solid var(--line);" /></label>
-        </div>
-
-        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px;">
-          <label class="fld"><span>Question Paper Prompt (QP)</span><textarea id="tqQpText" rows="3" placeholder="Paste exact question text..." style="width: 100%; padding: 8px; border-radius: 8px; border: 1.5px solid var(--line); font-size:12.5px;"></textarea></label>
-          <label class="fld"><span>Mark Scheme Points (MS)</span><textarea id="tqMsText" rows="3" placeholder="Paste official mark scheme criteria..." style="width: 100%; padding: 8px; border-radius: 8px; border: 1.5px solid var(--line); font-size:12.5px;"></textarea></label>
-        </div>
-
-        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 14px;">
-          <label class="fld"><span>Video Walkthrough URL (Optional)</span><input id="tqVideoUrl" type="url" placeholder="https://youtube..." style="width: 100%; padding: 8px; border-radius: 8px; border: 1.5px solid var(--line);" /></label>
-          <label class="fld"><span>Linked Exam Doc (From Past Paper Library)</span><select id="tqAnsweredDocSelect" style="width: 100%; padding: 8px; border-radius: 8px; border: 1.5px solid var(--line);"></select></label>
-        </div>
-
-        <button id="saveQuestionAssetBtn" class="primary">+ Add to Student Library</button>
-      </div>
-
-      <h3 style="margin-top: 24px; margin-bottom: 12px; font-size: 16px;">Current Curated Questions</h3>
-      <div id="tppOverridesList" style="display: flex; flex-direction: column; gap: 10px;"></div>
-    </div>
       <div class="add-student">
         <input id="newStudentName" type="text" placeholder="Student name" />
         <input id="newStudentEmail" type="text" placeholder="Email" />
@@ -481,20 +353,132 @@
       </div>
       <div class="import-box" style="margin-top:14px;padding:12px;border:1px dashed #bbb;border-radius:10px;">
         <strong>📥 Import students from Excel</strong>
-        <p class="meta">Columns: <code>email</code>, <code>password</code>, <code>name</code> (optional), <code>courses</code> (separate multiple with <code>;</code>). Course names must match the unit you assign to recordings.</p>
         <input type="file" id="excelFile" accept=".xlsx" />
         <button id="importBtn" class="primary">Upload &amp; import</button>
         <p id="importMsg" class="ok-msg hidden"></p>
         <p id="importErr" class="err hidden"></p>
       </div>
-      
       <div style="margin-top: 20px; margin-bottom: 12px;">
         <input id="studentSearchInput" type="text" class="filter-input" placeholder="🔍 Search students by name or email…" style="width: 100%;" />
       </div>
-
       <div id="studentList" class="student-list"></div>
     </div>
 
+    <!-- 3. Past Paper Hub Pane (Enclosing ALL Past Paper Cards) -->
+    <div id="teacherPastPapers" class="teacher-pane hidden">
+      <div class="pane-head">
+        <h2>Past Paper Hub: Syllabus & Dedicated Exam Bank</h2>
+        <p class="meta">Manage official syllabus specifications, upload complete exam files, and maintain curated past papers.</p>
+      </div>
+
+      <!-- Card A: Syllabus Mapping -->
+      <div class="setting-card" style="margin-bottom: 20px;">
+        <h3>1. Course Syllabus Mapping</h3>
+        <p class="meta" style="margin-bottom: 12px;">Ensure the AI solver grades against exact exam board standards.</p>
+        <div style="display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-end;">
+          <label class="fld" style="flex: 1; min-width: 200px;">
+            <span>Course / Unit</span>
+            <select id="tppCourseSelect" style="width: 100%; padding: 10px; border-radius: 8px; border: 1.5px solid var(--line);"></select>
+          </label>
+          <label class="fld" style="flex: 1; min-width: 200px;">
+            <span>Official Syllabus Code</span>
+            <select id="tppSyllabusCode" style="width: 100%; padding: 10px; border-radius: 8px; border: 1.5px solid var(--line);">
+              <option value="Cambridge 9700 (A/AS Level Biology)">Cambridge 9700 (A/AS Level Biology)</option>
+              <option value="Cambridge 0610 (IGCSE Biology)">Cambridge 0610 (IGCSE Biology)</option>
+              <option value="Edexcel IAL WBI11/WBI12 (Biology)">Edexcel IAL WBI11/WBI12 (Biology)</option>
+              <option value="Edexcel IAL WBI13 (Unit 3 Biology)">Edexcel IAL WBI13 (Unit 3 Biology)</option>
+              <option value="Edexcel IGCSE 4BI1 (Biology)">Edexcel IGCSE 4BI1 (Biology)</option>
+              <option value="Oxford AQA 9610 (Biology)">Oxford AQA 9610 (Biology)</option>
+            </select>
+          </label>
+          <button id="saveSyllabusBtn" class="primary" style="height: 42px;">Save Mapping</button>
+        </div>
+      </div>
+
+      <!-- Card B: Bulk Exam Upload -->
+      <div class="setting-card" style="margin-bottom: 20px;">
+        <h3>2. Bulk Upload Complete Exam (QP + MS)</h3>
+        <p class="meta" style="margin-bottom: 12px;">Upload the full Question Paper and Mark Scheme. Questions will be parsed and indexed into student dropdowns automatically.</p>
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; margin-bottom: 12px;">
+          <label class="fld"><span>Course</span><select id="bulkCourseSelect" style="width: 100%; padding: 8px; border-radius: 8px; border: 1.5px solid var(--line);"></select></label>
+          <label class="fld"><span>Year</span><input id="bulkYearInput" type="number" placeholder="2023" value="2023" style="width: 100%; padding: 8px; border-radius: 8px; border: 1.5px solid var(--line);" /></label>
+          <label class="fld"><span>Series</span>
+            <select id="bulkSeriesSelect" style="width: 100%; padding: 8px; border-radius: 8px; border: 1.5px solid var(--line);">
+              <option value="May/June">May/June</option>
+              <option value="Oct/Nov">Oct/Nov</option>
+              <option value="Feb/March">Feb/March</option>
+              <option value="Jan">Jan</option>
+            </select>
+          </label>
+          <label class="fld"><span>Paper Variant</span><input id="bulkPaperInput" type="text" placeholder="e.g. 21" style="width: 100%; padding: 8px; border-radius: 8px; border: 1.5px solid var(--line);" /></label>
+        </div>
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px; background: var(--panel2); padding: 12px; border-radius: 8px; border: 1.5px dashed var(--line);">
+          <label class="fld">
+            <span style="font-weight: 700; margin-bottom: 4px; display: block;">Question Paper (PDF)</span>
+            <input type="file" id="bulkQpFile" accept=".pdf" style="width: 100%; font-size: 12px;" />
+          </label>
+          <label class="fld">
+            <span style="font-weight: 700; margin-bottom: 4px; display: block;">Mark Scheme (PDF)</span>
+            <input type="file" id="bulkMsFile" accept=".pdf" style="width: 100%; font-size: 12px;" />
+          </label>
+        </div>
+        <div style="display: flex; gap: 12px; margin-bottom: 14px; flex-wrap: wrap;">
+          <label class="fld" style="flex: 1; min-width: 220px;">
+            <span>Video Walkthrough URL (Optional)</span>
+            <input id="bulkVideoUrl" type="url" placeholder="https://youtube.com/..." style="width: 100%; padding: 8px; border-radius: 8px; border: 1.5px solid var(--line);" />
+          </label>
+          <label class="fld" style="flex: 1; min-width: 220px;">
+            <span>Link Model Answer Doc (Optional)</span>
+            <select id="bulkDocSelect" style="width: 100%; padding: 8px; border-radius: 8px; border: 1.5px solid var(--line);"></select>
+          </label>
+        </div>
+        <button id="processBulkBtn" class="primary">🚀 Upload & Auto-Extract Exam Questions</button>
+      </div>
+
+      <!-- Card C: Dedicated Document Upload -->
+      <div class="setting-card" style="margin-bottom: 20px; background: rgba(11,191,191,0.03); border: 1.5px dashed var(--brand);">
+        <h3>3. Upload Document to Past Paper Library</h3>
+        <p class="meta" style="margin-bottom: 12px;">Store model answer packs and examiner reports strictly separate from class lecture slides.</p>
+        <div style="display: flex; gap: 12px; align-items: center;">
+          <input type="file" id="tppDocFile" accept=".pdf,.docx,.txt" style="flex: 1; font-size: 13px;" />
+          <button id="tppUploadDocBtn" type="button" class="ghost-sm" style="padding: 9px 16px;">Upload Exam Doc</button>
+        </div>
+        <span id="tppUploadStatus" class="meta" style="font-size: 12px; margin-top: 6px; display: block;"></span>
+      </div>
+
+      <!-- Card D: Individual Question Entry -->
+      <div class="setting-card" style="margin-bottom: 20px;">
+        <h3>4. Add Single Question Directly</h3>
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 10px; margin-bottom: 12px;">
+          <label class="fld"><span>Course</span><select id="tqCourseSelect" style="width: 100%; padding: 8px; border-radius: 8px; border: 1.5px solid var(--line);"></select></label>
+          <label class="fld"><span>Year</span><input id="tqYearInput" type="number" placeholder="2023" value="2023" style="width: 100%; padding: 8px; border-radius: 8px; border: 1.5px solid var(--line);" /></label>
+          <label class="fld"><span>Series</span>
+            <select id="tqSeriesSelect" style="width: 100%; padding: 8px; border-radius: 8px; border: 1.5px solid var(--line);">
+              <option value="May/June">May/June</option>
+              <option value="Oct/Nov">Oct/Nov</option>
+              <option value="Feb/March">Feb/March</option>
+              <option value="Jan">Jan</option>
+            </select>
+          </label>
+          <label class="fld"><span>Paper</span><input id="tqPaperInput" type="text" placeholder="e.g. 21" style="width: 100%; padding: 8px; border-radius: 8px; border: 1.5px solid var(--line);" /></label>
+          <label class="fld"><span>Question</span><input id="tqQuestionInput" type="text" placeholder="e.g. 1(a)" style="width: 100%; padding: 8px; border-radius: 8px; border: 1.5px solid var(--line);" /></label>
+        </div>
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px;">
+          <label class="fld"><span>Question Prompt</span><textarea id="tqQpText" rows="2" placeholder="Paste question text..." style="width: 100%; padding: 8px; border-radius: 8px; border: 1.5px solid var(--line); font-size:12.5px;"></textarea></label>
+          <label class="fld"><span>Mark Scheme Points</span><textarea id="tqMsText" rows="2" placeholder="Paste mark scheme..." style="width: 100%; padding: 8px; border-radius: 8px; border: 1.5px solid var(--line); font-size:12.5px;"></textarea></label>
+        </div>
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 14px;">
+          <label class="fld"><span>Video URL</span><input id="tqVideoUrl" type="url" placeholder="https://youtube..." style="width: 100%; padding: 8px; border-radius: 8px; border: 1.5px solid var(--line);" /></label>
+          <label class="fld"><span>Linked Document</span><select id="tqAnsweredDocSelect" style="width: 100%; padding: 8px; border-radius: 8px; border: 1.5px solid var(--line);"></select></label>
+        </div>
+        <button id="saveQuestionAssetBtn" class="primary">+ Add to Question Library</button>
+      </div>
+
+      <h3 style="margin-top: 24px; margin-bottom: 12px; font-size: 16px;">Current Curated Questions</h3>
+      <div id="tppOverridesList" style="display: flex; flex-direction: column; gap: 10px;"></div>
+    </div>
+
+    <!-- 4. Questions Pane -->
     <div id="teacherQuestions" class="teacher-pane hidden">
       <div class="pane-head">
         <h2>Student questions</h2>
@@ -507,14 +491,13 @@
       <div id="qLog" class="q-log"></div>
     </div>
 
+    <!-- 5. Analytics Pane -->
     <div id="teacherAnalytics" class="teacher-pane hidden">
-      <div class="pane-head">
-        <h2>Question analytics</h2>
-        <p class="meta">What your students are asking most — spot the topics they struggle with.</p>
-      </div>
+      <div class="pane-head"><h2>Question analytics</h2><p class="meta">Topics and concepts students ask about most.</p></div>
       <div id="analyticsBody" class="analytics-body"></div>
     </div>
 
+    <!-- 6. Settings Pane -->
     <div id="teacherSettings" class="teacher-pane hidden">
       <div class="pane-head"><h2>Settings</h2></div>
       <div class="setting-card">
@@ -525,9 +508,7 @@
       </div>
       <div class="setting-card" style="margin-top:16px;">
         <h3>Website logo</h3>
-        <p class="meta" style="margin-bottom:12px;">Upload a PNG, JPG, WEBP, GIF or SVG (max 2 MB). It replaces the 🎓 emoji across the site.</p>
-        <img id="logoPreview" alt="Current logo" class="hidden" style="max-height:64px;max-width:180px;border-radius:12px;border:1px solid var(--line);padding:6px;background:var(--panel2);margin-bottom:12px;display:block;" />
-        <input type="file" id="logoFile" accept="image/png,image/jpeg,image/webp,image/gif,image/svg+xml" style="margin-bottom:12px;" />
+        <input type="file" id="logoFile" accept="image/*" style="margin-bottom:12px;" />
         <button id="saveLogo" class="primary">Upload logo</button>
         <p id="logoSaved" class="ok-msg hidden">Logo updated ✓</p>
         <p id="logoErr" class="err hidden"></p>

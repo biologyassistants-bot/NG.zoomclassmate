@@ -2231,7 +2231,7 @@ async function initStudentPastPapers() {
   const sel = el("ppCourseSelect");
   if (!sel) return;
 
-  // 1. Read courses directly from the student's available recordings
+  // Read courses directly from student's recordings
   const courseSet = new Set();
   (state.recordings || []).forEach(r => {
     const u = (r.unit || "").trim();
@@ -2240,7 +2240,6 @@ async function initStudentPastPapers() {
     }
   });
 
-  // 2. Fetch syllabus mapping & question library
   try {
     const res = await fetch(`${API}/api/student/pastpaper/meta`, {
       method: "POST",
@@ -2283,7 +2282,6 @@ async function initStudentPastPapers() {
   } catch (e) {
     console.error("Error loading past paper metadata:", e);
   }
-}
 
 function populateStudentCascade(level) {
   const course = el("ppCourseSelect").value;
@@ -2422,7 +2420,7 @@ async function loadTeacherPastPaperHub() {
   const ansDocSel = el("tqAnsweredDocSelect");
   const bulkDocSel = el("bulkDocSelect");
 
-  // 1. Ensure recordings list is fully loaded
+  // Ensure recordings are loaded into memory first
   if (!teacherRecordings || teacherRecordings.length === 0) {
     try {
       await loadTeacherRecordings();
@@ -2431,7 +2429,7 @@ async function loadTeacherPastPaperHub() {
     }
   }
 
-  // 2. Read unique courses directly from the recordings list
+  // Read courses directly from recordings
   const courseSet = new Set();
   (teacherRecordings || []).forEach(r => {
     const u = (r.unit || "").trim();
@@ -2440,7 +2438,6 @@ async function loadTeacherPastPaperHub() {
     }
   });
 
-  // 3. Fetch server config for syllabus mappings and document library
   let data = {};
   try {
     const res = await fetch(`${API}/api/teacher/pastpaper/config`, {
@@ -2462,7 +2459,6 @@ async function loadTeacherPastPaperHub() {
 
   const courses = Array.from(courseSet).sort();
 
-  // 4. Helper to populate dropdowns
   function populateSelect(selectEl, placeholder) {
     if (!selectEl) return;
     const current = selectEl.value;
@@ -2479,7 +2475,6 @@ async function loadTeacherPastPaperHub() {
   populateSelect(tqCourseSel, "Select course...");
   populateSelect(bulkCourseSel, "Select course...");
 
-  // 5. Populate document library dropdowns
   const docs = data.pp_library || [];
   function populateDocSelect(selectEl) {
     if (!selectEl) return;
@@ -2493,10 +2488,10 @@ async function loadTeacherPastPaperHub() {
   populateDocSelect(bulkDocSel);
 
   renderTeacherOverrides(data.solutions || []);
+}
 }catch (e) {
     console.error("Error loading Past Paper Hub:", e);
   }
-}
 
 // 1. Save Syllabus Mapping
 if (el("saveSyllabusBtn")) {

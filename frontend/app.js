@@ -1234,25 +1234,35 @@ if (resetPlanBtn) {
 }
 
 // ================= TEACHER VIEW =================
-const teacherTabs = ["Recordings", "Students", "PastPapers", "Questions", "Analytics", "Settings"];
-
-teacherTabs.forEach(t => {
-  const btn = el(`tab${t}`);
-  if (btn) {
-    btn.addEventListener("click", () => switchTab(t));
-  }
-});
+if(el("tabRecordings")) el("tabRecordings").addEventListener("click", () => switchTab("Recordings"));
+if(el("tabStudents")) el("tabStudents").addEventListener("click", () => switchTab("Students"));
+if(el("tabPastPapers")) el("tabPastPapers").addEventListener("click", () => switchTab("PastPapers"));
+if(el("tabQuestions")) el("tabQuestions").addEventListener("click", () => switchTab("Questions"));
+if(el("tabAnalytics")) el("tabAnalytics").addEventListener("click", () => switchTab("Analytics"));
+if(el("tabSettings")) el("tabSettings").addEventListener("click", () => switchTab("Settings"));
 
 function switchTab(name) {
-  teacherTabs.forEach(t => {
-    if(el(`tab${t}`)) el(`tab${t}`).classList.toggle("active", t === name);
-    if(el(`teacher${t}`)) el(`teacher${t}`).classList.toggle("hidden", t !== name);
-  });
+  // 1. Toggle Active Header Button
+  if(el("tabRecordings")) el("tabRecordings").classList.toggle("active", name === "Recordings");
+  if(el("tabStudents")) el("tabStudents").classList.toggle("active", name === "Students");
+  if(el("tabPastPapers")) el("tabPastPapers").classList.toggle("active", name === "PastPapers");
+  if(el("tabQuestions")) el("tabQuestions").classList.toggle("active", name === "Questions");
+  if(el("tabAnalytics")) el("tabAnalytics").classList.toggle("active", name === "Analytics");
+  if(el("tabSettings")) el("tabSettings").classList.toggle("active", name === "Settings");
   
-  if (name === "Questions") loadQuestions();
+  // 2. Unhide Selected Pane and Hide Others
+  if(el("teacherRecordings")) el("teacherRecordings").classList.toggle("hidden", name !== "Recordings");
+  if(el("teacherStudents")) el("teacherStudents").classList.toggle("hidden", name !== "Students");
+  if(el("teacherPastPapers")) el("teacherPastPapers").classList.toggle("hidden", name !== "PastPapers");
+  if(el("teacherQuestions")) el("teacherQuestions").classList.toggle("hidden", name !== "Questions");
+  if(el("teacherAnalytics")) el("teacherAnalytics").classList.toggle("hidden", name !== "Analytics");
+  if(el("teacherSettings")) el("teacherSettings").classList.toggle("hidden", name !== "Settings");
+  
+  // 3. Trigger Data Loaders
   if (name === "Recordings") { loadTeacherRecordings(); loadStats(); }
   if (name === "Students") loadStudents();
   if (name === "PastPapers") loadTeacherPastPaperHub();
+  if (name === "Questions") loadQuestions();
   if (name === "Analytics") loadAnalytics();
 }
 

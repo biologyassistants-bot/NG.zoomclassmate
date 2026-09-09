@@ -2256,9 +2256,6 @@ async function initStudentPastPapers() {
         }
       });
     }
-  } catch (e) {
-    console.error("Error loading student past paper metadata:", e);
-  }
 
   const courses = Array.from(courseSet).sort();
   sel.innerHTML = '<option value="">Select course...</option>';
@@ -2489,9 +2486,6 @@ async function loadTeacherPastPaperHub() {
 
   renderTeacherOverrides(data.solutions || []);
 }
-}catch (e) {
-    console.error("Error loading Past Paper Hub:", e);
-  }
 
 // 1. Save Syllabus Mapping
 if (el("saveSyllabusBtn")) {

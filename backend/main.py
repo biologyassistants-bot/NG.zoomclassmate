@@ -2703,78 +2703,63 @@ def student_pp_meta(body: RecListBody):
 @app.post("/api/student/pastpaper/solve")
 async def student_pp_solve(
     token: str = Form(...),
-    mode: str = Form(...),  # "library" or "snapshot"
     course: str = Form(...),
-    year: str = Form(""),
-    series: str = Form(""),
-    paper: str = Form(""),
-    question: str = Form(""),
-    doubt: str = Form(""),
-    image: UploadFile = File(None)
+    year: str = Form(...),
+    series: str = Form(...),
+    paper: str = Form(...),
+    question: str = Form(...),
+    doubt: str = Form("")
 ):
     sess = valid_session(token)
     if not sess:
         return JSONResponse({"error": "Unauthorized"}, status_code=401)
-    
+
     syllabi = load_pp_json(PAST_PAPER_CONFIG_PATH)
     syllabus = syllabi.get(course, "Standard Exam Board Specification")
-    
+
     sols = load_pp_json(PAST_PAPER_SOLUTIONS_PATH)
     key = f"{course.strip().lower()}:{year.strip().lower()}:{series.strip().lower()}:{paper.strip().lower()}:{question.strip().lower()}"
     custom_asset = sols.get(key)
 
-    exam_ref = f"{year} {series} P{paper} Q{question}".strip() if mode == "library" else "Uploaded Screenshot"
-    
+    exam_ref = f"{year} {series} P{paper} Q{question}".strip()
+
     system = (
         f"You are an elite academic examiner and senior Biology tutor. Course: '{course}', Syllabus: '{syllabus}'.\n"
         "STRICT STRUCTURED OUTPUT:\n"
-        "### 1. Mark Scheme Breakdown & Mandatory Keywords\n"
-        "- Detail exact point criteria. Bold compulsory marking keywords.\n"
-        "### 2. Conceptual Link & Explanation\n"
-        "- Explain underlying biological principles clearly.\n"
-        "### 3. Examiner Traps & Common Mistakes\n"
-        "- Highlight frequent student errors on this question type."
+        "### 1. Complete Model Answer\n"
+        "- Write a full, flawless model answer exactly as an A* student should write on the official exam answer lines. Seamlessly embed all compulsory marking points and keywords.\n"
+        "### 2. Mark Scheme Breakdown & Mandatory Keywords\n"
+        "- Detail the exact point-by-point criteria. Bold compulsory marking keywords.\n"
+        "### 3. Conceptual Link & Biological Mechanism\n"
+        "- Explain the underlying biological principles clearly and step-by-step.\n"
+        "### 4. Examiner Traps & Common Mistakes\n"
+        "- Highlight frequent student pitfalls, vague phrasing, and misconceptions on this specific question."
     )
 
-    user_text = f"Exam Ref: {exam_ref}\nStudent Doubt: {doubt or 'Provide a full breakdown and solution.'}\n\n"
-    
-    if mode == "library" and custom_asset:
+    user_text = f"Exam Ref: {exam_ref}\nStudent Doubt: {doubt or 'Provide a full breakdown, model answer, and solution.'}\n\n"
+
+    if custom_asset:
         if custom_asset.get("qp_text"):
             user_text += f"OFFICIAL QUESTION PROMPT:\n{custom_asset['qp_text']}\n\n"
         if custom_asset.get("ms_text"):
             user_text += f"OFFICIAL MARK SCHEME:\n{custom_asset['ms_text']}\n\n"
-            
-        # Pull text from the dedicated Past Paper Library only
+
         doc_id = custom_asset.get("answered_doc_id")
         if doc_id:
             pp_doc = pp_doc_by_id(doc_id)
             if pp_doc:
-                user_text += f"[MODEL ANSWER / EXAM DOC: {pp_doc.get('filename')}]:\n"
+                user_text += f"[TEACHER MODEL ANSWER / EXAM DOC: {pp_doc.get('filename')}]:\n"
                 user_text += "\n".join(pp_doc.get("chunks", [])[:5]) + "\n\n"
 
-    content = [{"type": "text", "text": user_text}]
-    if mode == "snapshot" and image:
-        import base64
-        img_bytes = await image.read()
-        b64_img = base64.b64encode(img_bytes).decode("utf-8")
-        mime = image.content_type or "image/jpeg"
-        content.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64_img}"}})
-
     try:
-        import httpx
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            resp = await client.post(
-                f"{OPENAI_BASE_URL}/chat/completions",
-                headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
-                json={
-                    "model": OPENAI_MODEL,
-                    "messages": [{"role": "system", "content": system}, {"role": "user", "content": content}],
-                    "max_tokens": 1200,
-                    "temperature": 0.1
-                }
-            )
-            resp.raise_for_status()
-            explanation = resp.json()["choices"][0]["message"]["content"]
+        raw = await llm(
+            [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user_text}
+            ],
+            max_tokens=2200,
+            temperature=0.1
+        )
     except Exception as e:
         return JSONResponse({"error": f"AI Solver Error: {str(e)}"}, status_code=503)
 
@@ -2782,7 +2767,7 @@ async def student_pp_solve(
         "ok": True,
         "exam_ref": exam_ref,
         "syllabus": syllabus,
-        "solution_markdown": explanation,
+        "solution_markdown": raw,
         "teacher_asset": custom_asset
     }
 

@@ -2727,22 +2727,24 @@ async def student_pp_solve(
         f"You are an elite academic examiner and senior Biology tutor. Course: '{course}', Syllabus: '{syllabus}'.\n"
         "STRICT STRUCTURED OUTPUT:\n"
         "### 1. Complete Model Answer\n"
-        "- Write a full, flawless model answer exactly as an A* student should write on the official exam answer lines. Seamlessly embed all compulsory marking points and keywords.\n"
+        "- Write a full, flawless model answer as expected on the official exam lines, embedding all mandatory terms.\n"
         "### 2. Mark Scheme Breakdown & Mandatory Keywords\n"
-        "- Detail the exact point-by-point criteria. Bold compulsory marking keywords.\n"
+        "- Detail the exact point criteria. Bold compulsory marking keywords.\n"
         "### 3. Conceptual Link & Biological Mechanism\n"
-        "- Explain the underlying biological principles clearly and step-by-step.\n"
+        "- Explain the underlying biological principles clearly.\n"
         "### 4. Examiner Traps & Common Mistakes\n"
-        "- Highlight frequent student pitfalls, vague phrasing, and misconceptions on this specific question."
+        "- If official Examiner Report notes are provided below, base your traps directly on what real candidates did wrong, including penalised phrasing and common confusions."
     )
 
-    user_text = f"Exam Ref: {exam_ref}\nStudent Doubt: {doubt or 'Provide a full breakdown, model answer, and solution.'}\n\n"
+    user_text = f"Exam Ref: {exam_ref}\nStudent Doubt: {doubt or 'Provide a full breakdown and solution.'}\n\n"
 
     if custom_asset:
         if custom_asset.get("qp_text"):
             user_text += f"OFFICIAL QUESTION PROMPT:\n{custom_asset['qp_text']}\n\n"
         if custom_asset.get("ms_text"):
             user_text += f"OFFICIAL MARK SCHEME:\n{custom_asset['ms_text']}\n\n"
+        if custom_asset.get("examiner_notes"):
+            user_text += f"OFFICIAL EXAMINER REPORT NOTES FOR THIS QUESTION:\n{custom_asset['examiner_notes']}\n\n"
 
         doc_id = custom_asset.get("answered_doc_id")
         if doc_id:
@@ -2753,11 +2755,8 @@ async def student_pp_solve(
 
     try:
         raw = await llm(
-            [
-                {"role": "system", "content": system},
-                {"role": "user", "content": user_text}
-            ],
-            max_tokens=2200,
+            [{"role": "system", "content": system}, {"role": "user", "content": user_text}],
+            max_tokens=2500,
             temperature=0.1
         )
     except Exception as e:
@@ -2924,44 +2923,49 @@ async def teacher_pp_bulk_upload(
     video_url: str = Form(""),
     answered_doc_id: str = Form(""),
     qp_file: UploadFile = File(...),
-    ms_file: UploadFile = File(...)
+    ms_file: UploadFile = File(...),
+    er_file: UploadFile = File(None)
 ):
     if not check_passcode(passcode):
         return JSONResponse({"error": "Unauthorized passcode."}, status_code=401)
 
-    # 1. Read entire text from both PDFs without cutting off early pages
     try:
         qp_bytes = await qp_file.read()
         ms_bytes = await ms_file.read()
         qp_text = extract_text_from_upload(qp_bytes, qp_file.filename or "qp.pdf")
         ms_text = extract_text_from_upload(ms_bytes, ms_file.filename or "ms.pdf")
+        
+        er_text = ""
+        if er_file and er_file.filename:
+            er_bytes = await er_file.read()
+            er_text = extract_text_from_upload(er_bytes, er_file.filename or "er.pdf")
     except Exception as e:
         return JSONResponse({"error": f"PDF reading error: {str(e)}"}, status_code=400)
 
     if len(qp_text.strip()) < 50 or len(ms_text.strip()) < 50:
         return JSONResponse(
-            {"error": "Could not read readable text from the PDFs. Scanned image PDFs require OCR text."},
+            {"error": "Could not extract text from the Question Paper or Mark Scheme."},
             status_code=422
         )
 
-    # 2. Strict, zero-omission extraction prompt
     system_prompt = (
         "You are an exhaustive past-paper exam ingestion parser.\n"
-        "Your task is to extract EVERY SINGLE QUESTION from the provided examination materials without skipping or omitting any.\n\n"
-        "CRITICAL EXTRACTION RULES:\n"
-        "1. COMPLETE COVERAGE: Extract Question 1, 2, 3, 4, 5, 6, 7, 8... all the way to the very last question of the paper.\n"
-        "2. NO SUMMARIES: Do not drop sub-parts or skip middle questions for brevity. Never write '[...]' or 'remaining questions omitted'.\n"
-        "3. ACCURATE NUMBERING: Preserve exact labels like '1(a)', '1(b)(i)', '2', '3(a)'.\n"
-        "4. ANSWERED PAPERS: If the document is an answered exam or model answers, extract the question prompt into 'question_text' and the model answer/mark criteria into 'mark_scheme'.\n"
-        "5. Output STRICT JSON only. Do NOT wrap in markdown fences or prose.\n\n"
-        'JSON Schema: {"questions": [{"question_number": "1(a)", "question_text": "...", "mark_scheme": "..."}]}'
+        "Segment the Question Paper, Mark Scheme, and (if provided) Examiner Report into individual question items.\n"
+        "For each question, extract:\n"
+        "1. question_number: e.g., '1(a)'\n"
+        "2. question_text: Prompt text\n"
+        "3. mark_scheme: Corresponding mark criteria and acceptable points\n"
+        "4. examiner_notes: Specific commentary, misconceptions, or candidate errors mentioned for this question in the Examiner Report (leave empty string if not found or not provided).\n\n"
+        "Return STRICT JSON only without prose or markdown fences:\n"
+        '{"questions": [{"question_number": "1(a)", "question_text": "...", "mark_scheme": "...", "examiner_notes": "..."}]}'
     )
 
-    # Feed up to 75,000 characters (~25-30 pages of text) into the model's 128k context window
+    er_block = f"\n\n=== EXAMINER REPORT (FULL) ===\n{er_text[:60000]}" if er_text else ""
     user_prompt = (
-        f"EXAM DETAILS: {course} | Year: {year} | Series: {series} | Paper: {paper}\n\n"
-        f"=== QUESTION PAPER / EXAM CONTENT (FULL) ===\n{qp_text[:75000]}\n\n"
-        f"=== MARK SCHEME / MODEL ANSWERS (FULL) ===\n{ms_text[:75000]}"
+        f"EXAM: {course} {year} {series} Paper {paper}\n\n"
+        f"=== QUESTION PAPER (FULL) ===\n{qp_text[:60000]}\n\n"
+        f"=== MARK SCHEME (FULL) ===\n{ms_text[:60000]}"
+        f"{er_block}"
     )
 
     try:
@@ -2970,25 +2974,19 @@ async def teacher_pp_bulk_upload(
             max_tokens=8000,
             temperature=0.0
         )
-        
-        # Clean any accidental formatting wrappers
         clean_raw = (raw or "").strip()
         if clean_raw.startswith("```"):
             clean_raw = clean_raw.strip("`")
             if "\n" in clean_raw:
                 clean_raw = clean_raw.split("\n", 1)[-1]
-        
+
         start_idx = clean_raw.find("{")
         end_idx = clean_raw.rfind("}")
-        if start_idx == -1 or end_idx == -1:
-            raise ValueError("Model output did not contain a valid JSON object.")
-            
         parsed = json.loads(clean_raw[start_idx:end_idx + 1])
         parsed_questions = parsed.get("questions", [])
     except Exception as e:
         return JSONResponse({"error": f"AI Parsing error: {str(e)}"}, status_code=500)
 
-    # 3. Commit all parsed questions to database
     sols = load_pp_json(PAST_PAPER_SOLUTIONS_PATH)
     doc = pp_doc_by_id(answered_doc_id) if answered_doc_id else None
     indexed_labels = []
@@ -2997,7 +2995,6 @@ async def teacher_pp_bulk_upload(
         q_num = str(item.get("question_number", "")).strip()
         if not q_num:
             continue
-            
         key = f"{course.strip().lower()}:{year.strip().lower()}:{series.strip().lower()}:{paper.strip().lower()}:{q_num.lower()}"
         sols[key] = {
             "course": course.strip(),
@@ -3007,6 +3004,7 @@ async def teacher_pp_bulk_upload(
             "question": q_num,
             "qp_text": str(item.get("question_text", "")).strip(),
             "ms_text": str(item.get("mark_scheme", "")).strip(),
+            "examiner_notes": str(item.get("examiner_notes", "")).strip(),
             "video_url": video_url.strip(),
             "answered_doc_id": answered_doc_id or "",
             "answered_doc_name": doc.get("filename", "") if doc else ""
@@ -3014,12 +3012,8 @@ async def teacher_pp_bulk_upload(
         indexed_labels.append(q_num)
 
     save_pp_json(PAST_PAPER_SOLUTIONS_PATH, sols)
-    return {
-        "ok": True, 
-        "indexed": len(indexed_labels), 
-        "questions": indexed_labels
-    }
-
+    return {"ok": True, "indexed": len(indexed_labels), "questions": indexed_labels}
+    
 if os.path.isdir(FRONTEND_DIR):
     @app.get("/")
     def index():

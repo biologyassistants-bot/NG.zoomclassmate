@@ -2944,7 +2944,7 @@ async def teacher_pp_bulk_upload(
     if not check_passcode(passcode):
         return JSONResponse({"error": "Unauthorized passcode."}, status_code=401)
 
-    # 1. Extract text from both uploaded PDFs
+    # 1. Read entire text from both PDFs without cutting off early pages
     try:
         qp_bytes = await qp_file.read()
         ms_bytes = await ms_file.read()
@@ -2955,44 +2955,55 @@ async def teacher_pp_bulk_upload(
 
     if len(qp_text.strip()) < 50 or len(ms_text.strip()) < 50:
         return JSONResponse(
-            {"error": "Could not read text from one of the PDFs. If it is a scanned image, OCR text is required."},
+            {"error": "Could not read readable text from the PDFs. Scanned image PDFs require OCR text."},
             status_code=422
         )
 
-    # 2. Segment using LLM
+    # 2. Strict, zero-omission extraction prompt
     system_prompt = (
-        "You are an expert exam ingestion parser for secondary/higher-ed sciences.\n"
-        "Segment the provided Question Paper text and corresponding Mark Scheme text into individual question items.\n"
-        "Match each question prompt with its corresponding mark scheme criteria.\n"
-        "Return STRICT JSON only without prose or markdown fences:\n"
-        '{"questions": [{"question_number": "1(a)", "question_text": "...", "mark_scheme": "..."}]}'
+        "You are an exhaustive past-paper exam ingestion parser.\n"
+        "Your task is to extract EVERY SINGLE QUESTION from the provided examination materials without skipping or omitting any.\n\n"
+        "CRITICAL EXTRACTION RULES:\n"
+        "1. COMPLETE COVERAGE: Extract Question 1, 2, 3, 4, 5, 6, 7, 8... all the way to the very last question of the paper.\n"
+        "2. NO SUMMARIES: Do not drop sub-parts or skip middle questions for brevity. Never write '[...]' or 'remaining questions omitted'.\n"
+        "3. ACCURATE NUMBERING: Preserve exact labels like '1(a)', '1(b)(i)', '2', '3(a)'.\n"
+        "4. ANSWERED PAPERS: If the document is an answered exam or model answers, extract the question prompt into 'question_text' and the model answer/mark criteria into 'mark_scheme'.\n"
+        "5. Output STRICT JSON only. Do NOT wrap in markdown fences or prose.\n\n"
+        'JSON Schema: {"questions": [{"question_number": "1(a)", "question_text": "...", "mark_scheme": "..."}]}'
     )
+
+    # Feed up to 75,000 characters (~25-30 pages of text) into the model's 128k context window
     user_prompt = (
-        f"EXAM: {course} {year} {series} Paper {paper}\n\n"
-        f"QUESTION PAPER TEXT:\n{qp_text[:15000]}\n\n"
-        f"MARK SCHEME TEXT:\n{ms_text[:15000]}"
+        f"EXAM DETAILS: {course} | Year: {year} | Series: {series} | Paper: {paper}\n\n"
+        f"=== QUESTION PAPER / EXAM CONTENT (FULL) ===\n{qp_text[:75000]}\n\n"
+        f"=== MARK SCHEME / MODEL ANSWERS (FULL) ===\n{ms_text[:75000]}"
     )
 
     try:
         raw = await llm(
             [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
-            max_tokens=3500,
-            temperature=0.1
+            max_tokens=8000,
+            temperature=0.0
         )
-        # Strip potential markdown fences
-        clean_raw = raw.strip()
+        
+        # Clean any accidental formatting wrappers
+        clean_raw = (raw or "").strip()
         if clean_raw.startswith("```"):
             clean_raw = clean_raw.strip("`")
             if "\n" in clean_raw:
                 clean_raw = clean_raw.split("\n", 1)[-1]
+        
         start_idx = clean_raw.find("{")
         end_idx = clean_raw.rfind("}")
+        if start_idx == -1 or end_idx == -1:
+            raise ValueError("Model output did not contain a valid JSON object.")
+            
         parsed = json.loads(clean_raw[start_idx:end_idx + 1])
         parsed_questions = parsed.get("questions", [])
     except Exception as e:
-        return JSONResponse({"error": f"AI Parsing failed: {str(e)}"}, status_code=500)
+        return JSONResponse({"error": f"AI Parsing error: {str(e)}"}, status_code=500)
 
-    # 3. Store into solutions database
+    # 3. Commit all parsed questions to database
     sols = load_pp_json(PAST_PAPER_SOLUTIONS_PATH)
     doc = pp_doc_by_id(answered_doc_id) if answered_doc_id else None
     indexed_labels = []
@@ -3001,6 +3012,7 @@ async def teacher_pp_bulk_upload(
         q_num = str(item.get("question_number", "")).strip()
         if not q_num:
             continue
+            
         key = f"{course.strip().lower()}:{year.strip().lower()}:{series.strip().lower()}:{paper.strip().lower()}:{q_num.lower()}"
         sols[key] = {
             "course": course.strip(),
@@ -3008,8 +3020,8 @@ async def teacher_pp_bulk_upload(
             "series": series.strip(),
             "paper": paper.strip(),
             "question": q_num,
-            "qp_text": item.get("question_text", "").strip(),
-            "ms_text": item.get("mark_scheme", "").strip(),
+            "qp_text": str(item.get("question_text", "")).strip(),
+            "ms_text": str(item.get("mark_scheme", "")).strip(),
             "video_url": video_url.strip(),
             "answered_doc_id": answered_doc_id or "",
             "answered_doc_name": doc.get("filename", "") if doc else ""
@@ -3017,7 +3029,11 @@ async def teacher_pp_bulk_upload(
         indexed_labels.append(q_num)
 
     save_pp_json(PAST_PAPER_SOLUTIONS_PATH, sols)
-    return {"ok": True, "indexed": len(indexed_labels), "questions": indexed_labels}
+    return {
+        "ok": True, 
+        "indexed": len(indexed_labels), 
+        "questions": indexed_labels
+    }
 
 if os.path.isdir(FRONTEND_DIR):
     @app.get("/")

@@ -1116,7 +1116,7 @@ class LoginBody(BaseModel):
 
 def check_passcode(passcode: str) -> bool:
     return passcode == load_config().get("passcode")
-
+check_teacher = check_passcode
 
 @app.post("/api/teacher/login")
 def teacher_login(body: LoginBody):

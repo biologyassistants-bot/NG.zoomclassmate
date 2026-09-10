@@ -2514,17 +2514,25 @@ if (el("tppUploadDocBtn")) {
       return;
     }
 
+    const passcode = state.passcode || localStorage.getItem("ng_teacherPasscode") || "";
+    if (!passcode) {
+      toast("Session error: Please sign in again.", "error");
+      return;
+    }
+
     const btn = el("tppUploadDocBtn");
     btn.disabled = true;
     status.textContent = "Uploading to Past Paper Library...";
 
     const fd = new FormData();
-    fd.append("passcode", state.passcode);
+    fd.append("passcode", passcode);
     fd.append("file", fileInput.files[0]);
 
     try {
       const res = await fetch(`${API}/api/teacher/pastpaper/doc/upload`, { method: "POST", body: fd });
-      const data = await res.json();
+      let data = {};
+      try { data = await res.json(); } catch (err) {}
+
       if (res.ok) {
         status.textContent = "Uploaded ✓";
         toast("Document added to Past Paper Library!", "success");
@@ -2532,11 +2540,13 @@ if (el("tppUploadDocBtn")) {
         loadTeacherPastPaperHub();
         setTimeout(() => { status.textContent = ""; }, 3000);
       } else {
-        toast(data.error || "Upload failed.", "error");
+        const msg = data.error || data.detail || `Server returned HTTP ${res.status}`;
+        toast(`Upload failed: ${msg}`, "error", 5000);
         status.textContent = "";
       }
     } catch (e) {
-      toast("Upload error.", "error");
+      console.error("Upload error details:", e);
+      toast("Upload connection error. Check server logs.", "error");
       status.textContent = "";
     } finally {
       btn.disabled = false;

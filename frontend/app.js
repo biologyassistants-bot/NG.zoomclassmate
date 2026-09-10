@@ -2374,37 +2374,147 @@ function renderStudentPastPaperSolution(data) {
   resBox.classList.remove("hidden");
   resBox.innerHTML = "";
 
+  // 1. Optional Teacher Video / Model Answer Document Banner
   if (data.teacher_asset) {
     const asset = data.teacher_asset;
     const assetCard = document.createElement("div");
-    assetCard.style.cssText = "background: linear-gradient(135deg, rgba(11,191,191,0.1), rgba(12,166,120,0.12)); border: 1.5px solid var(--brand); border-radius: 12px; padding: 14px;";
+    assetCard.style.cssText = "background: linear-gradient(135deg, rgba(11,191,191,0.08), rgba(12,166,120,0.12)); border: 1.5px solid var(--brand); border-radius: 12px; padding: 14px; margin-bottom: 16px;";
     
     let links = "";
     if (asset.video_url) {
-      links += `<a href="${escapeHtml(asset.video_url)}" target="_blank" class="primary" style="display:inline-flex; align-items:center; gap:6px; padding:6px 12px; font-size:12px; text-decoration:none; margin-right:8px;">🎥 Watch Teacher Video</a>`;
+      links += `<a href="${escapeHtml(asset.video_url)}" target="_blank" class="primary" style="display:inline-flex; align-items:center; gap:6px; padding:6px 12px; font-size:12px; text-decoration:none; margin-right:8px; border-radius:8px;">🎥 Watch Video Walkthrough</a>`;
     }
     if (asset.answered_doc_name) {
-      links += `<span class="ghost-sm" style="padding:6px 12px; font-size:12px;">📄 Linked Exam Doc: <strong>${escapeHtml(asset.answered_doc_name)}</strong></span>`;
+      links += `<span class="ghost-sm" style="padding:6px 12px; font-size:12px; border-radius:8px;">📄 Model Answer Doc: <strong>${escapeHtml(asset.answered_doc_name)}</strong></span>`;
     }
 
     assetCard.innerHTML = `
-      <div style="font-weight:800; font-size:13.5px; color:var(--brand-d); margin-bottom:6px;">👨‍🏫 Teacher Resources Available</div>
-      <div style="margin-top:6px;">${links || '<span class="meta">Teacher notes indexed for this question.</span>'}</div>
+      <div style="font-weight:800; font-size:13.5px; color:var(--brand-d); margin-bottom:6px;">👨‍🏫 Teacher Materials Linked</div>
+      <div>${links || '<span class="meta">Teacher resources indexed for this specific question.</span>'}</div>
     `;
     resBox.appendChild(assetCard);
   }
 
-  const solutionCard = document.createElement("div");
-  solutionCard.className = "q-block";
-  solutionCard.style.padding = "20px";
-  solutionCard.innerHTML = `
-    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px; border-bottom:1px solid var(--line); padding-bottom:8px;">
-      <span class="q-num" style="font-size:13px;">${escapeHtml(data.exam_ref)}</span>
-      <span class="meta" style="font-weight:800; color:var(--brand-d); font-size:12px;">${escapeHtml(data.syllabus)}</span>
+  // Helper: Convert bold Markdown into highlighted keyword chips
+  const formatText = (txt) => {
+    let clean = escapeHtml(txt || "");
+    return clean.replace(/\*\*(.+?)\*\*/g, '<strong style="color: var(--brand-d); background: rgba(11,191,191,0.12); padding: 1px 6px; border-radius: 4px; font-weight: 700;">$1</strong>');
+  };
+
+  // 2. Parse the 3 Standard Solver Sections
+  const raw = data.solution_markdown || "";
+  const sec1Match = raw.match(/###\s*1\.[^\n]*\n([\s\S]*?)(?=###\s*2\.|$)/i);
+  const sec2Match = raw.match(/###\s*2\.[^\n]*\n([\s\S]*?)(?=###\s*3\.|$)/i);
+  const sec3Match = raw.match(/###\s*3\.[^\n]*\n([\s\S]*?)$/i);
+
+  const sec1Raw = sec1Match ? sec1Match[1].trim() : "";
+  const sec2Raw = sec2Match ? sec2Match[1].trim() : "";
+  const sec3Raw = sec3Match ? sec3Match[1].trim() : "";
+
+  // Container
+  const wrap = document.createElement("div");
+  wrap.style.cssText = "display: flex; flex-direction: column; gap: 16px;";
+
+  // Header Bar
+  const headerHtml = `
+    <div style="display: flex; justify-content: space-between; align-items: center; background: var(--panel); border: 1.5px solid var(--line); border-radius: 12px; padding: 12px 18px;">
+      <div style="display: flex; align-items: center; gap: 10px;">
+        <span class="q-num" style="font-size: 13.5px; font-weight: 800; padding: 4px 12px; border-radius: 20px;">${escapeHtml(data.exam_ref)}</span>
+        <span style="font-size: 13px; font-weight: 700; color: var(--text);">Exam Solution &amp; Marking Guide</span>
+      </div>
+      <span class="meta" style="font-weight: 800; color: var(--brand-d); font-size: 12px;">${escapeHtml(data.syllabus)}</span>
     </div>
-    <div style="line-height:1.6; font-size:13.5px;">${escapeHtml(data.solution_markdown).replace(/\n/g, '<br>')}</div>
   `;
-  resBox.appendChild(solutionCard);
+  wrap.innerHTML = headerHtml;
+
+  // CARD 1: Mark Scheme & Mandatory Keywords
+  if (sec1Raw) {
+    const card1 = document.createElement("div");
+    card1.style.cssText = "background: var(--panel); border: 1.5px solid var(--line); border-radius: 14px; padding: 18px 20px; box-shadow: var(--shadow-sm);";
+    
+    // Parse numbered points
+    const lines = sec1Raw.split("\n").map(l => l.trim()).filter(Boolean);
+    let rubricItemsHtml = "";
+
+    lines.forEach(line => {
+      const numMatch = line.match(/^(\d+)\.\s*(.*)/);
+      if (numMatch) {
+        rubricItemsHtml += `
+          <div style="display: flex; gap: 12px; align-items: flex-start; padding: 8px 0; border-bottom: 1px dashed var(--line);">
+            <span style="background: var(--brand); color: #fff; font-weight: 800; font-size: 11px; min-width: 24px; height: 24px; border-radius: 50%; display: flex; align-items: center; justify-content: center; margin-top: 1px;">${numMatch[1]}</span>
+            <div style="font-size: 13.5px; line-height: 1.5; color: var(--text); flex: 1;">${formatText(numMatch[2])}</div>
+          </div>
+        `;
+      } else {
+        rubricItemsHtml += `<p style="font-size: 13px; color: var(--muted); margin-bottom: 8px;">${formatText(line)}</p>`;
+      }
+    });
+
+    card1.innerHTML = `
+      <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 12px; border-bottom: 1.5px solid var(--line); padding-bottom: 8px;">
+        <span style="font-size: 17px;">🎯</span>
+        <h4 style="margin: 0; font-size: 15px; font-weight: 800; color: var(--brand-d);">1. Mark Scheme Breakdown &amp; Mandatory Keywords</h4>
+      </div>
+      <div>${rubricItemsHtml}</div>
+    `;
+    wrap.appendChild(card1);
+  }
+
+  // CARD 2: Mechanism & Conceptual Link
+  if (sec2Raw) {
+    const card2 = document.createElement("div");
+    card2.style.cssText = "background: var(--panel); border: 1.5px solid var(--line); border-radius: 14px; padding: 18px 20px; box-shadow: var(--shadow-sm);";
+
+    const paras = sec2Raw.split(/\n\s*\n/).filter(Boolean);
+    const bodyHtml = paras.map(p => `<p style="font-size: 13.5px; line-height: 1.65; color: var(--text); margin-bottom: 10px;">${formatText(p.trim())}</p>`).join("");
+
+    card2.innerHTML = `
+      <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 12px; border-bottom: 1.5px solid var(--line); padding-bottom: 8px;">
+        <span style="font-size: 17px;">🧬</span>
+        <h4 style="margin: 0; font-size: 15px; font-weight: 800; color: var(--text);">2. Conceptual Link &amp; Biological Mechanism</h4>
+      </div>
+      <div>${bodyHtml}</div>
+    `;
+    wrap.appendChild(card2);
+  }
+
+  // CARD 3: Examiner Traps & Common Mistakes
+  if (sec3Raw) {
+    const card3 = document.createElement("div");
+    card3.style.cssText = "background: rgba(245, 159, 0, 0.05); border: 1.5px solid rgba(245, 159, 0, 0.35); border-radius: 14px; padding: 18px 20px;";
+
+    const trapLines = sec3Raw.split("\n").map(l => l.trim()).filter(Boolean);
+    let trapsHtml = "";
+
+    trapLines.forEach(line => {
+      const cleanLine = line.replace(/^[-*]\s*/, "");
+      trapsHtml += `
+        <div style="display: flex; gap: 10px; align-items: flex-start; margin-bottom: 8px;">
+          <span style="color: #f59f00; font-size: 14px; margin-top: 2px;">⚠️</span>
+          <div style="font-size: 13px; line-height: 1.5; color: var(--text);">${formatText(cleanLine)}</div>
+        </div>
+      `;
+    });
+
+    card3.innerHTML = `
+      <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 12px; border-bottom: 1px solid rgba(245, 159, 0, 0.25); padding-bottom: 8px;">
+        <h4 style="margin: 0; font-size: 15px; font-weight: 800; color: #f59f00;">3. Examiner Traps &amp; Common Mistakes</h4>
+      </div>
+      <div>${trapsHtml}</div>
+    `;
+    wrap.appendChild(card3);
+  }
+
+  // Fallback: If headings did not match regex, render clean paragraphs with formatted bold tags
+  if (!sec1Raw && !sec2Raw && !sec3Raw) {
+    const fallbackCard = document.createElement("div");
+    fallbackCard.className = "q-block";
+    fallbackCard.style.padding = "20px";
+    fallbackCard.innerHTML = `<div style="line-height: 1.65; font-size: 13.5px;">${formatText(raw).replace(/\n/g, '<br>')}</div>`;
+    wrap.appendChild(fallbackCard);
+  }
+
+  resBox.appendChild(wrap);
 }
 
 // ==============================================================================

@@ -371,20 +371,20 @@
 
       <!-- Card B: Bulk Exam Upload -->
       <div class="setting-card" style="margin-bottom: 20px;">
-        <h3>2. Bulk Upload Complete Exam (QP + MS)</h3>
-        <p class="meta" style="margin-bottom: 12px;">Upload the full Question Paper and Mark Scheme. Questions will be parsed and indexed into student dropdowns automatically.</p>
-        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; margin-bottom: 12px;">
-          <label class="fld"><span>Course</span><select id="bulkCourseSelect" style="width: 100%; padding: 8px; border-radius: 8px; border: 1.5px solid var(--line);"></select></label>
-          <label class="fld"><span>Year</span><input id="bulkYearInput" type="number" placeholder="2023" value="2023" style="width: 100%; padding: 8px; border-radius: 8px; border: 1.5px solid var(--line);" /></label>
-          <label class="fld"><span>Series</span>
-            <select id="bulkSeriesSelect" style="width: 100%; padding: 8px; border-radius: 8px; border: 1.5px solid var(--line);">
-              <option value="May/June">May/June</option>
-              <option value="Oct/Nov">Oct/Nov</option>
-              <option value="Feb/March">Feb/March</option>
-              <option value="Jan">Jan</option>
-            </select>
+       <!-- 3-Column PDF Ingestion Grid -->
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin-bottom: 12px; background: var(--panel2); padding: 12px; border-radius: 8px; border: 1.5px dashed var(--line);">
+          <label class="fld">
+            <span style="font-weight: 700; margin-bottom: 4px; display: block;">Question Paper (PDF) *</span>
+            <input type="file" id="bulkQpFile" accept=".pdf" style="width: 100%; font-size: 12px;" />
           </label>
-          <label class="fld"><span>Paper Variant</span><input id="bulkPaperInput" type="text" placeholder="e.g. 21" style="width: 100%; padding: 8px; border-radius: 8px; border: 1.5px solid var(--line);" /></label>
+          <label class="fld">
+            <span style="font-weight: 700; margin-bottom: 4px; display: block;">Mark Scheme (PDF) *</span>
+            <input type="file" id="bulkMsFile" accept=".pdf" style="width: 100%; font-size: 12px;" />
+          </label>
+          <label class="fld">
+            <span style="font-weight: 700; margin-bottom: 4px; display: block;">Examiner Report (PDF) <span class="meta">(Optional)</span></span>
+            <input type="file" id="bulkErFile" accept=".pdf" style="width: 100%; font-size: 12px;" />
+          </label>
         </div>
         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px; background: var(--panel2); padding: 12px; border-radius: 8px; border: 1.5px dashed var(--line);">
           <label class="fld">

@@ -2345,6 +2345,10 @@ function renderStudentPastPaperSolution(data) {
   resBox.classList.remove("hidden");
   resBox.innerHTML = "";
 
+  // Smoothly scroll the container to the top of the answer
+  const pane = el("studentPastPapersPane");
+  if (pane) pane.scrollTo({ top: 0, behavior: "smooth" });
+  
   // 1. Optional Teacher Resource Card
   if (data.teacher_asset) {
     const asset = data.teacher_asset;

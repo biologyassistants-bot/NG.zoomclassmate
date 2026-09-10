@@ -2718,6 +2718,7 @@ if (el("processBulkBtn")) {
     const paper = el("bulkPaperInput").value.trim();
     const qpFile = el("bulkQpFile") ? el("bulkQpFile").files[0] : null;
     const msFile = el("bulkMsFile") ? el("bulkMsFile").files[0] : null;
+    const erFile = el("bulkErFile") ? el("bulkErFile").files[0] : null;
 
     if (!course || !paper) {
       toast("Course and Paper variant are required.", "info");
@@ -2749,6 +2750,9 @@ if (el("processBulkBtn")) {
     fd.append("answered_doc_id", el("bulkDocSelect") ? el("bulkDocSelect").value : "");
     fd.append("qp_file", qpFile);
     fd.append("ms_file", msFile);
+    if (erFile) {
+      fd.append("er_file", erFile);
+    }
 
     try {
       const res = await fetch(`${API}/api/teacher/pastpaper/bulk-upload`, {
@@ -2759,28 +2763,25 @@ if (el("processBulkBtn")) {
 
       if (res.ok) {
         const qList = (data.questions || []).join(", ");
-        toast(`Indexed ${data.indexed} questions: [${qList}] ✓`, "success", 6000);
+        toast(`Indexed ${data.indexed} questions with Examiner notes: [${qList}] ✓`, "success", 6000);
 
         if (el("bulkQpFile")) el("bulkQpFile").value = "";
         if (el("bulkMsFile")) el("bulkMsFile").value = "";
+        if (el("bulkErFile")) el("bulkErFile").value = "";
         if (el("bulkVideoUrl")) el("bulkVideoUrl").value = "";
 
         await loadTeacherPastPaperHub();
-
         const target = el("tppOverridesList");
         if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
       } else {
-        const errMsg = data.error || data.detail || `Upload failed (HTTP ${res.status})`;
-        toast(errMsg, "error", 6000);
+        toast(data.error || "Bulk upload failed.", "error", 6000);
       }
     } catch (e) {
-      toast("Network connection failed during processing. Check server logs.", "error");
+      toast("Network connection error.", "error");
     } finally {
       btn.innerText = origText;
       btn.disabled = false;
     }
-  });
-}
 
 // 3. Save Question Asset
 if (el("saveQuestionAssetBtn")) {

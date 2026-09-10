@@ -2487,20 +2487,69 @@ async function loadTeacherPastPaperHub() {
   renderTeacherOverrides(data.solutions || []);
 }
 
-// 1. Save Syllabus Mapping
+// 1. Save Syllabus Mapping with Direct UI Feedback
+let teacherSyllabiCache = {};
+
 if (el("saveSyllabusBtn")) {
   el("saveSyllabusBtn").addEventListener("click", async () => {
     const course = el("tppCourseSelect").value;
     const syllabus = el("tppSyllabusCode").value;
-    if (!course) { toast("Select a course first.", "info"); return; }
+    const btn = el("saveSyllabusBtn");
+
+    if (!course) {
+      toast("Please select a course first.", "info");
+      return;
+    }
+
+    const passcode = state.passcode || localStorage.getItem("ng_teacherPasscode") || "";
+    if (!passcode) {
+      toast("Session expired: please sign in again.", "error");
+      return;
+    }
+
+    const origText = btn.textContent;
+    btn.textContent = "Saving…";
+    btn.disabled = true;
 
     try {
       const res = await fetch(`${API}/api/teacher/pastpaper/config/save`, {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ passcode: state.passcode, course, syllabus })
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ passcode, course, syllabus })
       });
-      if (res.ok) toast("Syllabus mapping saved ✓", "success");
-    } catch (e) { toast("Error saving syllabus.", "error"); }
+      const data = await res.json();
+
+      if (res.ok) {
+        btn.textContent = "Saved ✓";
+        btn.style.background = "var(--ok, #0ca678)";
+        toast(`Mapped "${course}" to ${syllabus} ✓`, "success", 4000);
+        teacherSyllabiCache[course] = syllabus;
+        setTimeout(() => {
+          btn.textContent = origText;
+          btn.style.background = "";
+          btn.disabled = false;
+        }, 2000);
+      } else {
+        btn.textContent = origText;
+        btn.disabled = false;
+        toast(data.error || "Failed to save mapping.", "error");
+      }
+    } catch (e) {
+      btn.textContent = origText;
+      btn.disabled = false;
+      toast("Network error saving syllabus.", "error");
+    }
+  });
+}
+
+// Automatically display the existing saved syllabus when switching courses
+if (el("tppCourseSelect")) {
+  el("tppCourseSelect").addEventListener("change", () => {
+    const selectedCourse = el("tppCourseSelect").value;
+    if (selectedCourse && teacherSyllabiCache[selectedCourse]) {
+      el("tppSyllabusCode").value = teacherSyllabiCache[selectedCourse];
+      toast(`Loaded current mapping: ${teacherSyllabiCache[selectedCourse]}`, "info", 2500);
+    }
   });
 }
 

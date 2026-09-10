@@ -2941,25 +2941,37 @@ async def teacher_pp_bulk_upload(
     qp_file: UploadFile = File(...),
     ms_file: UploadFile = File(...)
 ):
-        
-    if not check_teacher(passcode):
-        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    if not check_passcode(passcode):
+        return JSONResponse({"error": "Unauthorized passcode."}, status_code=401)
 
+    # 1. Extract text from both uploaded PDFs
     try:
         qp_bytes = await qp_file.read()
         ms_bytes = await ms_file.read()
         qp_text = extract_text_from_upload(qp_bytes, qp_file.filename or "qp.pdf")
         ms_text = extract_text_from_upload(ms_bytes, ms_file.filename or "ms.pdf")
     except Exception as e:
-        return JSONResponse({"error": f"PDF extraction failed: {str(e)}"}, status_code=400)
+        return JSONResponse({"error": f"PDF reading error: {str(e)}"}, status_code=400)
 
+    if len(qp_text.strip()) < 50 or len(ms_text.strip()) < 50:
+        return JSONResponse(
+            {"error": "Could not read text from one of the PDFs. If it is a scanned image, OCR text is required."},
+            status_code=422
+        )
+
+    # 2. Segment using LLM
     system_prompt = (
-        "You are an expert exam ingestion parser. Segment the provided Question Paper text and "
-        "corresponding Mark Scheme text into individual question items.\n"
-        "Return STRICT JSON only matching this schema:\n"
+        "You are an expert exam ingestion parser for secondary/higher-ed sciences.\n"
+        "Segment the provided Question Paper text and corresponding Mark Scheme text into individual question items.\n"
+        "Match each question prompt with its corresponding mark scheme criteria.\n"
+        "Return STRICT JSON only without prose or markdown fences:\n"
         '{"questions": [{"question_number": "1(a)", "question_text": "...", "mark_scheme": "..."}]}'
     )
-    user_prompt = f"QUESTION PAPER (Truncated):\n{qp_text[:14000]}\n\nMARK SCHEME (Truncated):\n{ms_text[:14000]}"
+    user_prompt = (
+        f"EXAM: {course} {year} {series} Paper {paper}\n\n"
+        f"QUESTION PAPER TEXT:\n{qp_text[:15000]}\n\n"
+        f"MARK SCHEME TEXT:\n{ms_text[:15000]}"
+    )
 
     try:
         raw = await llm(
@@ -2967,36 +2979,45 @@ async def teacher_pp_bulk_upload(
             max_tokens=3500,
             temperature=0.1
         )
-        data = json.loads(raw[raw.find("{"):raw.rfind("}")+1])
-        parsed_questions = data.get("questions", [])
+        # Strip potential markdown fences
+        clean_raw = raw.strip()
+        if clean_raw.startswith("```"):
+            clean_raw = clean_raw.strip("`")
+            if "\n" in clean_raw:
+                clean_raw = clean_raw.split("\n", 1)[-1]
+        start_idx = clean_raw.find("{")
+        end_idx = clean_raw.rfind("}")
+        parsed = json.loads(clean_raw[start_idx:end_idx + 1])
+        parsed_questions = parsed.get("questions", [])
     except Exception as e:
         return JSONResponse({"error": f"AI Parsing failed: {str(e)}"}, status_code=500)
 
+    # 3. Store into solutions database
     sols = load_pp_json(PAST_PAPER_SOLUTIONS_PATH)
     doc = pp_doc_by_id(answered_doc_id) if answered_doc_id else None
-    count = 0
+    indexed_labels = []
 
     for item in parsed_questions:
-        q_num = item.get("question_number", "").strip()
+        q_num = str(item.get("question_number", "")).strip()
         if not q_num:
             continue
         key = f"{course.strip().lower()}:{year.strip().lower()}:{series.strip().lower()}:{paper.strip().lower()}:{q_num.lower()}"
         sols[key] = {
-            "course": course,
-            "year": year,
-            "series": series,
-            "paper": paper,
+            "course": course.strip(),
+            "year": year.strip(),
+            "series": series.strip(),
+            "paper": paper.strip(),
             "question": q_num,
-            "qp_text": item.get("question_text", ""),
-            "ms_text": item.get("mark_scheme", ""),
+            "qp_text": item.get("question_text", "").strip(),
+            "ms_text": item.get("mark_scheme", "").strip(),
             "video_url": video_url.strip(),
-            "answered_doc_id": answered_doc_id,
+            "answered_doc_id": answered_doc_id or "",
             "answered_doc_name": doc.get("filename", "") if doc else ""
         }
-    count += 1
+        indexed_labels.append(q_num)
 
     save_pp_json(PAST_PAPER_SOLUTIONS_PATH, sols)
-    return {"ok": True, "indexed": count}
+    return {"ok": True, "indexed": len(indexed_labels), "questions": indexed_labels}
 
 if os.path.isdir(FRONTEND_DIR):
     @app.get("/")

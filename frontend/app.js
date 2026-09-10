@@ -2708,7 +2708,7 @@ if (el("tppUploadDocBtn")) {
 }
 
 // ==============================================================================
-// BULK EXAM UPLOAD (QP + MS AUTO-EXTRACT)
+// BULK EXAM UPLOAD (QP + MS + ER AUTO-EXTRACT)
 // ==============================================================================
 if (el("processBulkBtn")) {
   el("processBulkBtn").addEventListener("click", async () => {
@@ -2782,7 +2782,8 @@ if (el("processBulkBtn")) {
       btn.innerText = origText;
       btn.disabled = false;
     }
-
+  });
+}
 // 3. Save Question Asset
 if (el("saveQuestionAssetBtn")) {
   el("saveQuestionAssetBtn").addEventListener("click", async () => {

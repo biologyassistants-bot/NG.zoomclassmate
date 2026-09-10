@@ -180,51 +180,68 @@
       </div>
     </div>
 
-    <!-- Student Pane: Past Paper Solver -->
-   <div class="setting-card" style="margin-bottom: 20px;">
-  <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px;">
-    <h3 style="margin: 0;">Select Past Paper Question</h3>
-    <span id="ppSyllabusBadge" class="meta" style="font-weight: 800; color: var(--brand-d); font-size: 12px;">Standard Exam Board Specification</span>
-  </div>
-
-      <div class="planner-layout">
-        <!-- Setup Column -->
-        <div class="planner-setup">
-          <div style="background: var(--panel); border: 1.5px solid var(--line); border-radius: 14px; padding: 18px;">
-
-            <!-- Course Selector -->
-            <label class="fld" style="margin-bottom: 14px;">
-    <span>Select Course</span>
-    <select id="ppCourseSelect" style="width: 100%; padding: 10px; border-radius: 8px; border: 1.5px solid var(--line);"></select>
-  </label>
-
-            <!-- Mode A: Cascading Dropdowns -->
-           <div id="ppLibraryFilters" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; margin-bottom: 14px;">
-    <label class="fld"><span>Year</span><select id="ppYearSelect" disabled style="width: 100%; padding: 8px; border-radius: 8px; border: 1.5px solid var(--line);"><option value="">Select Year...</option></select></label>
-    <label class="fld"><span>Series</span><select id="ppSeriesSelect" disabled style="width: 100%; padding: 8px; border-radius: 8px; border: 1.5px solid var(--line);"><option value="">Select Series...</option></select></label>
-    <label class="fld"><span>Paper</span><select id="ppPaperSelect" disabled style="width: 100%; padding: 8px; border-radius: 8px; border: 1.5px solid var(--line);"><option value="">Select Paper...</option></select></label>
-    <label class="fld"><span>Question</span><select id="ppQuestionSelect" disabled style="width: 100%; padding: 8px; border-radius: 8px; border: 1.5px solid var(--line);"><option value="">Select Question...</option></select></label>
-  </div>
-
-            <!-- Doubt Textarea -->
-           <label class="fld" style="margin-bottom: 14px;">
-    <span>Specific Doubt or Focus (Optional)</span>
-    <input id="ppDoubtInput" type="text" placeholder="e.g. Why is point 3 required? / How to explain the oncogene mechanism?" style="width: 100%; padding: 9px; border-radius: 8px; border: 1.5px solid var(--line);" />
-  </label>
-
-  <button id="solvePastPaperBtn" class="primary" style="width: 100%; padding: 12px; font-size: 14px; font-weight: 700;">✨ Generate Complete Solution &amp; Marking Guide</button>
-</div>
-
-        <!-- Result Column -->
-        <div class="planner-result">
-          <div id="ppEmptyState" class="empty">
-            <div class="empty-emoji">📄</div>
-            <p>Pick a question from the library or upload a screenshot to see the official mark scheme, teacher walkthroughs, and examiner tips.</p>
+  <!-- ================= PAST PAPERS PANE ================= -->
+    <div id="studentPastPapersPane" class="student-pane hidden" style="padding: 16px 24px; max-width: 1600px; margin: 0 auto; height: calc(100vh - 80px); overflow-y: auto;">
+      <div style="display: grid; grid-template-columns: 360px 1fr; gap: 24px; align-items: start;">
+        
+        <!-- LEFT COLUMN: Selector Controls (Sticky) -->
+        <div class="setting-card" style="position: sticky; top: 0; background: var(--panel); border: 1.5px solid var(--line); border-radius: 14px; padding: 18px; box-shadow: var(--shadow-sm);">
+          <div style="display: flex; flex-direction: column; gap: 4px; margin-bottom: 14px;">
+            <h3 style="margin: 0; font-size: 16px;">Select Past Paper Question</h3>
+            <span id="ppSyllabusBadge" class="meta" style="font-weight: 800; color: var(--brand-d); font-size: 11.5px;">Standard Exam Board Specification</span>
           </div>
+
+          <!-- Course Selector -->
+          <label class="fld" style="margin-bottom: 12px; display: block;">
+            <span style="font-size: 12px; font-weight: 700; margin-bottom: 4px; display: block;">Select Course</span>
+            <select id="ppCourseSelect" style="width: 100%; padding: 9px; border-radius: 8px; border: 1.5px solid var(--line); background: var(--bg); color: var(--text);"></select>
+          </label>
+
+          <!-- Cascading Dropdowns -->
+          <div id="ppLibraryFilters" style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 12px;">
+            <label class="fld">
+              <span style="font-size: 11.5px; font-weight: 700; margin-bottom: 3px; display: block;">Year</span>
+              <select id="ppYearSelect" disabled style="width: 100%; padding: 8px; border-radius: 8px; border: 1.5px solid var(--line); background: var(--bg); color: var(--text);"><option value="">Year...</option></select>
+            </label>
+            <label class="fld">
+              <span style="font-size: 11.5px; font-weight: 700; margin-bottom: 3px; display: block;">Series</span>
+              <select id="ppSeriesSelect" disabled style="width: 100%; padding: 8px; border-radius: 8px; border: 1.5px solid var(--line); background: var(--bg); color: var(--text);"><option value="">Series...</option></select>
+            </label>
+            <label class="fld">
+              <span style="font-size: 11.5px; font-weight: 700; margin-bottom: 3px; display: block;">Paper</span>
+              <select id="ppPaperSelect" disabled style="width: 100%; padding: 8px; border-radius: 8px; border: 1.5px solid var(--line); background: var(--bg); color: var(--text);"><option value="">Paper...</option></select>
+            </label>
+            <label class="fld">
+              <span style="font-size: 11.5px; font-weight: 700; margin-bottom: 3px; display: block;">Question</span>
+              <select id="ppQuestionSelect" disabled style="width: 100%; padding: 8px; border-radius: 8px; border: 1.5px solid var(--line); background: var(--bg); color: var(--text);"><option value="">Question...</option></select>
+            </label>
+          </div>
+
+          <!-- Doubt Input -->
+          <label class="fld" style="margin-bottom: 14px; display: block;">
+            <span style="font-size: 12px; font-weight: 700; margin-bottom: 4px; display: block;">Specific Doubt or Focus (Optional)</span>
+            <input id="ppDoubtInput" type="text" placeholder="e.g. Why is point 3 required?" style="width: 100%; padding: 8px 10px; border-radius: 8px; border: 1.5px solid var(--line); background: var(--bg); color: var(--text); font-size: 12.5px;" />
+          </label>
+
+          <button id="solvePastPaperBtn" class="primary" style="width: 100%; padding: 11px; font-size: 13.5px; font-weight: 800; border-radius: 8px;">✨ Generate Complete Solution &amp; Marking Guide</button>
+        </div>
+
+        <!-- RIGHT COLUMN: Answer Cards & Solution Area -->
+        <div style="min-width: 0;">
+          <!-- Empty State (Visible before solving) -->
+          <div id="ppEmptyState" class="empty" style="padding: 70px 20px; text-align: center; background: var(--panel); border: 1.5px dashed var(--line); border-radius: 14px;">
+            <div style="font-size: 38px; margin-bottom: 12px;">📝</div>
+            <h3 style="margin: 0 0 6px 0; font-size: 16px;">No question selected</h3>
+            <p class="meta" style="margin: 0; font-size: 13px;">Choose a past paper question on the left to load the complete model answer, mark scheme points, and examiner tips.</p>
+          </div>
+
+          <!-- Active Solution Result (Populated by app.js) -->
           <div id="ppSolutionResult" class="hidden" style="display: flex; flex-direction: column; gap: 16px;"></div>
         </div>
+
       </div>
     </div>
+   
     
     <!-- Pane 4: Alerts & Reminders -->
     <div id="studentAlertsPane" class="student-pane hidden" style="padding: 26px 30px; overflow-y: auto;">

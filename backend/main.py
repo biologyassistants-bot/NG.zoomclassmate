@@ -2941,11 +2941,6 @@ async def teacher_pp_bulk_upload(
     qp_file: UploadFile = File(...),
     ms_file: UploadFile = File(...)
 ):
-    if os.path.isdir(FRONTEND_DIR):
-    @app.get("/")
-    def index():
-        return FileResponse(os.path.join(FRONTEND_DIR, "index.html"))
-    app.mount("/", StaticFiles(directory=FRONTEND_DIR), name="static")
         
     if not check_teacher(passcode):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
@@ -3002,3 +2997,9 @@ async def teacher_pp_bulk_upload(
 
     save_pp_json(PAST_PAPER_SOLUTIONS_PATH, sols)
     return {"ok": True, "indexed": count}
+
+if os.path.isdir(FRONTEND_DIR):
+    @app.get("/")
+    def index():
+        return FileResponse(os.path.join(FRONTEND_DIR, "index.html"))
+    app.mount("/", StaticFiles(directory=FRONTEND_DIR), name="static")

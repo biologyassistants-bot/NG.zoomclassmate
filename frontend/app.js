@@ -2200,44 +2200,18 @@ async function loadBranding() {
 }
 
 // ==============================================================================
-// STUDENT PAST PAPER SOLVER
+// STUDENT PAST PAPER SOLVER (DIRECT LIBRARY SELECTION)
 // ==============================================================================
 let ppStudentLibrary = [];
-let ppStudentMode = "library";
-
-if (el("modeLibBtn")) {
-  el("modeLibBtn").addEventListener("click", () => setStudentPpMode("library"));
-}
-if (el("modeSnapBtn")) {
-  el("modeSnapBtn").addEventListener("click", () => setStudentPpMode("snapshot"));
-}
-
-function setStudentPpMode(mode) {
-  ppStudentMode = mode;
-  if (mode === "library") {
-    el("modeLibBtn").style.cssText = "flex: 1; background: var(--panel); box-shadow: var(--shadow-sm); font-weight: 800; color: var(--brand-d);";
-    el("modeSnapBtn").style.cssText = "flex: 1; font-weight: 600; color: var(--muted);";
-    el("ppLibraryFilters").classList.remove("hidden");
-    el("ppSnapshotUpload").classList.add("hidden");
-  } else {
-    el("modeSnapBtn").style.cssText = "flex: 1; background: var(--panel); box-shadow: var(--shadow-sm); font-weight: 800; color: var(--brand-d);";
-    el("modeLibBtn").style.cssText = "flex: 1; font-weight: 600; color: var(--muted);";
-    el("ppSnapshotUpload").classList.remove("hidden");
-    el("ppLibraryFilters").classList.add("hidden");
-  }
-}
 
 async function initStudentPastPapers() {
   const sel = el("ppCourseSelect");
   if (!sel) return;
 
-  // Read courses directly from student's recordings
   const courseSet = new Set();
   (state.recordings || []).forEach(r => {
     const u = (r.unit || "").trim();
-    if (u && u.toLowerCase() !== "unassigned") {
-      courseSet.add(u);
-    }
+    if (u && u.toLowerCase() !== "unassigned") courseSet.add(u);
   });
 
   try {
@@ -2251,11 +2225,12 @@ async function initStudentPastPapers() {
       state.courseSyllabi = data.syllabi || {};
       ppStudentLibrary = data.library || [];
       (data.courses || []).forEach(c => {
-        if (c && c.trim() && c.trim().toLowerCase() !== "unassigned") {
-          courseSet.add(c.trim());
-        }
+        if (c && c.trim() && c.trim().toLowerCase() !== "unassigned") courseSet.add(c.trim());
       });
     }
+  } catch (e) {
+    console.error("Error loading past paper metadata:", e);
+  }
 
   const courses = Array.from(courseSet).sort();
   sel.innerHTML = '<option value="">Select course...</option>';
@@ -2265,19 +2240,16 @@ async function initStudentPastPapers() {
     courses.forEach(c => sel.appendChild(new Option(c, c)));
   }
 
- sel.onchange = () => {
-      const chosen = sel.value;
-      const badge = el("ppSyllabusBadge");
-      if (badge) {
-        badge.textContent = state.courseSyllabi[chosen]
-          ? `🎯 Syllabus: ${state.courseSyllabi[chosen]}`
-          : "Standard Exam Board Specification";
-      }
-      populateStudentCascade("year");
-    };
-  } catch (e) {
-    console.error("Error loading student past paper metadata:", e);
-  }
+  sel.onchange = () => {
+    const chosen = sel.value;
+    const badge = el("ppSyllabusBadge");
+    if (badge) {
+      badge.textContent = state.courseSyllabi[chosen]
+        ? `🎯 Syllabus: ${state.courseSyllabi[chosen]}`
+        : "Standard Exam Board Specification";
+    }
+    populateStudentCascade("year");
+  };
 }
 
 function populateStudentCascade(level) {
@@ -2290,7 +2262,7 @@ function populateStudentCascade(level) {
   if (!course) return;
 
   if (level === "year") {
-    const years = [...new Set(ppStudentLibrary.filter(x => x.course === course).map(x => x.year))];
+    const years = [...new Set(ppStudentLibrary.filter(x => x.course === course).map(x => x.year))].sort().reverse();
     yearSel.innerHTML = '<option value="">Select Year...</option>';
     years.forEach(y => yearSel.appendChild(new Option(y, y)));
     yearSel.disabled = years.length === 0;
@@ -2327,30 +2299,29 @@ function populateStudentCascade(level) {
 if (el("solvePastPaperBtn")) {
   el("solvePastPaperBtn").addEventListener("click", async () => {
     const course = el("ppCourseSelect").value;
-    if (!course) { toast("Please select a course first.", "info"); return; }
+    const year = el("ppYearSelect").value;
+    const series = el("ppSeriesSelect").value;
+    const paper = el("ppPaperSelect").value;
+    const question = el("ppQuestionSelect").value;
+
+    if (!course) { toast("Please select a course.", "info"); return; }
+    if (!year || !series || !paper || !question) {
+      toast("Please complete all dropdowns to pick a question.", "info");
+      return;
+    }
 
     const fd = new FormData();
     fd.append("token", state.token);
-    fd.append("mode", ppStudentMode);
     fd.append("course", course);
-    fd.append("doubt", el("ppDoubtInput").value.trim());
-
-    if (ppStudentMode === "library") {
-      const q = el("ppQuestionSelect").value;
-      if (!q) { toast("Please complete the dropdowns to pick a question.", "info"); return; }
-      fd.append("year", el("ppYearSelect").value);
-      fd.append("series", el("ppSeriesSelect").value);
-      fd.append("paper", el("ppPaperSelect").value);
-      fd.append("question", q);
-    } else {
-      const fileInput = el("ppImageFile");
-      if (!fileInput.files.length) { toast("Please select an exam screenshot to solve.", "info"); return; }
-      fd.append("image", fileInput.files[0]);
-    }
+    fd.append("year", year);
+    fd.append("series", series);
+    fd.append("paper", paper);
+    fd.append("question", question);
+    fd.append("doubt", el("ppDoubtInput") ? el("ppDoubtInput").value.trim() : "");
 
     const btn = el("solvePastPaperBtn");
     const origText = btn.innerText;
-    btn.innerText = "⏳ Connecting to Examiner AI...";
+    btn.innerText = "⏳ Generating Official Solution & Model Answer...";
     btn.disabled = true;
 
     try {
@@ -2374,7 +2345,7 @@ function renderStudentPastPaperSolution(data) {
   resBox.classList.remove("hidden");
   resBox.innerHTML = "";
 
-  // 1. Optional Teacher Video / Model Answer Document Banner
+  // 1. Optional Teacher Resource Card
   if (data.teacher_asset) {
     const asset = data.teacher_asset;
     const assetCard = document.createElement("div");
@@ -2390,100 +2361,119 @@ function renderStudentPastPaperSolution(data) {
 
     assetCard.innerHTML = `
       <div style="font-weight:800; font-size:13.5px; color:var(--brand-d); margin-bottom:6px;">👨‍🏫 Teacher Materials Linked</div>
-      <div>${links || '<span class="meta">Teacher resources indexed for this specific question.</span>'}</div>
+      <div>${links || '<span class="meta">Teacher resources indexed for this question.</span>'}</div>
     `;
     resBox.appendChild(assetCard);
   }
 
-  // Helper: Convert bold Markdown into highlighted keyword chips
   const formatText = (txt) => {
     let clean = escapeHtml(txt || "");
     return clean.replace(/\*\*(.+?)\*\*/g, '<strong style="color: var(--brand-d); background: rgba(11,191,191,0.12); padding: 1px 6px; border-radius: 4px; font-weight: 700;">$1</strong>');
   };
 
-  // 2. Parse the 3 Standard Solver Sections
+  // 2. Parse the 4 Sections
   const raw = data.solution_markdown || "";
   const sec1Match = raw.match(/###\s*1\.[^\n]*\n([\s\S]*?)(?=###\s*2\.|$)/i);
   const sec2Match = raw.match(/###\s*2\.[^\n]*\n([\s\S]*?)(?=###\s*3\.|$)/i);
-  const sec3Match = raw.match(/###\s*3\.[^\n]*\n([\s\S]*?)$/i);
+  const sec3Match = raw.match(/###\s*3\.[^\n]*\n([\s\S]*?)(?=###\s*4\.|$)/i);
+  const sec4Match = raw.match(/###\s*4\.[^\n]*\n([\s\S]*?)$/i);
 
   const sec1Raw = sec1Match ? sec1Match[1].trim() : "";
   const sec2Raw = sec2Match ? sec2Match[1].trim() : "";
   const sec3Raw = sec3Match ? sec3Match[1].trim() : "";
+  const sec4Raw = sec4Match ? sec4Match[1].trim() : "";
 
-  // Container
   const wrap = document.createElement("div");
   wrap.style.cssText = "display: flex; flex-direction: column; gap: 16px;";
 
-  // Header Bar
-  const headerHtml = `
+  // Header Banner
+  wrap.innerHTML = `
     <div style="display: flex; justify-content: space-between; align-items: center; background: var(--panel); border: 1.5px solid var(--line); border-radius: 12px; padding: 12px 18px;">
       <div style="display: flex; align-items: center; gap: 10px;">
         <span class="q-num" style="font-size: 13.5px; font-weight: 800; padding: 4px 12px; border-radius: 20px;">${escapeHtml(data.exam_ref)}</span>
-        <span style="font-size: 13px; font-weight: 700; color: var(--text);">Exam Solution &amp; Marking Guide</span>
+        <span style="font-size: 13px; font-weight: 700; color: var(--text);">Exam Solution &amp; Examiner Guide</span>
       </div>
       <span class="meta" style="font-weight: 800; color: var(--brand-d); font-size: 12px;">${escapeHtml(data.syllabus)}</span>
     </div>
   `;
-  wrap.innerHTML = headerHtml;
 
-  // CARD 1: Mark Scheme & Mandatory Keywords
+  // CARD 1: Complete Model Answer (A* Student Paper View)
   if (sec1Raw) {
     const card1 = document.createElement("div");
-    card1.style.cssText = "background: var(--panel); border: 1.5px solid var(--line); border-radius: 14px; padding: 18px 20px; box-shadow: var(--shadow-sm);";
-    
-    // Parse numbered points
-    const lines = sec1Raw.split("\n").map(l => l.trim()).filter(Boolean);
-    let rubricItemsHtml = "";
+    card1.style.cssText = "background: linear-gradient(180deg, var(--panel), var(--panel2)); border: 2px solid var(--brand); border-radius: 14px; padding: 18px 20px; box-shadow: var(--shadow-sm);";
 
-    lines.forEach(line => {
-      const numMatch = line.match(/^(\d+)\.\s*(.*)/);
-      if (numMatch) {
-        rubricItemsHtml += `
-          <div style="display: flex; gap: 12px; align-items: flex-start; padding: 8px 0; border-bottom: 1px dashed var(--line);">
-            <span style="background: var(--brand); color: #fff; font-weight: 800; font-size: 11px; min-width: 24px; height: 24px; border-radius: 50%; display: flex; align-items: center; justify-content: center; margin-top: 1px;">${numMatch[1]}</span>
-            <div style="font-size: 13.5px; line-height: 1.5; color: var(--text); flex: 1;">${formatText(numMatch[2])}</div>
-          </div>
-        `;
-      } else {
-        rubricItemsHtml += `<p style="font-size: 13px; color: var(--muted); margin-bottom: 8px;">${formatText(line)}</p>`;
-      }
-    });
+    const paras = sec1Raw.split(/\n\s*\n/).filter(Boolean);
+    const bodyHtml = paras.map(p => `<p style="font-size: 14px; line-height: 1.7; color: var(--text); margin-bottom: 10px; font-style: normal;">${formatText(p.trim())}</p>`).join("");
 
     card1.innerHTML = `
-      <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 12px; border-bottom: 1.5px solid var(--line); padding-bottom: 8px;">
-        <span style="font-size: 17px;">🎯</span>
-        <h4 style="margin: 0; font-size: 15px; font-weight: 800; color: var(--brand-d);">1. Mark Scheme Breakdown &amp; Mandatory Keywords</h4>
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; border-bottom: 1.5px solid var(--line); padding-bottom: 8px;">
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <span style="font-size: 18px;">🏆</span>
+          <h4 style="margin: 0; font-size: 15px; font-weight: 800; color: var(--brand-d);">1. Complete Model Answer (Full Marks)</h4>
+        </div>
+        <span style="font-size: 11px; font-weight: 800; background: var(--brand); color: white; padding: 3px 8px; border-radius: 12px;">A* EXAM SCRIPT</span>
       </div>
-      <div>${rubricItemsHtml}</div>
+      <div style="background: var(--bg); padding: 14px 18px; border-radius: 10px; border-left: 4px solid var(--brand);">${bodyHtml}</div>
     `;
     wrap.appendChild(card1);
   }
 
-  // CARD 2: Mechanism & Conceptual Link
+  // CARD 2: Mark Scheme Breakdown & Mandatory Keywords
   if (sec2Raw) {
     const card2 = document.createElement("div");
     card2.style.cssText = "background: var(--panel); border: 1.5px solid var(--line); border-radius: 14px; padding: 18px 20px; box-shadow: var(--shadow-sm);";
 
-    const paras = sec2Raw.split(/\n\s*\n/).filter(Boolean);
-    const bodyHtml = paras.map(p => `<p style="font-size: 13.5px; line-height: 1.65; color: var(--text); margin-bottom: 10px;">${formatText(p.trim())}</p>`).join("");
+    const lines = sec2Raw.split("\n").map(l => l.trim()).filter(Boolean);
+    let rubricHtml = "";
+
+    lines.forEach(line => {
+      const numMatch = line.match(/^(\d+)\.\s*(.*)/);
+      if (numMatch) {
+        rubricHtml += `
+          <div style="display: flex; gap: 12px; align-items: flex-start; padding: 8px 0; border-bottom: 1px dashed var(--line);">
+            <span style="background: var(--brand-d); color: #fff; font-weight: 800; font-size: 11px; min-width: 24px; height: 24px; border-radius: 50%; display: flex; align-items: center; justify-content: center; margin-top: 1px;">${numMatch[1]}</span>
+            <div style="font-size: 13.5px; line-height: 1.5; color: var(--text); flex: 1;">${formatText(numMatch[2])}</div>
+          </div>
+        `;
+      } else {
+        rubricHtml += `<p style="font-size: 13px; color: var(--muted); margin-bottom: 8px;">${formatText(line)}</p>`;
+      }
+    });
 
     card2.innerHTML = `
       <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 12px; border-bottom: 1.5px solid var(--line); padding-bottom: 8px;">
-        <span style="font-size: 17px;">🧬</span>
-        <h4 style="margin: 0; font-size: 15px; font-weight: 800; color: var(--text);">2. Conceptual Link &amp; Biological Mechanism</h4>
+        <span style="font-size: 17px;">🎯</span>
+        <h4 style="margin: 0; font-size: 15px; font-weight: 800; color: var(--brand-d);">2. Mark Scheme Breakdown &amp; Mandatory Keywords</h4>
       </div>
-      <div>${bodyHtml}</div>
+      <div>${rubricHtml}</div>
     `;
     wrap.appendChild(card2);
   }
 
-  // CARD 3: Examiner Traps & Common Mistakes
+  // CARD 3: Mechanism & Conceptual Link
   if (sec3Raw) {
     const card3 = document.createElement("div");
-    card3.style.cssText = "background: rgba(245, 159, 0, 0.05); border: 1.5px solid rgba(245, 159, 0, 0.35); border-radius: 14px; padding: 18px 20px;";
+    card3.style.cssText = "background: var(--panel); border: 1.5px solid var(--line); border-radius: 14px; padding: 18px 20px; box-shadow: var(--shadow-sm);";
 
-    const trapLines = sec3Raw.split("\n").map(l => l.trim()).filter(Boolean);
+    const paras = sec3Raw.split(/\n\s*\n/).filter(Boolean);
+    const bodyHtml = paras.map(p => `<p style="font-size: 13.5px; line-height: 1.65; color: var(--text); margin-bottom: 10px;">${formatText(p.trim())}</p>`).join("");
+
+    card3.innerHTML = `
+      <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 12px; border-bottom: 1.5px solid var(--line); padding-bottom: 8px;">
+        <span style="font-size: 17px;">🧬</span>
+        <h4 style="margin: 0; font-size: 15px; font-weight: 800; color: var(--text);">3. Conceptual Link &amp; Biological Mechanism</h4>
+      </div>
+      <div>${bodyHtml}</div>
+    `;
+    wrap.appendChild(card3);
+  }
+
+  // CARD 4: Examiner Traps & Common Mistakes
+  if (sec4Raw) {
+    const card4 = document.createElement("div");
+    card4.style.cssText = "background: rgba(245, 159, 0, 0.05); border: 1.5px solid rgba(245, 159, 0, 0.35); border-radius: 14px; padding: 18px 20px;";
+
+    const trapLines = sec4Raw.split("\n").map(l => l.trim()).filter(Boolean);
     let trapsHtml = "";
 
     trapLines.forEach(line => {
@@ -2496,22 +2486,22 @@ function renderStudentPastPaperSolution(data) {
       `;
     });
 
-    card3.innerHTML = `
+    card4.innerHTML = `
       <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 12px; border-bottom: 1px solid rgba(245, 159, 0, 0.25); padding-bottom: 8px;">
-        <h4 style="margin: 0; font-size: 15px; font-weight: 800; color: #f59f00;">3. Examiner Traps &amp; Common Mistakes</h4>
+        <h4 style="margin: 0; font-size: 15px; font-weight: 800; color: #f59f00;">4. Examiner Traps &amp; Common Mistakes</h4>
       </div>
       <div>${trapsHtml}</div>
     `;
-    wrap.appendChild(card3);
+    wrap.appendChild(card4);
   }
 
-  // Fallback: If headings did not match regex, render clean paragraphs with formatted bold tags
-  if (!sec1Raw && !sec2Raw && !sec3Raw) {
-    const fallbackCard = document.createElement("div");
-    fallbackCard.className = "q-block";
-    fallbackCard.style.padding = "20px";
-    fallbackCard.innerHTML = `<div style="line-height: 1.65; font-size: 13.5px;">${formatText(raw).replace(/\n/g, '<br>')}</div>`;
-    wrap.appendChild(fallbackCard);
+  // Fallback if headings were altered
+  if (!sec1Raw && !sec2Raw && !sec3Raw && !sec4Raw) {
+    const fallback = document.createElement("div");
+    fallback.className = "q-block";
+    fallback.style.padding = "20px";
+    fallback.innerHTML = `<div style="line-height: 1.65; font-size: 13.5px;">${formatText(raw).replace(/\n/g, '<br>')}</div>`;
+    wrap.appendChild(fallback);
   }
 
   resBox.appendChild(wrap);

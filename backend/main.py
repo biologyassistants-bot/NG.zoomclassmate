@@ -2643,13 +2643,6 @@ def _simple_text_pdf(lines):
 def health():
     return {"status": "ok", "recordings": len(RECORDINGS)}
 
-
-if os.path.isdir(FRONTEND_DIR):
-    @app.get("/")
-    def index():
-        return FileResponse(os.path.join(FRONTEND_DIR, "index.html"))
-    app.mount("/", StaticFiles(directory=FRONTEND_DIR), name="static")
-
 # ==============================================================================
 # PAST PAPER SOLVER MODULE (SEPARATE STORAGE & ENGINE)
 # ==============================================================================
@@ -2794,39 +2787,7 @@ async def student_pp_solve(
     }
 
 # --- Teacher Past Paper Management Endpoints ---
-import uuid
-from pathlib import Path
-from fastapi import File, Form, UploadFile
-from fastapi.responses import JSONResponse
 
-PAST_PAPER_DOCS_PATH = Path("data") / "past_paper_docs.json"
-PAST_PAPER_FILES_DIR = Path("data") / "past_paper_files"
-
-def load_pp_docs():
-    if not PAST_PAPER_DOCS_PATH.exists():
-        return []
-    try:
-        with open(PAST_PAPER_DOCS_PATH, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        return []
-
-def save_pp_docs(docs):
-    PAST_PAPER_DOCS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with open(PAST_PAPER_DOCS_PATH, "w", encoding="utf-8") as f:
-        json.dump(docs, f, indent=2, ensure_ascii=False)
-
-def pp_doc_by_id(doc_id: str):
-    for d in load_pp_docs():
-        if d.get("id") == doc_id:
-            return d
-    return None
-
-@app.post("/api/teacher/pastpaper/doc/upload")
-async def teacher_pp_upload_doc(
-    passcode: str = Form(...),
-    file: UploadFile = File(...)
-):
     if not check_teacher(passcode):
         return JSONResponse({"error": "Unauthorized passcode."}, status_code=401)
 
@@ -2980,6 +2941,12 @@ async def teacher_pp_bulk_upload(
     qp_file: UploadFile = File(...),
     ms_file: UploadFile = File(...)
 ):
+    if os.path.isdir(FRONTEND_DIR):
+    @app.get("/")
+    def index():
+        return FileResponse(os.path.join(FRONTEND_DIR, "index.html"))
+    app.mount("/", StaticFiles(directory=FRONTEND_DIR), name="static")
+        
     if not check_teacher(passcode):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
 
@@ -3031,7 +2998,7 @@ async def teacher_pp_bulk_upload(
             "answered_doc_id": answered_doc_id,
             "answered_doc_name": doc.get("filename", "") if doc else ""
         }
-        count += 1
+    count += 1
 
     save_pp_json(PAST_PAPER_SOLUTIONS_PATH, sols)
     return {"ok": True, "indexed": count}

@@ -2765,9 +2765,9 @@ async function refreshPastPaperHub() {
           })
         ].join("");
         row.innerHTML = `
-          <div style="min-width:0;display:flex;flex-direction:column;gap:2px;">
-            <span style="font-size:12.5px;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">📄 ${escapeHtml(doc.filename || "Untitled")}</span>
-            <span class="meta" style="font-size:10.5px;">${doc.uploaded_at ? `Uploaded ${escapeHtml(doc.uploaded_at)} · ` : ""}${Number(doc.text_chars || 0).toLocaleString()} characters indexed</span>
+          <div style="min-width:0;flex:1;display:flex;flex-direction:column;gap:4px;">
+            <span title="${escapeHtml(doc.filename || "Untitled")}" style="font-size:12.5px;font-weight:800;line-height:1.35;white-space:normal;overflow-wrap:anywhere;word-break:break-word;color:var(--text);">📄 ${escapeHtml(doc.filename || "Untitled")}</span>
+            <span class="meta" style="font-size:10.5px;line-height:1.35;">${doc.uploaded_at ? `Uploaded ${escapeHtml(doc.uploaded_at)} · ` : ""}${Number(doc.text_chars || 0).toLocaleString()} characters indexed</span>
           </div>
           <div style="display:flex;align-items:center;gap:8px;flex-shrink:0;">
             <label style="display:flex;align-items:center;gap:6px;font-size:11px;font-weight:700;">Course

@@ -2917,4 +2917,173 @@ function renderTeacherOverrides(list) {
   });
 }
 
+
+// Store loaded teacher reference docs in state
+let teacherDocsCache = [];
+
+async function loadTeacherDocs(selectedCourse = "") {
+  const passcode = state.passcode || localStorage.getItem("ng_teacherPasscode") || "";
+  if (!passcode) return;
+
+  try {
+    const res = await fetch(`${API}/api/teacher/pastpaper/docs?passcode=${encodeURIComponent(passcode)}`);
+    if (!res.ok) return;
+    const data = await res.json();
+    teacherDocsCache = data.docs || [];
+
+    renderExistingDocsList();
+    populateBulkDocDropdown(selectedCourse);
+  } catch (e) {
+    console.error("Error loading docs:", e);
+  }
+}
+
+// Render existing uploaded documents with course assignment dropdowns
+function renderExistingDocsList() {
+  const container = el("existingDocsContainer");
+  const badge = el("docCountBadge");
+  if (badge) badge.innerText = teacherDocsCache.length;
+  if (!container) return;
+
+  if (teacherDocsCache.length === 0) {
+    container.innerHTML = '<p class="meta" style="margin: 0;">No documents uploaded yet.</p>';
+    return;
+  }
+
+  // Get available course list from course select dropdown options
+  const courseOptions = Array.from(el("bulkCourseSelect") ? el("bulkCourseSelect").options : [])
+    .map(opt => opt.value)
+    .filter(val => val !== "");
+
+  container.innerHTML = "";
+  teacherDocsCache.forEach(doc => {
+    const row = document.createElement("div");
+    row.style.cssText = "display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; gap: 10px;";
+
+    let optionsHtml = '<option value="">-- Unassigned (Visible to All) --</option>';
+    courseOptions.forEach(c => {
+      const isSelected = doc.course && doc.course.toLowerCase() === c.toLowerCase();
+      optionsHtml += `<option value="${escapeHtml(c)}" ${isSelected ? 'selected' : ''}>${escapeHtml(c)}</option>`;
+    });
+
+    row.innerHTML = `
+      <div style="font-size: 12.5px; font-weight: 600; display: flex; align-items: center; gap: 6px; overflow: hidden;">
+        <span>📄</span>
+        <span style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 250px;">${escapeHtml(doc.filename)}</span>
+      </div>
+      <div style="display: flex; align-items: center; gap: 8px;">
+        <span style="font-size: 11px; color: var(--muted); font-weight: 600;">Course:</span>
+        <select class="doc-course-assign" data-docid="${doc.id}" style="padding: 4px 8px; font-size: 11.5px; border-radius: 6px; border: 1px solid var(--line);">
+          ${optionsHtml}
+        </select>
+      </div>
+    `;
+
+    // Handle course updating
+    const select = row.querySelector(".doc-course-assign");
+    select.addEventListener("change", async (e) => {
+      const newCourse = e.target.value;
+      const docId = doc.id;
+      const passcode = state.passcode || localStorage.getItem("ng_teacherPasscode") || "";
+
+      const fd = new FormData();
+      fd.append("passcode", passcode);
+      fd.append("doc_id", docId);
+      fd.append("course", newCourse);
+
+      try {
+        const res = await fetch(`${API}/api/teacher/pastpaper/docs/update-course`, { method: "POST", body: fd });
+        if (res.ok) {
+          toast(`Updated course for "${doc.filename}" ✓`, "success");
+          await loadTeacherDocs(el("bulkCourseSelect") ? el("bulkCourseSelect").value : "");
+        } else {
+          toast("Failed to update course.", "error");
+        }
+      } catch (err) {
+        toast("Network error.", "error");
+      }
+    });
+
+    container.appendChild(row);
+  });
+}
+
+// Populate the #bulkDocSelect based on the selected course
+function populateBulkDocDropdown(selectedCourse) {
+  const docSelect = el("bulkDocSelect");
+  if (!docSelect) return;
+
+  if (!selectedCourse) {
+    selectedCourse = el("bulkCourseSelect") ? el("bulkCourseSelect").value : "";
+  }
+
+  // Filter docs matching selected course OR unassigned legacy docs
+  const filteredDocs = teacherDocsCache.filter(doc => {
+    if (!selectedCourse) return true;
+    return !doc.course || doc.course.toLowerCase() === selectedCourse.toLowerCase();
+  });
+
+  docSelect.innerHTML = '<option value="">-- Optional: Link Model Answer Doc --</option>';
+  
+  filteredDocs.forEach(doc => {
+    const opt = document.createElement("option");
+    opt.value = doc.id;
+    const courseTag = doc.course ? `[${doc.course}]` : '[Unassigned / General]';
+    opt.textContent = `${doc.filename} ${courseTag}`;
+    docSelect.appendChild(opt);
+  });
+}
+
+// Event listener: Filter docs when course changes
+if (el("bulkCourseSelect")) {
+  el("bulkCourseSelect").addEventListener("change", (e) => {
+    populateBulkDocDropdown(e.target.value);
+  });
+}
+
+// Handler for uploading a new model answer document tagged to a course
+if (el("uploadPpDocBtn")) {
+  el("uploadPpDocBtn").addEventListener("click", async () => {
+    const fileInput = el("ppDocFile");
+    const course = el("docCourseSelect") ? el("docCourseSelect").value : "";
+    const file = fileInput ? fileInput.files[0] : null;
+
+    if (!course) {
+      toast("Please select a course for this document.", "info");
+      return;
+    }
+    if (!file) {
+      toast("Please select a file to upload.", "info");
+      return;
+    }
+
+    const passcode = state.passcode || localStorage.getItem("ng_teacherPasscode") || "";
+    const fd = new FormData();
+    fd.append("passcode", passcode);
+    fd.append("course", course);
+    fd.append("file", file);
+
+    const btn = el("uploadPpDocBtn");
+    btn.disabled = true;
+    btn.innerText = "Uploading…";
+
+    try {
+      const res = await fetch(`${API}/api/teacher/pastpaper/upload-doc`, { method: "POST", body: fd });
+      const data = await res.json();
+      if (res.ok) {
+        toast(`Document uploaded and assigned to "${course}" ✓`, "success");
+        fileInput.value = "";
+        await loadTeacherDocs(el("bulkCourseSelect") ? el("bulkCourseSelect").value : "");
+      } else {
+        toast(data.error || "Failed to upload document.", "error");
+      }
+    } catch (e) {
+      toast("Network error.", "error");
+    } finally {
+      btn.disabled = false;
+      btn.innerText = "Upload Doc";
+    }
+  });
+}
+
 loadBranding();

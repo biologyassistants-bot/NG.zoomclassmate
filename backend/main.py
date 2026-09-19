@@ -2740,6 +2740,67 @@ def save_pp_documents(docs):
 def pp_doc_by_id(doc_id):
     return next((doc for doc in load_pp_documents() if doc.get("id") == doc_id), None)
 
+def _paper_digits(paper: str) -> str:
+    return "".join(re.findall(r"\d", str(paper or "")))
+
+
+def infer_pastpaper_is_mcq(course: str, paper: str, syllabus: str = "") -> bool:
+    """Use Cambridge component numbering as a deterministic backstop for MCQ papers.
+
+    Cambridge 9700: components beginning with 1 are Paper 1 (MCQ).
+    Cambridge 0610: components beginning with 1 or 2 are the MCQ papers.
+    For unknown boards/courses, return False and let the extracted question structure decide.
+    """
+    nums = _paper_digits(paper)
+    first = nums[:1]
+    context = f"{course or ''} {syllabus or ''}".lower()
+
+    if "9700" in context and first == "1":
+        return True
+    if "0610" in context and first in {"1", "2"}:
+        return True
+    return False
+
+
+def extract_mcq_options(text: str) -> dict:
+    """Extract A/B/C/D options from OCR/PDF text when the AI parser omitted them."""
+    text = re.sub(r"\r\n?", "\n", str(text or "")).strip()
+    if not text:
+        return {}
+
+    pattern = re.compile(
+        r"(?m)(?:^|\n)\s*\(?([ABCD])\)?\s*[\.\):\-]\s*(.+?)(?=\n\s*\(?[ABCD]\)?\s*[\.\):\-]\s+|\Z)",
+        re.IGNORECASE | re.DOTALL,
+    )
+    found = {}
+    for m in pattern.finditer(text):
+        letter = m.group(1).upper()
+        value = re.sub(r"\s+", " ", m.group(2)).strip()
+        if value:
+            found[letter] = value
+    return {k: found[k] for k in ("A", "B", "C", "D") if k in found}
+
+
+def infer_correct_option_from_ms(mark_scheme: str, options: dict | None = None) -> str:
+    """Best-effort extraction of an MCQ answer letter from mark-scheme text."""
+    text = str(mark_scheme or "").strip()
+    if not text:
+        return ""
+
+    m = re.search(r"(?:correct\s+answer|answer|key)\s*[:\-]?\s*\(?([ABCD])\)?\b", text, re.IGNORECASE)
+    if m:
+        return m.group(1).upper()
+
+    compact = re.sub(r"[^A-Za-z]", "", text).upper()
+    if compact in {"A", "B", "C", "D"}:
+        return compact
+
+    # Cambridge mark schemes often put the key as a short standalone token.
+    for m in re.finditer(r"(?:^|\n)\s*\(?([ABCD])\)?\s*(?:$|\n)", text, re.IGNORECASE):
+        return m.group(1).upper()
+    return ""
+
+
 # --- Student Metadata Endpoint ---
 @app.post("/api/student/pastpaper/meta")
 def student_pp_meta(body: RecListBody):
@@ -2752,17 +2813,21 @@ def student_pp_meta(body: RecListBody):
         courses = [r.get("unit") for r in RECORDINGS if r.get("unit") and r.get("unit").strip().lower() != "unassigned"]
     
     sols = load_pp_json(PAST_PAPER_SOLUTIONS_PATH)
-    library = [
-        {
-            "course": v["course"],
-            "year": str(v["year"]),
-            "series": v["series"],
-            "paper": str(v["paper"]),
-            "question": str(v["question"]),
-            "question_type": v.get("question_type", "written")
-        }
-        for v in sols.values()
-    ]
+    syllabus_map = load_pp_json(PAST_PAPER_CONFIG_PATH)
+    library = []
+    for v in sols.values():
+        course_name = v.get("course", "")
+        paper_name = str(v.get("paper", ""))
+        syllabus_name = syllabus_map.get(course_name, "") if isinstance(syllabus_map, dict) else ""
+        inferred_mcq = infer_pastpaper_is_mcq(course_name, paper_name, syllabus_name)
+        library.append({
+            "course": course_name,
+            "year": str(v.get("year", "")),
+            "series": v.get("series", ""),
+            "paper": paper_name,
+            "question": str(v.get("question", "")),
+            "question_type": "mcq" if inferred_mcq else v.get("question_type", "written"),
+        })
     return {
         "courses": sorted(list(set(courses))),
         "syllabi": load_pp_json(PAST_PAPER_CONFIG_PATH),
@@ -2790,15 +2855,55 @@ async def student_pp_solve(
     sols = load_pp_json(PAST_PAPER_SOLUTIONS_PATH)
     key = f"{course.strip().lower()}:{year.strip().lower()}:{series.strip().lower()}:{paper.strip().lower()}:{question.strip().lower()}"
     custom_asset = sols.get(key)
+    if custom_asset:
+        custom_asset = dict(custom_asset)
 
     exam_ref = f"{year} {series} P{paper} Q{question}".strip()
 
-    question_type = str((custom_asset or {}).get("question_type") or "written").strip().lower()
-    is_mcq = question_type in {"mcq", "multiple_choice", "multiple choice", "paper 1"}
+    paper_is_mcq = infer_pastpaper_is_mcq(course, paper, syllabus)
+    question_type = str((custom_asset or {}).get("question_type") or "").strip().lower()
+    is_mcq = paper_is_mcq or question_type in {"mcq", "multiple_choice", "multiple choice", "paper 1"}
+
+    # Cambridge Paper 1 must never fall back to the written-response workflow, even when
+    # an older library record was extracted before MCQ classification was introduced.
+    if custom_asset:
+        custom_asset["question_type"] = "mcq" if is_mcq else "written"
+
     options = (custom_asset or {}).get("options") or {}
     if not isinstance(options, dict):
         options = {}
+    if not isinstance(options, dict):
+        options = {}
+    normalized_options = {}
+    for letter in ("A", "B", "C", "D"):
+        val = options.get(letter)
+        if val:
+            normalized_options[letter] = str(val).strip()
+
+    if is_mcq and len(normalized_options) < 3 and custom_asset:
+        recovered = extract_mcq_options(custom_asset.get("qp_text", ""))
+        if len(recovered) >= 3:
+            normalized_options = recovered
+            custom_asset["options"] = recovered
+
     correct_option = str((custom_asset or {}).get("correct_option") or "").strip().upper()
+    if is_mcq and correct_option not in {"A", "B", "C", "D"}:
+        recovered_correct = infer_correct_option_from_ms((custom_asset or {}).get("ms_text", ""), normalized_options)
+        if recovered_correct:
+            correct_option = recovered_correct
+            if custom_asset:
+                custom_asset["correct_option"] = correct_option
+                custom_asset["correct_answer_text"] = normalized_options.get(correct_option, custom_asset.get("correct_answer_text", ""))
+
+    if custom_asset:
+        custom_asset["options"] = normalized_options if is_mcq else {}
+        custom_asset["correct_option"] = correct_option if is_mcq else ""
+        if is_mcq:
+            custom_asset["correct_answer_text"] = normalized_options.get(correct_option, custom_asset.get("correct_answer_text", ""))
+        # Persist the corrected classification so future dropdowns do not revert to WRITTEN.
+        sols[key] = custom_asset
+        options = normalized_options
+        save_pp_json(PAST_PAPER_SOLUTIONS_PATH, sols)
 
     if is_mcq:
         system = (
@@ -2878,6 +2983,8 @@ async def student_pp_solve(
         "ok": True,
         "exam_ref": exam_ref,
         "syllabus": syllabus,
+        "paper_is_mcq": paper_is_mcq,
+        "question_type": "mcq" if is_mcq else "written",
         "solution_markdown": raw,
         "teacher_asset": custom_asset
     }
@@ -3122,10 +3229,20 @@ async def teacher_pp_bulk_upload(
             status_code=422
         )
 
+    syllabus_map = load_pp_json(PAST_PAPER_CONFIG_PATH)
+    syllabus_name = syllabus_map.get(course, "") if isinstance(syllabus_map, dict) else ""
+    paper_is_mcq = infer_pastpaper_is_mcq(course, paper, syllabus_name)
+
     system_prompt = (
         "You are an exhaustive past-paper exam ingestion parser.\n"
         "Segment the Question Paper, Mark Scheme, and (if provided) Examiner Report into individual question items.\n"
         "For EVERY question, first classify it as either 'mcq' or 'written'. Use the actual question-paper structure, not guesses based on the topic.\n"
+        + (
+            "THIS ENTIRE PAPER IS DETERMINISTICALLY A MULTIPLE-CHOICE PAPER. Classify EVERY extracted question as 'mcq', preserve A/B/C/D options, and map the official answer letter from the mark scheme.\n"
+            if paper_is_mcq else
+            "Do not force MCQ classification unless the question paper actually contains answer choices.\n"
+        )
+        +
         "A Cambridge Paper 1 style question with four answer choices must be classified as 'mcq'.\n"
         "For MCQs, preserve the option text exactly enough to distinguish A/B/C/D, and map the official mark-scheme answer letter to correct_option.\n"
         "For written questions, set options to {} and correct_option to ''.\n"
@@ -3188,7 +3305,11 @@ async def teacher_pp_bulk_upload(
             val = options.get(letter) if isinstance(options, dict) else None
             if val:
                 normalized_options[letter] = str(val).strip()
-        is_mcq_item = raw_type in {"mcq", "multiple_choice", "multiple choice", "paper 1"} or len(normalized_options) >= 3
+        is_mcq_item = paper_is_mcq or raw_type in {"mcq", "multiple_choice", "multiple choice", "paper 1"} or len(normalized_options) >= 3
+        if is_mcq_item and len(normalized_options) < 3:
+            recovered = extract_mcq_options(str(item.get("question_text", "")))
+            if len(recovered) >= 3:
+                normalized_options = recovered
         extracted_correct_option = str(item.get("correct_option", "")).strip().upper() if is_mcq_item else ""
         extracted_correct_text = normalized_options.get(extracted_correct_option, "") if extracted_correct_option else ""
         sols[key] = {

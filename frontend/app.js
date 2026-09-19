@@ -2770,6 +2770,99 @@ async function refreshPastPaperHub() {
   renderTeacherOverrides(ppConfig.solutions || []);
 }
 
+
+// Bind the Bulk Upload & Auto-Extract action once.  The previous build had the
+// button in the HTML and the API endpoint in Python, but no frontend handler,
+// so clicking the button did nothing.
+function bindPastPaperBulkUpload() {
+  const btn = document.getElementById("processBulkBtn");
+  if (!btn || btn.dataset.ppBulkBinding === "1") return;
+  btn.dataset.ppBulkBinding = "1";
+
+  btn.addEventListener("click", async (event) => {
+    event.preventDefault();
+
+    const passcode = (typeof state !== "undefined" && state.passcode)
+      || localStorage.getItem("ng_teacherPasscode")
+      || "";
+    const course = document.getElementById("bulkCourseSelect")?.value?.trim() || "";
+    const year = document.getElementById("bulkYearInput")?.value?.trim() || "";
+    const series = document.getElementById("bulkSeriesSelect")?.value?.trim() || "";
+    const paper = document.getElementById("bulkPaperInput")?.value?.trim() || "";
+    const videoUrl = document.getElementById("bulkVideoUrl")?.value?.trim() || "";
+    const answeredDocId = document.getElementById("bulkDocSelect")?.value || "";
+    const qpFile = document.getElementById("bulkQpFile")?.files?.[0] || null;
+    const msFile = document.getElementById("bulkMsFile")?.files?.[0] || null;
+    const erFile = document.getElementById("bulkErFile")?.files?.[0] || null;
+
+    if (!passcode) return toast("Your teacher session has expired. Please sign in again.", "error");
+    if (!course) return toast("Please select a course.", "info");
+    if (!year) return toast("Please enter the exam year.", "info");
+    if (!series) return toast("Please select the exam series.", "info");
+    if (!paper) return toast("Please enter the paper number.", "info");
+    if (!qpFile) return toast("Please choose the Question Paper PDF.", "info");
+    if (!msFile) return toast("Please choose the Mark Scheme PDF.", "info");
+
+    const allowedPdf = /\.pdf$/i;
+    if (!allowedPdf.test(qpFile.name) || !allowedPdf.test(msFile.name) || (erFile && !allowedPdf.test(erFile.name))) {
+      return toast("Question Paper, Mark Scheme, and Examiner Report must be PDF files.", "error");
+    }
+
+    const fd = new FormData();
+    fd.append("passcode", passcode);
+    fd.append("course", course);
+    fd.append("year", year);
+    fd.append("series", series);
+    fd.append("paper", paper);
+    fd.append("video_url", videoUrl);
+    fd.append("answered_doc_id", answeredDocId);
+    fd.append("qp_file", qpFile, qpFile.name);
+    fd.append("ms_file", msFile, msFile.name);
+    if (erFile) fd.append("er_file", erFile, erFile.name);
+
+    const oldText = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = "⏳ Extracting questions…";
+
+    try {
+      toast("Uploading the exam files and extracting questions…", "info", 5000);
+      const res = await fetch(`${API}/api/teacher/pastpaper/bulk-upload`, {
+        method: "POST",
+        body: fd
+      });
+
+      const data = await res.json().catch(async () => ({
+        error: (await res.text().catch(() => "")) || `HTTP ${res.status}`
+      }));
+
+      if (!res.ok || !data.ok) {
+        const detail = data.error || data.detail || `Upload failed (HTTP ${res.status})`;
+        console.error("Past-paper bulk upload failed:", res.status, data);
+        toast(detail, "error", 7000);
+        return;
+      }
+
+      const count = Number(data.indexed || 0);
+      toast(`✅ Auto-extraction complete: ${count} question${count === 1 ? "" : "s"} indexed.`, "success", 6000);
+
+      // Clear only the file inputs; keep the metadata so another paper can be uploaded.
+      ["bulkQpFile", "bulkMsFile", "bulkErFile"].forEach(id => {
+        const input = document.getElementById(id);
+        if (input) input.value = "";
+      });
+
+      // Refresh the hub so the new questions / linked-answer state are visible immediately.
+      await refreshPastPaperHub();
+    } catch (err) {
+      console.error("Network error during past-paper bulk upload:", err);
+      toast(`Network error during upload: ${err?.message || err}`, "error", 7000);
+    } finally {
+      btn.disabled = false;
+      btn.innerHTML = oldText;
+    }
+  });
+}
+
 async function deletePastPaperDoc(docId, filename = "this document") {
   if (!confirm(`Delete "${filename}" from the Past Paper document library?`)) return;
   const passcode = (typeof state !== "undefined" && state.passcode) || localStorage.getItem("ng_teacherPasscode") || "";
@@ -2903,4 +2996,5 @@ document.addEventListener('submit', (e) => {
   }
 });
 
+bindPastPaperBulkUpload();
 loadBranding();

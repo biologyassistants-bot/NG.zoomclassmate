@@ -2826,11 +2826,33 @@ def teacher_pp_config(body: TeacherAuth):
     sols = load_pp_json(PAST_PAPER_SOLUTIONS_PATH)
     pp_lib = load_pp_json(PAST_PAPER_LIB_PATH)
     
+    # --- Group solutions hierarchically: Course -> Exam -> Questions ---
+    library_tree = {}
+    for key, v in sols.items():
+        c = v.get("course", "Unassigned")
+        exam_id = f"{v.get('year', '')} {v.get('series', '')} Paper {v.get('paper', '')}".strip()
+        
+        if c not in library_tree:
+            library_tree[c] = {}
+        if exam_id not in library_tree[c]:
+            library_tree[c][exam_id] = []
+            
+        library_tree[c][exam_id].append({
+            "key": key,
+            "question": v.get("question", ""),
+            "qp_text": v.get("qp_text", ""),
+            "ms_text": v.get("ms_text", ""),
+            "examiner_notes": v.get("examiner_notes", ""),
+            "video_url": v.get("video_url", ""),
+            "answered_doc_id": v.get("answered_doc_id", "")
+        })
+
     return {
         "courses": sorted(list(courses)),
         "syllabi": load_pp_json(PAST_PAPER_CONFIG_PATH),
         "pp_library": [{"id": d["id"], "filename": d["filename"]} for d in pp_lib],
-        "solutions": [{"key": k, **v} for k, v in sols.items()]
+        "solutions_tree": library_tree,  # Grouped hierarchy
+        "solutions": [{"key": k, **v} for k, v in sols.items()] # Backward compatibility
     }
 
 @app.post("/api/teacher/pastpaper/doc/upload")

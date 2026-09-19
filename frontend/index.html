@@ -385,7 +385,7 @@
 
         <details style="background: var(--panel2); padding: 10px 14px; border-radius: 8px; border: 1px solid var(--line);">
           <summary style="font-weight: 700; font-size: 13px; cursor: pointer; color: var(--text);">📂 Manage Existing Uploaded Documents (<span id="docCountBadge">0</span>)</summary>
-          <div id="existingDocsContainer" style="margin-top: 10px; display: flex; flex-direction: column; gap: 8px;">
+          <div id="existingDocsContainer" style="margin-top: 10px; display: flex; flex-direction: column; gap: 8px; max-height: 320px; overflow-y: auto; padding-right: 4px;">
             <p class="meta" style="margin: 0;">Loading documents…</p>
           </div>
         </details>
@@ -427,7 +427,7 @@
 
         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 14px;">
           <label class="fld"><span>Video Walkthrough URL (Optional)</span><input id="bulkVideoUrl" type="url" placeholder="https://youtube.com/..." style="width: 100%; padding: 8px; border-radius: 8px; border: 1.5px solid var(--line);" /></label>
-          <label class="fld"><span>Link Model Answer Doc (Optional)</span><select id="bulkDocSelect" style="width: 100%; padding: 8px; border-radius: 8px; border: 1.5px solid var(--line);"></select></label>
+          <label class="fld"><span id="bulkDocLabel">Link Model Answer Doc (Optional)</span><div style="display:flex;flex-direction:column;gap:6px;"><input id="bulkDocSearch" type="search" placeholder="🔎 Search uploaded documents…" autocomplete="off" style="width:100%;padding:7px 9px;border-radius:8px;border:1.5px solid var(--line);box-sizing:border-box;" /><select id="bulkDocSelect" style="width: 100%; padding: 8px; border-radius: 8px; border: 1.5px solid var(--line);"></select></div></label>
         </div>
 
         <button id="processBulkBtn" class="primary" style="width: 100%; padding: 12px; font-weight: 800; font-size: 14px;">🚀 Upload &amp; Auto-Extract Exam Questions</button>

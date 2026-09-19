@@ -2831,30 +2831,89 @@ function renderTeacherOverrides(list) {
   if (!container) return;
   container.innerHTML = "";
 
-  if (!list.length) {
+  if (!list || !list.length) {
     container.innerHTML = '<p class="meta">No questions added to the library yet.</p>';
     return;
   }
 
+  // Group by Course -> Exam Pack (Year Series Paper)
+  const tree = {};
   list.forEach(item => {
-    const card = document.createElement("div");
-    card.className = "student-row";
-    card.innerHTML = `
-      <div>
-        <div style="font-weight:800; font-size:14px; color:var(--brand-d);">${escapeHtml(item.course)} · ${escapeHtml(item.year)} ${escapeHtml(item.series)} P${escapeHtml(item.paper)} Q${escapeHtml(item.question)}</div>
-        <div class="meta">${item.video_url ? `🎥 Video linked` : 'No video'} | ${item.answered_doc_name ? `📄 Doc: ${escapeHtml(item.answered_doc_name)}` : 'No doc'}</div>
-      </div>
-      <button class="ghost-sm danger-btn">🗑️ Delete</button>
-    `;
-    card.querySelector("button").addEventListener("click", async () => {
-      if (!confirm("Remove this question from the library?")) return;
-      await fetch(`${API}/api/teacher/pastpaper/solutions/delete`, {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ passcode: state.passcode, key: item.key })
+    const course = item.course || "Unassigned Course";
+    const examKey = `${item.year || ''} ${item.series || ''} Paper ${item.paper || ''}`.trim();
+    
+    if (!tree[course]) tree[course] = {};
+    if (!tree[course][examKey]) tree[course][examKey] = [];
+    tree[course][examKey].push(item);
+  });
+
+  // Render Course Groups
+  Object.keys(tree).sort().forEach(courseName => {
+    const courseCard = document.createElement("div");
+    courseCard.style.cssText = "background: var(--panel); border: 1.5px solid var(--line); border-radius: 12px; margin-bottom: 16px; overflow: hidden; box-shadow: var(--shadow-sm);";
+
+    let examBlocksHtml = "";
+    const examKeys = Object.keys(tree[courseName]).sort().reverse();
+
+    examKeys.forEach(examKey => {
+      const qItems = tree[courseName][examKey];
+      // Sort questions alphanumerically (Q1(a), Q1(b), Q2...)
+      qItems.sort((a,b) => String(a.question).localeCompare(String(b.question), undefined, {numeric: true}));
+
+      let qRows = "";
+      qItems.forEach(q => {
+        const hasEr = q.examiner_notes && q.examiner_notes.trim().length > 0;
+        qRows += `
+          <div style="display: flex; justify-content: space-between; align-items: center; padding: 8px 12px; background: var(--bg); border-radius: 8px; margin-top: 6px; font-size: 12.5px; border: 1px solid var(--line);">
+            <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+              <strong style="color: var(--brand-d); font-weight: 800;">Q${escapeHtml(q.question)}</strong>
+              ${hasEr ? '<span style="background: rgba(245,159,0,0.15); color: #d97706; font-size: 10.5px; font-weight: 700; padding: 1px 6px; border-radius: 4px;">📊 Examiner Report</span>' : ''}
+              ${q.video_url ? '<span style="font-size: 11px;">🎥 Video</span>' : ''}
+              ${q.answered_doc_name ? `<span style="font-size: 11px; color: var(--muted);">📄 ${escapeHtml(q.answered_doc_name)}</span>` : ''}
+            </div>
+            <button class="ghost-sm danger-btn" data-key="${escapeHtml(q.key)}" style="padding: 2px 8px; font-size: 11px;">🗑️ Delete</button>
+          </div>
+        `;
       });
-      loadTeacherPastPaperHub();
+
+      examBlocksHtml += `
+        <details style="margin-bottom: 10px; background: var(--panel2); border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px;" open>
+          <summary style="font-weight: 800; font-size: 13.5px; cursor: pointer; color: var(--text); display: flex; justify-content: space-between; align-items: center;">
+            <span>📄 Exam Pack: ${escapeHtml(examKey)}</span>
+            <span class="meta" style="font-weight: 700; font-size: 11.5px; background: var(--panel); padding: 2px 8px; border-radius: 12px;">${qItems.length} questions</span>
+          </summary>
+          <div style="margin-top: 8px; display: flex; flex-direction: column; gap: 4px;">
+            ${qRows}
+          </div>
+        </details>
+      `;
     });
-    container.appendChild(card);
+
+    courseCard.innerHTML = `
+      <div style="background: var(--brand); color: white; padding: 10px 16px; font-weight: 800; font-size: 14px; display: flex; justify-content: space-between; align-items: center;">
+        <span>📚 Course: ${escapeHtml(courseName)}</span>
+        <span style="font-size: 12px; font-weight: 600; opacity: 0.9;">${examKeys.length} Exam Paper(s)</span>
+      </div>
+      <div style="padding: 14px;">
+        ${examBlocksHtml}
+      </div>
+    `;
+
+    // Attach individual delete handlers
+    courseCard.querySelectorAll("button.danger-btn").forEach(btn => {
+      btn.addEventListener("click", async (e) => {
+        e.stopPropagation();
+        const key = btn.dataset.key;
+        if (!confirm("Delete this question from the library?")) return;
+        await fetch(`${API}/api/teacher/pastpaper/solutions/delete`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ passcode: state.passcode, key })
+        });
+        loadTeacherPastPaperHub();
+      });
+    });
+
+    container.appendChild(courseCard);
   });
 }
 

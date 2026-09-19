@@ -2855,34 +2855,89 @@ def teacher_pp_config(body: TeacherAuth):
         "solutions": [{"key": k, **v} for k, v in sols.items()] # Backward compatibility
     }
 
-@app.post("/api/teacher/pastpaper/doc/upload")
-async def teacher_pp_upload_doc(passcode: str = Form(...), file: UploadFile = File(...)):
-    """Uploads documents strictly to the Past Paper Library, not recording notes."""
-    if not check_teacher(passcode):
-        return JSONResponse({"error": "unauthorized"}, status_code=401)
-        
-    data = await file.read()
+@app.post("/api/teacher/pastpaper/upload-doc")
+async def teacher_pp_upload_doc(
+    passcode: str = Form(...),
+    course: str = Form(...),
+    file: UploadFile = File(...)
+):
+    if not check_passcode(passcode):
+        return JSONResponse({"error": "Unauthorized passcode."}, status_code=401)
+
     try:
-        text = extract_text_from_upload(data, file.filename or "exam_doc")
+        content = await file.read()
+        extracted_text = extract_text_from_upload(content, file.filename or "doc.pdf")
+        
+        doc_id = str(uuid.uuid4())[:8]
+        chunks = chunk_text(extracted_text)
+        
+        doc_data = {
+            "id": doc_id,
+            "filename": file.filename or "Uploaded Document",
+            "course": course.strip(),
+            "uploaded_at": str(datetime.date.today()),
+            "chunks": chunks
+        }
+        
+        docs = load_pp_json(PAST_PAPER_DOCS_PATH)
+        if not isinstance(docs, list):
+            docs = []
+        docs.append(doc_data)
+        save_pp_json(PAST_PAPER_DOCS_PATH, docs)
+        
+        return {"ok": True, "doc": {"id": doc_id, "filename": file.filename, "course": course.strip()}}
     except Exception as e:
-        return JSONResponse({"error": f"Failed to extract document: {e}"}, status_code=400)
+        return JSONResponse({"error": f"Failed to upload doc: {str(e)}"}, status_code=500)
 
-    chunks = chunk_note_text(text)
-    if not chunks:
-        return JSONResponse({"error": "No readable text found."}, status_code=422)
 
-    pp_lib = load_pp_json(PAST_PAPER_LIB_PATH)
-    doc_id = secrets.token_hex(6)
-    doc_entry = {
-        "id": doc_id,
-        "filename": file.filename or "exam_doc",
-        "chunks": chunks,
-        "chars": sum(len(c) for c in chunks)
-    }
-    pp_lib.append(doc_entry)
-    save_pp_json(PAST_PAPER_LIB_PATH, pp_lib)
+@app.get("/api/teacher/pastpaper/docs")
+async def teacher_pp_get_docs(passcode: str = "", course: str = ""):
+    if not check_passcode(passcode):
+        return JSONResponse({"error": "Unauthorized"}, status_code=401)
+    
+    docs = load_pp_json(PAST_PAPER_DOCS_PATH)
+    if not isinstance(docs, list):
+        docs = []
 
-    return {"ok": True, "doc": {"id": doc_id, "filename": doc_entry["filename"]}}
+    # Format list with id, filename, course
+    result = []
+    for d in docs:
+        doc_course = d.get("course", "")
+        # Filter if a specific course query param is requested
+        if course and doc_course and doc_course.lower() != course.lower():
+            continue
+        result.append({
+            "id": d.get("id"),
+            "filename": d.get("filename"),
+            "course": doc_course
+        })
+        
+    return {"docs": result}
+
+@app.post("/api/teacher/pastpaper/docs/update-course")
+async def update_doc_course(
+    passcode: str = Form(...),
+    doc_id: str = Form(...),
+    course: str = Form(...)
+):
+    if not check_passcode(passcode):
+        return JSONResponse({"error": "Unauthorized passcode."}, status_code=401)
+
+    docs = load_pp_json(PAST_PAPER_DOCS_PATH)
+    if not isinstance(docs, list):
+        docs = []
+
+    updated = False
+    for d in docs:
+        if d.get("id") == doc_id:
+            d["course"] = course.strip()
+            updated = True
+            break
+
+    if updated:
+        save_pp_json(PAST_PAPER_DOCS_PATH, docs)
+        return {"ok": True}
+    return JSONResponse({"error": "Document not found."}, status_code=404)
 
 @app.post("/api/teacher/pastpaper/config/save")
 def teacher_pp_save_syllabus(body: dict):

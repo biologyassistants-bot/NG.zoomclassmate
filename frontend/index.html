@@ -4,7 +4,7 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>NG-ClassMate · Classes made easier</title>
-<link rel="stylesheet" href="/style.css?v=2" />
+<link rel="stylesheet" href="./style.css?v=3" />
 </head>
 <body>
 <div id="app">
@@ -16,12 +16,12 @@
       <h1>NG-ClassMate</h1>
       <p class="tagline">Classes made easier</p>
       <div class="role-pick">
-        <button id="roleStudent" class="role-btn">
+        <button id="roleStudent" type="button" class="role-btn">
           <span class="role-emoji">🎒</span>
           <span class="role-t">I'm a student</span>
           <span class="role-d">Ask questions & take quizzes</span>
         </button>
-        <button id="roleTeacher" class="role-btn">
+        <button id="roleTeacher" type="button" class="role-btn">
           <span class="role-emoji">👩‍🏫</span>
           <span class="role-t">I'm the teacher</span>
           <span class="role-d">Manage recordings & see questions</span>
@@ -630,6 +630,63 @@
 
 </div>
 
-<script src="/app.js?v=281"></script>
+<script>
+// Deployment-safe fallback: the role buttons remain usable even when app.js
+// is delayed or fails to load. The normal app.js still supplies the full app.
+(function () {
+  function showPane(id) {
+    ["landing", "gate", "teacherGate", "main", "teacher"].forEach(function (name) {
+      var node = document.getElementById(name);
+      if (node) node.classList.add("hidden");
+    });
+    var target = document.getElementById(id);
+    if (target) target.classList.remove("hidden");
+  }
+  function bindFallback() {
+    var student = document.getElementById("roleStudent");
+    var teacher = document.getElementById("roleTeacher");
+    if (student && !student.dataset.fallbackBound) {
+      student.dataset.fallbackBound = "1";
+      student.type = "button";
+      student.addEventListener("click", function () {
+        showPane("gate");
+        var input = document.getElementById("emailInput");
+        if (input) input.focus();
+      });
+    }
+    if (teacher && !teacher.dataset.fallbackBound) {
+      teacher.dataset.fallbackBound = "1";
+      teacher.type = "button";
+      teacher.addEventListener("click", function () {
+        showPane("teacherGate");
+        var input = document.getElementById("passInput");
+        if (input) input.focus();
+      });
+    }
+    document.querySelectorAll("[data-back]").forEach(function (btn) {
+      if (btn.dataset.fallbackBound) return;
+      btn.dataset.fallbackBound = "1";
+      btn.type = "button";
+      btn.addEventListener("click", function () { showPane(btn.dataset.back); });
+    });
+  }
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", bindFallback);
+  } else {
+    bindFallback();
+  }
+  window.__NGClassMateFallbackReady = true;
+  window.setTimeout(function () {
+    if (window.__NGClassMateAppLoaded) return;
+    var msg = document.getElementById("toastMsg");
+    var toast = document.getElementById("toast");
+    if (msg && toast) {
+      msg.textContent = "The application script did not load. Deploy index.html and app.js together.";
+      toast.classList.remove("hidden");
+    }
+  }, 2500);
+})();
+</script>
+<script src="./app.js?v=283" onerror="(function(){var e=document.getElementById('toastMsg');var t=document.getElementById('toast');if(e&&t){e.textContent='Application script failed to load. Please deploy app.js beside index.html.';t.classList.remove('hidden');}})();"></script>
 </body>
 </html>

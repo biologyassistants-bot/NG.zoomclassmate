@@ -121,7 +121,19 @@ def _seed_data_dir():
 
 _seed_data_dir()
 
-FRONTEND_DIR = os.path.join(os.path.dirname(__file__), "..", "frontend")
+# Deployment-safe frontend discovery. Supports the original backend/frontend
+# layout, a root-level frontend folder, or a single-folder deployment where
+# index.html and app.js sit beside main.py.
+_BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+_FRONTEND_CANDIDATES = [
+    os.path.join(_BASE_DIR, "..", "frontend"),
+    os.path.join(_BASE_DIR, "frontend"),
+    _BASE_DIR,
+]
+FRONTEND_DIR = next(
+    (p for p in _FRONTEND_CANDIDATES if os.path.isfile(os.path.join(p, "index.html"))),
+    os.path.join(_BASE_DIR, "..", "frontend"),
+)
 DATA_PATH = os.path.join(DATA_DIR, "recordings.json")
 CONFIG_PATH = os.path.join(DATA_DIR, "config.json")
 QLOG_PATH = os.path.join(DATA_DIR, "question_log.json")
@@ -3133,8 +3145,10 @@ async def teacher_pp_bulk_upload(
     save_pp_json(PAST_PAPER_SOLUTIONS_PATH, sols)
     return {"ok": True, "indexed": len(indexed_labels), "questions": indexed_labels}
     
-if os.path.isdir(FRONTEND_DIR):
+if os.path.isdir(FRONTEND_DIR) and os.path.isfile(os.path.join(FRONTEND_DIR, "index.html")):
     @app.get("/")
     def index():
         return FileResponse(os.path.join(FRONTEND_DIR, "index.html"))
     app.mount("/", StaticFiles(directory=FRONTEND_DIR), name="static")
+else:
+    print(f"[startup warning] Frontend directory not found: {FRONTEND_DIR}")

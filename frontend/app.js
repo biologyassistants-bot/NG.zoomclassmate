@@ -1,3140 +1,3091 @@
-import json
-import os
-import re
-import math
-import io
-import base64
-import time
-import hashlib
-import hmac
-import gc
-import asyncio
-from collections import Counter
-from fastapi import FastAPI, UploadFile, File, Form, Request, Query, BackgroundTasks
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, FileResponse
-from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
-import secrets
-import bcrypt
-import uuid
-from datetime import date
+const API = "";
+let state = { 
+  name: "", 
+  recordings: [], 
+  current: null, 
+  passcode: "", 
+  token: "", 
+  role: "",
+  chatHistory: {},    // { recording_id: [{ role: 'user'|'bot', text: str }] }
+  flashcardDeck: [],  // [{ id, recording_id, front, back, interval, reps, dueDate }]
+  courseSyllabi: {}
+};
 
-# Data location.
-#   * Default: the repo's bundled ./data folder.
-#   * On a host with a persistent disk (e.g. Render Starter + a mounted disk),
-#     set DATA_DIR=/var/data so recordings, roster, config, question log and the
-#     uploaded logo survive restarts and redeploys.
-BUNDLED_DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
-DATA_DIR = os.environ.get("DATA_DIR", "").strip() or BUNDLED_DATA_DIR
+// Local tracking for student dashboard stats
+let studentStats = JSON.parse(localStorage.getItem('studentStats_NGClassMate') || '{"questions":0, "quizzes":0}');
 
+// Unique declaration for Study Plan
+let currentStudyPlan = null;
 
-def _clean_recordings_disk_file(file_path):
-    """Streams through recordings.json line-by-line to strip out heavy float
-    arrays directly on disk without consuming RAM, preventing 2GB+ boot crashes."""
-    if not os.path.exists(file_path):
-        return
-    if os.path.getsize(file_path) < 500 * 1024:
-        return
+// Global cache for teacher roster search
+let teacherStudentsCache = [];
 
-    tmp_path = file_path + ".clean.tmp"
-    try:
-        has_embeddings = False
-        with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
-            for line in f:
-                if '"embeddings"' in line:
-                    has_embeddings = True
-                    break
-        if not has_embeddings:
-            return
+function el(id) { return document.getElementById(id); }
+function escapeHtml(s) { return (s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;"); }
 
-        print(f"[startup] Sanitizing {file_path} to prevent memory exhaustion...")
-        with open(file_path, "r", encoding="utf-8", errors="ignore") as fin, \
-             open(tmp_path, "w", encoding="utf-8") as fout:
-            
-            skipping_embeddings = False
-            bracket_depth = 0
-            prev_line = None
+function show(sectionId) {
+  ["landing", "gate", "teacherGate", "main", "teacher"].forEach(s => {
+    const elem = el(s);
+    if (elem) elem.classList.add("hidden");
+  });
+  const target = el(sectionId);
+  if (target) target.classList.remove("hidden");
+}
 
-            for line in fin:
-                if not skipping_embeddings:
-                    if '"embeddings"' in line:
-                        if '[' in line:
-                            bracket_depth = line.count('[') - line.count(']')
-                            if bracket_depth > 0:
-                                skipping_embeddings = True
-                                continue
-                            else:
-                                continue
-                        else:
-                            skipping_embeddings = True
-                            bracket_depth = 0
-                            continue
-                    
-                    if prev_line is not None:
-                        stripped = line.strip()
-                        if (stripped.startswith("}") or stripped.startswith("]")) and prev_line.rstrip().endswith(","):
-                            prev_clean = prev_line.rstrip()[:-1] + "\n"
-                            fout.write(prev_clean)
-                        else:
-                            fout.write(prev_line)
-                    prev_line = line
-                else:
-                    bracket_depth += line.count('[') - line.count(']')
-                    if bracket_depth <= 0:
-                        skipping_embeddings = False
-                        continue
+// ---------- markdown-lite for bot answers ----------
+function renderBotText(text) {
+  let t = escapeHtml(text);
+  t = t.replace(/\(?\bat\s+(\d{1,2}:\d{2}(?::\d{2})?)\)?/g, '<span class="ts-chip">⏱ $1</span>');
+  t = t.replace(/\((\d{1,2}:\d{2}(?::\d{2})?)\)/g, '<span class="ts-chip">⏱ $1</span>');
+  t = t.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+  t = t.replace(/^#{1,6}\s*(.+)$/gm, "<h3>$1</h3>");
+  const lines = t.split("\n");
+  let html = "", inUl = false, inOl = false;
+  for (let line of lines) {
+    const ul = line.match(/^\s*[-*]\s+(.*)/);
+    const ol = line.match(/^\s*\d+\.\s+(.*)/);
+    if (ul) { if (!inUl) { html += "<ul>"; inUl = true; } if (inOl) { html += "</ol>"; inOl = false; } html += `<li>${ul[1]}</li>`; }
+    else if (ol) { if (!inOl) { html += "<ol>"; inUl = true; } if (inUl) { html += "</ul>"; inUl = false; } html += `<li>${ol[1]}</li>`; }
+    else { if (inUl) { html += "</ul>"; inUl = false; } if (inOl) { html += "</ol>"; inOl = false; } html += line + "\n"; }
+  }
+  if (inUl) html += "</ul>"; if (inOl) html += "</ol>";
+  return html;
+}
 
-            if prev_line is not None:
-                fout.write(prev_line)
+function saveStudentStats() {
+  localStorage.setItem('studentStats_NGClassMate', JSON.stringify(studentStats));
+  saveServerProfile(); 
+}
 
-        os.replace(tmp_path, file_path)
-        print(f"[startup] Cleaned {file_path}. Memory usage stabilized.")
-    except Exception as e:
-        print(f"[startup cleaner error]: {e}")
-        if os.path.exists(tmp_path):
-            try:
-                os.remove(tmp_path)
-            except Exception:
-                pass
-
-
-def _seed_data_dir():
-    """If DATA_DIR is a separate (persistent) location, copy any files that are
-    missing there from the bundled data folder. Never overwrites existing files,
-    so teacher edits made on the live disk are preserved across deploys."""
-    try:
-        if os.path.abspath(DATA_DIR) == os.path.abspath(BUNDLED_DATA_DIR):
-            return
-        os.makedirs(DATA_DIR, exist_ok=True)
-        if not os.path.isdir(BUNDLED_DATA_DIR):
-            return
-        import shutil
-        for name in os.listdir(BUNDLED_DATA_DIR):
-            src = os.path.join(BUNDLED_DATA_DIR, name)
-            dst = os.path.join(DATA_DIR, name)
-            if os.path.isfile(src) and not os.path.exists(dst):
-                shutil.copy2(src, dst)
-    except Exception as e:
-        print(f"[data] seed warning: {e}")
-
-
-_seed_data_dir()
-
-FRONTEND_DIR = os.path.join(os.path.dirname(__file__), "..", "frontend")
-DATA_PATH = os.path.join(DATA_DIR, "recordings.json")
-CONFIG_PATH = os.path.join(DATA_DIR, "config.json")
-QLOG_PATH = os.path.join(DATA_DIR, "question_log.json")
-ROSTER_PATH = os.path.join(DATA_DIR, "roster.json")
-NOTES_LIB_PATH = os.path.join(DATA_DIR, "notes_library.json")
-# in-memory active student sessions: token -> {student_id, name, courses}
-SESSIONS = {}
-
-# Clean heavy embeddings from persistent disk before loading into memory
-_clean_recordings_disk_file(DATA_PATH)
-
-
-# ---------- shared notes library ----------
-# Each note's text is stored ONCE here: {id, filename, chunks:[...], chars}.
-# A recording references shared notes by id via rec["note_ids"] = [id, ...].
-def load_notes_library():
-    if os.path.exists(NOTES_LIB_PATH):
-        with open(NOTES_LIB_PATH) as f:
-            return json.load(f)
-    return []
-
-
-def save_notes_library(lib):
-    with open(NOTES_LIB_PATH, "w") as f:
-        json.dump(lib, f, ensure_ascii=False, indent=2)
-
-
-def note_by_id(note_id, lib=None):
-    lib = lib if lib is not None else load_notes_library()
-    return next((n for n in lib if n["id"] == note_id), None)
-
-
-def load_roster():
-    if os.path.exists(ROSTER_PATH):
-        with open(ROSTER_PATH) as f:
-            return json.load(f)
-    return []
-
-
-def save_roster(roster):
-    with open(ROSTER_PATH, "w") as f:
-        json.dump(roster, f, ensure_ascii=False, indent=2)
-
-
-def gen_pin():
-    return f"{secrets.randbelow(10000):04d}"
-
-
-def hash_pw(pw: str) -> str:
-    # bcrypt only accepts up to 72 bytes; truncate defensively.
-    pw_bytes = (pw or "").encode("utf-8")[:72]
-    return bcrypt.hashpw(pw_bytes, bcrypt.gensalt()).decode("utf-8")
-
-
-def verify_pw(pw: str, hashed: str) -> bool:
-    if not hashed:
-        return False
-    try:
-        pw_bytes = (pw or "").encode("utf-8")[:72]
-        return bcrypt.checkpw(pw_bytes, hashed.encode("utf-8"))
-    except Exception:
-        return False
-
-
-# default teacher passcode; teacher can change it in the dashboard
-DEFAULT_PASSCODE = "teach123"
-
-
-def load_config():
-    if os.path.exists(CONFIG_PATH):
-        with open(CONFIG_PATH) as f:
-            return json.load(f)
-    cfg = {"passcode": DEFAULT_PASSCODE}
-    with open(CONFIG_PATH, "w") as f:
-        json.dump(cfg, f, ensure_ascii=False, indent=2)
-    return cfg
-
-
-def save_config(cfg):
-    with open(CONFIG_PATH, "w") as f:
-        json.dump(cfg, f, ensure_ascii=False, indent=2)
-
-
-def load_qlog():
-    if os.path.exists(QLOG_PATH):
-        with open(QLOG_PATH) as f:
-            return json.load(f)
-    return []
-
-
-def save_qlog(log):
-    with open(QLOG_PATH, "w") as f:
-        json.dump(log, f, ensure_ascii=False, indent=2)
-
-
-def save_recordings(recs):
-    clean_recs = []
-    for r in recs:
-        r_copy = dict(r)
-        r_copy.pop("embeddings", None)
-        clean_recs.append(r_copy)
-    with open(DATA_PATH, "w", encoding="utf-8") as f:
-        json.dump(clean_recs, f, ensure_ascii=False, indent=2)
-
-
-def load_recordings():
-    if os.path.exists(DATA_PATH):
-        try:
-            with open(DATA_PATH, "r", encoding="utf-8") as f:
-                recs = json.load(f)
-                for r in recs:
-                    r.pop("embeddings", None)
-                return recs
-        except Exception as e:
-            print(f"[recordings] primary load error: {e}")
-            try:
-                bundled_path = os.path.join(BUNDLED_DATA_DIR, "recordings.json")
-                if os.path.exists(bundled_path) and os.path.abspath(bundled_path) != os.path.abspath(DATA_PATH):
-                    with open(bundled_path, "r", encoding="utf-8") as bf:
-                        return json.load(bf)
-            except Exception:
-                pass
-    return []
-
-
-RECORDINGS = load_recordings()
-REC_BY_ID = {r["id"]: r for r in RECORDINGS}
-
-
-app = FastAPI(title="ClassMate API")
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-
-# ---------------------------------------------------------------------------
-# OpenAI key diagnostic endpoint
-# ---------------------------------------------------------------------------
-def _diag_mask(key: str) -> str:
-    if not key:
-        return ""
-    if len(key) <= 10:
-        return key[:2] + "*" * (len(key) - 2)
-    return key[:5] + "..." + key[-4:]
-
-
-@app.get("/api/diag/openai")
-async def diag_openai():
-    key = os.environ.get("OPENAI_API_KEY", "").strip()
-    model = os.environ.get("OPENAI_MODEL", "gpt-4o-mini").strip()
-    base = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1").strip()
-    report = {
-        "env_var_present": bool(key),
-        "key_length": len(key),
-        "key_masked_preview": _diag_mask(key),
-        "model": model,
-        "base_url": base,
+// ---------- Cross-Device Sync Helpers ----------
+async function fetchServerProfile() {
+  if (!state.token) return;
+  try {
+    const res = await fetch(`${API}/api/student/profile`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token: state.token })
+    });
+    const data = await res.json();
+    if (res.ok) {
+      if (data.study_plan !== undefined && data.study_plan !== null) {
+        currentStudyPlan = data.study_plan;
+      }
+      if (data.student_stats) {
+        studentStats = data.student_stats;
+        localStorage.setItem('studentStats_NGClassMate', JSON.stringify(studentStats));
+      }
+      if (data.chat_history) {
+        state.chatHistory = data.chat_history;
+      }
+      if (data.flashcard_deck) {
+        state.flashcardDeck = data.flashcard_deck;
+      }
+      updateAlertBadge();
     }
-    if not key:
-        report["ok"] = False
-        report["message"] = (
-            "OPENAI_API_KEY is NOT set (or empty) on this server. Add it under "
-            "Render -> Environment and redeploy."
-        )
-        return JSONResponse(status_code=200, content=report)
+  } catch (e) {}
+}
 
-    import httpx
-    try:
-        timeout = httpx.Timeout(30.0, connect=10.0)
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            resp = await client.post(
-                f"{base}/chat/completions",
-                headers={"Authorization": f"Bearer {key}"},
-                json={"model": model,
-                      "messages": [{"role": "user", "content": "ping"}],
-                      "max_tokens": 1},
-            )
-    except httpx.RequestError as e:
-        report["ok"] = False
-        report["message"] = (f"Network error reaching {base}: {e}. On Render free "
-                             "tier this can be a cold-start timeout; retry once warm.")
-        return JSONResponse(status_code=200, content=report)
+async function saveServerProfile() {
+  if (!state.token) return;
+  try {
+    await fetch(`${API}/api/student/sync`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ 
+        token: state.token, 
+        study_plan: currentStudyPlan, 
+        student_stats: studentStats,
+        chat_history: state.chatHistory,
+        flashcard_deck: state.flashcardDeck
+      })
+    });
+    updateAlertBadge();
+  } catch (e) {}
+}
 
-    if resp.status_code >= 400:
-        detail = ""
-        try:
-            detail = resp.json().get("error", {}).get("message", "")
-        except Exception:
-            detail = resp.text[:200]
-        report["ok"] = False
-        report["provider_status"] = resp.status_code
-        low = (detail or "").lower()
-        if resp.status_code == 401 or "incorrect api key" in low or "invalid" in low:
-            report["message"] = ("Key REJECTED (invalid/incorrect). Re-copy from "
-                                 "platform.openai.com and update OPENAI_API_KEY, then redeploy.")
-        elif resp.status_code == 429 or "quota" in low or "billing" in low:
-            report["message"] = ("Key valid but NO CREDIT / rate-limited. Add "
-                                 "billing/credits to the OpenAI account.")
-        elif resp.status_code == 404 or ("model" in low and "not" in low):
-            report["message"] = ("Key works but the model isn't available to this "
-                                 "account. Set OPENAI_MODEL to one you can use.")
-        else:
-            report["message"] = f"Provider returned {resp.status_code}: {detail[:200]}"
-        return JSONResponse(status_code=200, content=report)
+// ---------- Safe Auto-Login Check on Refresh ----------
+document.addEventListener("DOMContentLoaded", () => {
+  try {
+    const savedStudentToken = localStorage.getItem("ng_studentToken");
+    const savedStudentName = localStorage.getItem("ng_studentName");
+    const savedTeacherPasscode = localStorage.getItem("ng_teacherPasscode");
 
-    report["ok"] = True
-    report["provider_status"] = resp.status_code
-    report["message"] = "OPENAI_API_KEY is set AND the API call succeeded. The key is working."
-    return JSONResponse(status_code=200, content=report)
-
-
-def _migrate_inline_notes_to_library():
-    """One-time migration: older data stored notes inline on each recording as
-    rec['notes'] = [{id, filename, chunks}]. Move them into the shared library and
-    replace with rec['note_ids'] = [id,...]. Safe to run every startup (idempotent)."""
-    lib = load_notes_library()
-    lib_ids = {n["id"] for n in lib}
-    changed_lib = False
-    changed_recs = False
-    for r in RECORDINGS:
-        inline = r.get("notes")
-        if inline:
-            ids = list(r.get("note_ids") or [])
-            for n in inline:
-                nid = n.get("id") or secrets.token_hex(6)
-                if nid not in lib_ids:
-                    lib.append({"id": nid, "filename": n.get("filename") or "notes",
-                                "chunks": n.get("chunks", []),
-                                "chars": sum(len(c) for c in n.get("chunks", []))})
-                    lib_ids.add(nid); changed_lib = True
-                if nid not in ids:
-                    ids.append(nid)
-            r["note_ids"] = ids
-            r.pop("notes", None)
-            changed_recs = True
-        elif r.get("note_ids") is None:
-            r["note_ids"] = []
-    if changed_lib:
-        save_notes_library(lib)
-    if changed_recs:
-        save_recordings(RECORDINGS)
-
-
-_migrate_inline_notes_to_library()
-
-
-def fmt_ts(t):
-    """Format a transcript start_time (which may be 'HH:MM:SS' or seconds) as mm:ss / h:mm:ss."""
-    if t is None:
-        return "?"
-    s = str(t)
-    if ":" in s:
-        return s.split(".")[0]
-    try:
-        sec = float(s)
-    except ValueError:
-        return s
-    sec = int(sec)
-    h = sec // 3600
-    m = (sec % 3600) // 60
-    ss = sec % 60
-    if h:
-        return f"{h}:{m:02d}:{ss:02d}"
-    return f"{m}:{ss:02d}"
-
-
-_word_re = re.compile(r"[A-Za-z0-9\u00c0-\u024f\u0400-\u04ff\u0600-\u06ff]+")
-
-def tokenize(text):
-    return [w.lower() for w in _word_re.findall(text or "")]
-
-
-# ---------- semantic retrieval (OpenAI Embeddings) ----------
-async def get_embedding(text: str) -> list[float]:
-    """Fetch a single embedding vector for the student's query."""
-    import httpx
-    async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.post(
-            f"{OPENAI_BASE_URL}/embeddings",
-            headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
-            json={"input": text, "model": "text-embedding-3-small"}
-        )
-        resp.raise_for_status()
-        return resp.json()["data"][0]["embedding"]
-
-
-def cosine_similarity(v1, v2):
-    """Calculate how closely related two pieces of text are."""
-    dot = sum(a * b for a, b in zip(v1, v2))
-    mag = math.sqrt(sum(a * a for a in v1)) * math.sqrt(sum(b * b for b in v2))
-    return dot / mag if mag else 0.0
-
-
-async def build_index_async(rec):
-    """Fetch embeddings for the entire transcript and cache them in-memory only."""
-    if "embeddings" in rec and rec["embeddings"]:
-        return rec["embeddings"]
-        
-    segs = rec.get("segments", [])
-    texts = [s.get("text", "") for s in segs]
-    if not texts:
-        return []
-    
-    import httpx
-    embeddings = []
-    batch_size = 500
-    
-    async with httpx.AsyncClient(timeout=60) as client:
-        for i in range(0, len(texts), batch_size):
-            batch = texts[i:i + batch_size]
-            resp = await client.post(
-                f"{OPENAI_BASE_URL}/embeddings",
-                headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
-                json={"input": batch, "model": "text-embedding-3-small"}
-            )
-            resp.raise_for_status()
-            data = resp.json().get("data", [])
-            embeddings.extend([d["embedding"] for d in sorted(data, key=lambda x: x["index"])])
-            
-    rec["embeddings"] = embeddings
-    return embeddings
-
-
-async def retrieve(rec, query, k=15, window=1):
-    """Find the most relevant transcript segments using semantic similarity."""
-    segs = rec.get("segments", [])
-    if not segs: 
-        return []
-    
-    doc_embeddings = await build_index_async(rec)
-    q_embedding = await get_embedding(query)
-    
-    scores = [cosine_similarity(q_embedding, doc_emb) for doc_emb in doc_embeddings]
-    ranked = sorted(range(len(segs)), key=lambda i: scores[i], reverse=True)
-    top = [i for i in ranked if scores[i] > 0.3][:k] 
-    
-    if not top:
-        step = max(1, len(segs) // 30)
-        top = list(range(0, len(segs), step))[:30]
-        
-    chosen = set()
-    for i in top:
-        for j in range(max(0, i - window), min(len(segs), i + window + 1)):
-            chosen.add(j)
-    return sorted(chosen)
-
-
-# ---------- teacher notes: extraction + retrieval ----------
-def extract_text_from_upload(data: bytes, filename: str) -> str:
-    """Extract plain text from an uploaded PDF / DOCX / TXT file (server-side only)."""
-    name = (filename or "").lower()
-    if name.endswith(".txt") or name.endswith(".md"):
-        for enc in ("utf-8", "utf-16", "latin-1"):
-            try:
-                return data.decode(enc)
-            except Exception:
-                continue
-        return data.decode("utf-8", "replace")
-    if name.endswith(".pdf"):
-        from pypdf import PdfReader
-        reader = PdfReader(io.BytesIO(data))
-        return "\n".join((page.extract_text() or "") for page in reader.pages)
-    if name.endswith(".docx"):
-        import docx
-        doc = docx.Document(io.BytesIO(data))
-        return "\n".join(p.text for p in doc.paragraphs)
-    raise ValueError("Unsupported file type. Please upload a PDF, DOCX, TXT or MD file.")
-
-
-def chunk_note_text(text: str, target_chars=700):
-    """Split note text into paragraph-ish chunks for retrieval."""
-    text = re.sub(r"\r\n?", "\n", text or "")
-    paras = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
-    chunks = []
-    buf = ""
-    for p in paras:
-        if len(buf) + len(p) + 1 <= target_chars:
-            buf = f"{buf}\n{p}".strip()
-        else:
-            if buf:
-                chunks.append(buf)
-            while len(p) > target_chars:
-                chunks.append(p[:target_chars])
-                p = p[target_chars:]
-            buf = p
-    if buf:
-        chunks.append(buf)
-    return [c for c in chunks if c.strip()]
-
-
-def retrieve_note_chunks(rec, query, k=4):
-    """Return the top-k most relevant note chunks for the query."""
-    lib = load_notes_library()
-    notes = [note_by_id(nid, lib) for nid in (rec.get("note_ids") or [])]
-    notes = [n for n in notes if n]
-    entries = []
-    for note in notes:
-        for ch in note.get("chunks", []):
-            entries.append((note.get("filename") or "notes", ch))
-    if not entries:
-        return []
-    docs = [tokenize(t) for (_, t) in entries]
-    df = Counter()
-    for d in docs:
-        for w in set(d):
-            df[w] += 1
-    N = len(docs) or 1
-    idf = {w: math.log(1 + N / c) for w, c in df.items()}
-    q = Counter(tokenize(query))
-    scores = []
-    for d in docs:
-        if not d:
-            scores.append(0.0); continue
-        tf = Counter(d)
-        s = 0.0
-        for w, qc in q.items():
-            if w in tf:
-                s += idf.get(w, 0.0) * (tf[w] / len(d)) * qc
-        scores.append(s)
-    ranked = sorted(range(len(entries)), key=lambda i: scores[i], reverse=True)
-    chosen = [i for i in ranked if scores[i] > 0][:k]
-    if not chosen:
-        chosen = list(range(min(2, len(entries))))
-    return [{"note_title": entries[i][0], "text": entries[i][1]} for i in chosen]
-
-
-def notes_context(rec, query, max_chars=8000):
-    """Build a labeled notes context block for the LLM prompt."""
-    chunks = retrieve_note_chunks(rec, query)
-    if not chunks:
-        return ""
-    out, total = [], 0
-    for c in chunks:
-        block = f'[NOTE: {c["note_title"]}] {c["text"].strip()}'
-        if total + len(block) > max_chars:
-            break
-        out.append(block)
-        total += len(block)
-    return "\n\n".join(out)
-
-
-def context_from_indices(rec, indices, max_chars=18000):
-    """Optimized context length (18k chars) to prevent 429 Token-Per-Minute rate limits."""
-    segs = rec.get("segments", [])
-    lines = []
-    total = 0
-    for i in indices:
-        s = segs[i]
-        ts = fmt_ts(s.get("start"))
-        spk = s.get("speaker") or ""
-        prefix = f"[{ts}]" + (f" {spk}:" if spk else "")
-        line = f"{prefix} {s.get('text','').strip()}"
-        if total + len(line) > max_chars:
-            break
-        lines.append(line)
-        total += len(line)
-    return "\n".join(lines)
-
-
-# ---------- LLM helper with Exponential Backoff Retries on 429 ----------
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "").strip()
-OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o-mini").strip()
-OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1").strip()
-
-
-class LLMConfigError(Exception):
-    pass
-
-
-class LLMUpstreamError(Exception):
-    pass
-
-
-async def llm(messages, max_tokens=1200, temperature=0.1, max_retries=4):
-    if OPENAI_API_KEY:
-        import httpx
-        timeout = httpx.Timeout(90.0, connect=10.0)
-        
-        for attempt in range(max_retries):
-            try:
-                async with httpx.AsyncClient(timeout=timeout) as client:
-                    resp = await client.post(
-                        f"{OPENAI_BASE_URL}/chat/completions",
-                        headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
-                        json={
-                            "model": OPENAI_MODEL,
-                            "messages": messages,
-                            "temperature": temperature,
-                            "max_tokens": max_tokens,
-                        },
-                    )
-                
-                # If rate limited (429), automatically wait and retry
-                if resp.status_code == 429 and attempt < max_retries - 1:
-                    wait_time = 1.5 * (attempt + 1)
-                    print(f"[OpenAI 429 Rate Limit] Retrying in {wait_time}s (attempt {attempt + 1}/{max_retries})...")
-                    await asyncio.sleep(wait_time)
-                    continue
-
-                if resp.status_code >= 400:
-                    detail = ""
-                    try:
-                        detail = resp.json().get("error", {}).get("message", "")
-                    except Exception:
-                        detail = resp.text[:300]
-                    raise LLMUpstreamError(f"AI provider returned {resp.status_code}: {detail or 'unknown error'}")
-
-                try:
-                    return resp.json()["choices"][0]["message"]["content"]
-                except Exception as e:
-                    raise LLMUpstreamError(f"Unexpected AI response shape: {e}") from e
-
-            except httpx.RequestError as e:
-                if attempt == max_retries - 1:
-                    raise LLMUpstreamError(f"Could not reach AI provider: {e}") from e
-                await asyncio.sleep(1.0 * (attempt + 1))
-
-    raise LLMConfigError("The AI features are not configured on this server. Set OPENAI_API_KEY.")
-
-
-OPENAI_TRANSCRIBE_MODEL = os.environ.get("OPENAI_TRANSCRIBE_MODEL", "whisper-1").strip()
-WHISPER_MAX_BYTES = 25 * 1000 * 1000
-_CHUNK_SAFETY_BYTES = 24 * 1000 * 1000
-
-
-def _have_ffmpeg():
-    import shutil
-    return shutil.which("ffmpeg") is not None and shutil.which("ffprobe") is not None
-
-
-def _ffprobe_duration(path):
-    import subprocess
-    try:
-        out = subprocess.run(
-            ["ffprobe", "-v", "quiet", "-show_entries", "format=duration",
-             "-of", "default=noprint_wrappers=1:nokey=1", path],
-            capture_output=True, text=True, timeout=120,
-        )
-        return float((out.stdout or "0").strip() or 0.0)
-    except Exception:
-        return 0.0
-
-
-def _ffmpeg_to_mp3(src_path, dst_path, start=None, duration=None, bitrate="48k"):
-    import subprocess
-    cmd = ["ffmpeg", "-y", "-v", "quiet"]
-    if start is not None:
-        cmd += ["-ss", str(start)]
-    cmd += ["-i", src_path]
-    if duration is not None:
-        cmd += ["-t", str(duration)]
-    cmd += ["-ac", "1", "-ar", "16000", "-b:a", bitrate, dst_path]
-    subprocess.run(cmd, check=True, timeout=1800)
-
-
-def _fmt_seconds_to_ts(seconds):
-    try:
-        seconds = float(seconds)
-    except (TypeError, ValueError):
-        seconds = 0.0
-    if seconds < 0:
-        seconds = 0.0
-    ms = int(round((seconds - int(seconds)) * 1000))
-    total = int(seconds)
-    h = total // 3600
-    m = (total % 3600) // 60
-    s = total % 60
-    return f"{h:02d}:{m:02d}:{s:02d}.{ms:03d}"
-
-
-async def transcribe_audio_bytes(audio_bytes, filename="audio.m4a", time_offset=0.0):
-    if not OPENAI_API_KEY:
-        raise LLMConfigError("Transcription needs OPENAI_API_KEY set on this server.")
-    import httpx
-    timeout = httpx.Timeout(600.0, connect=15.0)
-    files = {"file": (filename, audio_bytes, "application/octet-stream")}
-    english_only = os.environ.get("TRANSCRIBE_ENGLISH_ONLY", "1").strip() != "0"
-    endpoint = "/audio/translations" if english_only else "/audio/transcriptions"
-    data = {
-        "model": OPENAI_TRANSCRIBE_MODEL,
-        "response_format": "verbose_json",
-        "timestamp_granularities[]": "segment",
+    if (savedTeacherPasscode) {
+      teacherLogin(savedTeacherPasscode);
+    } else if (savedStudentToken) {
+      state.token = savedStudentToken;
+      state.name = savedStudentName || "Student";
+      
+      if(el("whoName")) el("whoName").textContent = state.name;
+      if(el("dashName")) el("dashName").textContent = state.name;
+      
+      show("main");
+      fetchServerProfile().then(() => {
+        loadRecordings().then(() => {
+          switchStudentTab("Dash");
+        }).catch(() => {
+          signOut();
+        });
+      });
     }
-    if not english_only:
-        data["language"] = os.environ.get("TRANSCRIBE_LANGUAGE", "").strip() or None
-        data = {k: v for k, v in data.items() if v is not None}
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        resp = await client.post(
-            f"{OPENAI_BASE_URL}{endpoint}",
-            headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
-            data=data,
-            files=files,
-        )
-    resp.raise_for_status()
-    payload = resp.json()
-    segments = []
-    for seg in payload.get("segments", []) or []:
-        text = (seg.get("text") or "").strip()
-        if not text:
-            continue
-        segments.append({
-            "start": _fmt_seconds_to_ts(float(seg.get("start", 0)) + time_offset),
-            "speaker": "",
-            "text": text,
+  } catch (e) {
+    signOut();
+  }
+});
+
+// ---------- landing / role nav ----------
+if(el("roleStudent")) el("roleStudent").addEventListener("click", () => { show("gate"); if(el("emailInput")) el("emailInput").focus(); });
+if(el("roleTeacher")) el("roleTeacher").addEventListener("click", () => { show("teacherGate"); if(el("passInput")) el("passInput").focus(); });
+document.querySelectorAll("[data-back]").forEach(b => b.addEventListener("click", () => show(b.dataset.back)));
+
+// ---------- student gate ----------
+async function enter() {
+  const email = el("emailInput").value.trim();
+  const password = el("passwordInput").value;
+  const errEl = el("studentErr");
+  if(errEl) errEl.classList.add("hidden");
+  if (!email || !password) { if(errEl) { errEl.textContent = "Please enter your email and password."; errEl.classList.remove("hidden"); } return; }
+  try {
+    const res = await fetch(`${API}/api/student/login`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email, password })
+    });
+    const data = await res.json();
+    if (!res.ok || !data.ok) { if(errEl) { errEl.textContent = data.error || "Login failed."; errEl.classList.remove("hidden"); } return; }
+    
+    state.name = data.name;
+    state.token = data.token;
+    
+    localStorage.setItem("ng_studentToken", data.token);
+    localStorage.setItem("ng_studentName", data.name);
+    
+    if(el("whoName")) el("whoName").textContent = data.name;
+    if(el("dashName")) el("dashName").textContent = data.name;
+    
+    if(el("passwordInput")) el("passwordInput").value = "";
+    show("main");
+    await fetchServerProfile();
+    await loadRecordings();
+    switchStudentTab("Dash");
+  } catch (e) {
+    if(errEl) {
+      errEl.textContent = "Couldn't reach the server. Try again.";
+      errEl.classList.remove("hidden");
+    }
+  }
+}
+if(el("enterBtn")) el("enterBtn").addEventListener("click", enter);
+if(el("emailInput")) el("emailInput").addEventListener("keydown", e => { if (e.key === "Enter" && el("passwordInput")) el("passwordInput").focus(); });
+if(el("passwordInput")) el("passwordInput").addEventListener("keydown", e => { if (e.key === "Enter") enter(); });
+
+// ---------- teacher gate ----------
+async function teacherLogin(passcodeOverride = null) {
+  const btn = el("passBtn");
+  const errEl = el("passErr");
+  const passInputEl = el("passInput");
+  
+  const p = passcodeOverride || (passInputEl ? passInputEl.value.trim() : "");
+  
+  if (!p) { 
+    if(errEl) {
+      errEl.textContent = "Please type your passcode."; 
+      errEl.classList.remove("hidden"); 
+    }
+    return; 
+  }
+
+  if(btn) {
+    btn.disabled = true;
+    btn.textContent = "Connecting…";
+  }
+  if(errEl) errEl.classList.add("hidden");
+
+  try {
+    const res = await fetch(`${API}/api/teacher/login`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ passcode: p })
+    });
+    let data = {};
+    try { data = await res.json(); } catch (e) {}
+    
+    if (res.ok && data.ok) {
+      state.passcode = p;
+      localStorage.setItem("ng_teacherPasscode", p);
+      
+      if(errEl) errEl.classList.add("hidden");
+      show("teacher");
+      loadTeacherRecordings();
+      loadStats();
+    } else {
+      if (passcodeOverride) localStorage.removeItem("ng_teacherPasscode");
+      
+      if(errEl) {
+        errEl.textContent = res.status === 401 ? "Wrong passcode. The default is teach123." : `Login failed (${res.status}).`;
+        errEl.classList.remove("hidden");
+      }
+    }
+  } catch (e) {
+    if(errEl) {
+      errEl.textContent = "Couldn't reach the server. Try again.";
+      errEl.classList.remove("hidden");
+    }
+  } finally {
+    if(btn) {
+      btn.disabled = false;
+      btn.textContent = "Unlock →";
+    }
+  }
+}
+if(el("passBtn")) el("passBtn").addEventListener("click", () => teacherLogin());
+if(el("passInput")) el("passInput").addEventListener("keydown", e => { if (e.key === "Enter") teacherLogin(); });
+
+// ================= STUDENT TABS & DASHBOARD =================
+const studentTabs = ["Dash", "Tutor", "Planner", "PastPapers", "Alerts"];
+
+studentTabs.forEach(t => {
+  const btn = el(`tabStudent${t}`);
+  if (btn) {
+    btn.addEventListener("click", () => switchStudentTab(t));
+  }
+});
+
+function switchStudentTab(name) {
+  studentTabs.forEach(t => {
+    if(el(`tabStudent${t}`)) el(`tabStudent${t}`).classList.toggle("active", t === name);
+    if(el(`student${t}Pane`)) el(`student${t}Pane`).classList.toggle("hidden", t !== name);
+  });
+
+  if (name === "Dash") renderStudentDashboard();
+  if (name === "Planner") {
+    if (state.recordings.length === 0) {
+      loadRecordings().then(() => initPlanner());
+    } else {
+      initPlanner();
+    }
+  }
+  if (name === "PastPapers" && typeof initStudentPastPapers === "function") {
+    initStudentPastPapers();
+  }
+  if (name === "Alerts") {
+    renderAlerts();
+  }
+}
+
+function calculatePlanProgress() {
+  if (!currentStudyPlan) return 0;
+  let tot = 0, comp = 0;
+  currentStudyPlan.forEach(d => {
+    d.tasks.forEach(t => { tot++; if(t.completed) comp++; });
+  });
+  return tot === 0 ? 0 : Math.round((comp/tot)*100);
+}
+
+function updateAlertBadge() {
+  const badge = el("navAlertBadge");
+  if (!badge) return;
+  const now = new Date();
+  const dueCardsCount = (state.flashcardDeck || []).filter(c => new Date(c.dueDate) <= now).length;
+  if (dueCardsCount > 0) {
+    badge.textContent = dueCardsCount;
+    badge.classList.remove("hidden");
+  } else {
+    badge.classList.add("hidden");
+  }
+}
+
+function getStudentWeakSpots() {
+  const spots = [];
+  const now = new Date();
+
+  // 1. Identify topics from flashcards with low intervals or overdue reviews
+  const failedRecCounts = {};
+  (state.flashcardDeck || []).forEach(c => {
+    if (c.interval <= 1 || new Date(c.dueDate) <= now) {
+      failedRecCounts[c.recording_id] = (failedRecCounts[c.recording_id] || 0) + 1;
+    }
+  });
+
+  Object.entries(failedRecCounts).forEach(([recId, count]) => {
+    const rec = state.recordings.find(r => r.id === recId);
+    if (rec) {
+      spots.push({
+        label: `${rec.title} (${count} cards struggling)`,
+        badge: rec.unit || "Review",
+        color: "danger"
+      });
+    }
+  });
+
+  // 2. Identify topics from active chat history where the student asked multiple questions
+  if (state.chatHistory) {
+    Object.entries(state.chatHistory).forEach(([recId, messages]) => {
+      const qCount = messages.filter(m => m.role === "user").length;
+      if (qCount >= 3) {
+        const rec = state.recordings.find(r => r.id === recId);
+        if (rec && !spots.some(s => s.label.startsWith(rec.title))) {
+          spots.push({
+            label: `${rec.title} (${qCount} doubts raised)`,
+            badge: rec.unit || "Doubts",
+            color: "warning"
+          });
+        }
+      }
+    });
+  }
+
+  // 3. Identify incomplete study plan tasks
+  if (currentStudyPlan) {
+    currentStudyPlan.forEach(day => {
+      (day.tasks || []).forEach(t => {
+        if (!t.completed && spots.length < 4) {
+          spots.push({
+            label: t.title,
+            badge: `Day ${day.day} Plan`,
+            color: "warning"
+          });
+        }
+      });
+    });
+  }
+
+  // 4. Fallback for new students: pull the latest classes from their enrolled courses
+  if (spots.length === 0 && state.recordings.length > 0) {
+    state.recordings.slice(0, 3).forEach(r => {
+      spots.push({
+        label: r.title,
+        badge: r.unit || "Recommended",
+        color: "info"
+      });
+    });
+  }
+
+  return spots;
+}
+
+function renderStudentDashboard() {
+  const planPct = calculatePlanProgress();
+  const statsBar = el("studentStatsBar");
+  if (!statsBar) return;
+
+  const courses = new Set(state.recordings.map(r => r.unit || "Unassigned"));
+  const now = new Date();
+  const dueCardsCount = (state.flashcardDeck || []).filter(c => new Date(c.dueDate) <= now).length;
+
+  const cards = [
+    { label: "Enrolled Courses", value: courses.size },
+    { label: "Classes Available", value: state.recordings.length },
+    { label: "Flashcards Due", value: dueCardsCount, sub: dueCardsCount > 0 ? "Review to prevent decay ⚠️" : "All caught up ✓" },
+    { label: "Study Plan Progress", value: `${planPct}%`, sub: planPct === 100 ? "Completed! 🎉" : (currentStudyPlan ? "In progress" : "No active plan") },
+    { label: "AI Questions Asked", value: studentStats.questions }
+  ];
+
+  let html = cards.map(c =>
+    `<div class="stat-card">
+      <div class="stat-value">${escapeHtml(String(c.value))}</div>
+      <div class="stat-label">${escapeHtml(c.label)}</div>
+      ${c.sub ? `<div class="stat-sub">${escapeHtml(c.sub)}</div>` : ''}
+    </div>`
+  ).join("");
+
+  const weakSpots = getStudentWeakSpots();
+  let chipsHtml = "";
+
+  if (weakSpots.length === 0) {
+    chipsHtml = '<span class="meta">No weak spots identified yet. Ask questions, complete quizzes, or build a study plan to see recommendations.</span>';
+  } else {
+    chipsHtml = weakSpots.map(s => {
+      const isDanger = s.color === "danger";
+      const isWarn = s.color === "warning";
+      const bg = isDanger ? "rgba(255,107,107,0.1)" : isWarn ? "rgba(245,159,0,0.1)" : "rgba(11,191,191,0.1)";
+      const color = isDanger ? "#e03131" : isWarn ? "#f59f00" : "var(--brand-d)";
+      const border = isDanger ? "rgba(255,107,107,0.3)" : isWarn ? "rgba(245,159,0,0.3)" : "rgba(11,191,191,0.3)";
+
+      return `<span class="course-chip" style="background: ${bg}; color: ${color}; border-color: ${border}; font-weight: 700;">
+        [${escapeHtml(s.badge)}] ${escapeHtml(s.label)}
+      </span>`;
+    }).join("");
+  }
+
+  html += `
+    <div style="grid-column: 1 / -1; margin-top: 10px; background: var(--panel); border: 1.5px solid var(--line); padding: 18px; border-radius: 14px;">
+      <h3 style="font-size: 16px; font-weight: 800; margin-bottom: 8px;">🎯 Suggested Focus & Weak Spots</h3>
+      <p class="meta" style="margin-bottom: 12px;">Dynamically calculated from your enrolled course activity, spaced repetition review decay, and asked questions:</p>
+      <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+        ${chipsHtml}
+      </div>
+    </div>
+  `;
+
+  statsBar.innerHTML = html;
+  updateAlertBadge();
+}
+
+// ================= ALERTS & NOTIFICATIONS =================
+function renderAlerts() {
+  const container = el("alertsContainer");
+  const badge = el("navAlertBadge");
+  if (!container) return;
+
+  container.innerHTML = "";
+  const now = new Date();
+  let alertCount = 0;
+
+  // 1. Spaced Repetition Due Cards
+  const dueCards = (state.flashcardDeck || []).filter(c => new Date(c.dueDate) <= now);
+  if (dueCards.length > 0) {
+    alertCount += dueCards.length;
+    const dueByRec = {};
+    dueCards.forEach(c => {
+      if (!dueByRec[c.recording_id]) dueByRec[c.recording_id] = [];
+      dueByRec[c.recording_id].push(c);
+    });
+
+    Object.keys(dueByRec).forEach(recId => {
+      const rec = state.recordings.find(r => r.id === recId);
+      const title = rec ? rec.title : "Class Recording";
+      const count = dueByRec[recId].length;
+
+      const card = document.createElement("div");
+      card.className = "setting-card";
+      card.style.cssText = "display: flex; justify-content: space-between; align-items: center; border-left: 4px solid var(--brand); background: var(--panel); margin-bottom: 12px;";
+      card.innerHTML = `
+        <div>
+          <h4 style="margin: 0 0 4px 0; font-size: 15px; color: var(--brand-d);">🃏 Spaced Repetition Due: ${escapeHtml(title)}</h4>
+          <p class="meta" style="margin: 0;">You have <strong>${count}</strong> flashcard${count > 1 ? "s" : ""} scheduled for active recall review today.</p>
+        </div>
+        <button class="primary" style="padding: 8px 16px; font-size: 13px;">Review Deck →</button>
+      `;
+
+      card.querySelector("button").addEventListener("click", () => {
+        if (rec) {
+          switchStudentTab("Tutor");
+          selectRecording(rec);
+          if (el("flashcardBtn")) el("flashcardBtn").click();
+        }
+      });
+      container.appendChild(card);
+    });
+  }
+
+  // 2. Study Plan Daily Task Reminders
+  const plan = currentStudyPlan || [];
+  const pendingTasks = [];
+  plan.forEach(day => {
+    (day.tasks || []).forEach(task => {
+      if (!task.completed) pendingTasks.push({ ...task, day: day.day });
+    });
+  });
+
+  if (pendingTasks.length > 0) {
+    alertCount += 1;
+    const planCard = document.createElement("div");
+    planCard.className = "setting-card";
+    planCard.style.cssText = "display: flex; justify-content: space-between; align-items: center; border-left: 4px solid #f59f00; background: var(--panel); margin-bottom: 12px;";
+    planCard.innerHTML = `
+      <div>
+        <h4 style="margin: 0 0 4px 0; font-size: 15px; color: #f59f00;">📅 Active Study Plan Tasks</h4>
+        <p class="meta" style="margin: 0;">You have <strong>${pendingTasks.length}</strong> task${pendingTasks.length > 1 ? "s" : ""} waiting to be checked off your revision timetable.</p>
+      </div>
+      <button id="jumpToPlannerBtn" class="ghost" style="padding: 8px 16px; font-size: 13px;">Open Planner →</button>
+    `;
+    container.appendChild(planCard);
+
+    const planBtn = planCard.querySelector("#jumpToPlannerBtn");
+    if (planBtn) {
+      planBtn.addEventListener("click", () => {
+        switchStudentTab("Planner");
+      });
+    }
+  }
+
+  // 3. Fallback when caught up
+  if (alertCount === 0) {
+    container.innerHTML = `
+      <div class="empty" style="padding: 40px 0;">
+        <div class="empty-emoji">🎉</div>
+        <h3>All caught up!</h3>
+        <p class="meta">No overdue flashcards or revision tasks scheduled right now.</p>
+      </div>
+    `;
+    if (badge) badge.classList.add("hidden");
+  } else {
+    if (badge) {
+      badge.textContent = alertCount;
+      badge.classList.remove("hidden");
+    }
+  }
+}
+
+// ================= STUDENT AI TUTOR & SAVED CHAT HISTORY =================
+async function loadRecordings() {
+  const res = await fetch(`${API}/api/recordings`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ token: state.token })
+  });
+  const data = await res.json();
+  state.recordings = data.recordings || [];
+  
+  populateStudentCourseFilter(data.units || []);
+  applyStudentFilters();
+}
+
+function populateStudentCourseFilter(units) {
+  const sel = el("studentCourseFilter");
+  if (!sel) return; 
+  const current = sel.value;
+  sel.innerHTML = '<option value="">All courses</option>' + 
+    units.map(u => `<option value="${escapeHtml(u)}">${escapeHtml(u)}</option>`).join("");
+  if (current && units.includes(current)) sel.value = current;
+}
+
+function applyStudentFilters() {
+  const searchEl = el("search");
+  const q = searchEl ? (searchEl.value || "").toLowerCase() : "";
+  const sel = el("studentCourseFilter");
+  const selectedCourse = sel ? sel.value : "";
+
+  const filtered = state.recordings.filter(r => {
+    const matchesText = !q || (r.title || "").toLowerCase().includes(q) || (r.unit || "").toLowerCase().includes(q);
+    const matchesCourse = !selectedCourse || (r.unit || "Unassigned") === selectedCourse;
+    return matchesText && matchesCourse;
+  });
+  
+  renderRecList(filtered);
+}
+
+function renderRecList(list) {
+  const box = el("recList");
+  if(!box) return;
+  box.innerHTML = "";
+  if (!list.length) { box.innerHTML = '<div class="rec-item"><div class="d">No recordings available yet.</div></div>'; return; }
+  const groups = {};
+  list.forEach(r => { const u = r.unit || "Unassigned"; (groups[u] = groups[u] || []).push(r); });
+  Object.keys(groups).sort().forEach(unit => {
+    const g = document.createElement("div");
+    g.className = "unit-group";
+    g.innerHTML = `<div class="unit-label">${escapeHtml(unit)}</div>`;
+    groups[unit].forEach(r => {
+      const item = document.createElement("div");
+      item.className = "rec-item" + (state.current && state.current.id === r.id ? " active" : "");
+      const notesBadge = r.has_notes ? ' <span class="notes-dot" title="This class has extra notes">📎</span>' : "";
+      item.innerHTML = `<div class="t">${escapeHtml(r.title)}${notesBadge}</div><div class="d">${escapeHtml(r.date || "")} · ${r.segments} lines</div>`;
+      item.addEventListener("click", () => selectRecording(r));
+      g.appendChild(item);
+    });
+    box.appendChild(g);
+  });
+}
+
+if(el("search")) el("search").addEventListener("input", applyStudentFilters);
+document.addEventListener("change", e => { if (e.target.id === "studentCourseFilter") applyStudentFilters(); });
+
+function selectRecording(r) {
+  state.current = r;
+  applyStudentFilters();
+  if(el("emptyState")) el("emptyState").classList.add("hidden");
+  if(el("workspace")) el("workspace").classList.remove("hidden");
+  if(el("wsTitle")) el("wsTitle").textContent = r.title;
+  if(el("wsMeta")) el("wsMeta").innerHTML = `${escapeHtml(r.unit)} · ${escapeHtml(r.date || "")} · ${r.segments} transcript lines` +
+    (r.has_notes ? ` · <span class="notes-flag">📎 includes extra class notes</span>` : "");
+  
+  const chat = el("chat");
+  if(chat) chat.innerHTML = "";
+  
+  const savedHistory = state.chatHistory[r.id] || [];
+  if (savedHistory.length > 0) {
+    savedHistory.forEach(msg => {
+      if (msg.role === 'user') addUser(msg.text, false);
+      else addBot(msg.text, false);
+    });
+  } else {
+    const notesLine = r.has_notes ? " This class also has extra notes from your teacher that I can draw on." : "";
+    addBot(`Hi ${state.name}! Ask me anything about **${r.title}**. I'll answer using only what was said in this recording (with timestamps).${notesLine} 😊`, false);
+  }
+}
+
+function addUser(text, save = true) { 
+  const chat = el("chat");
+  if(!chat) return;
+  const d = document.createElement("div"); d.className = "msg user"; d.textContent = text; chat.appendChild(d); scrollChat(); 
+  if (save && state.current) {
+    if (!state.chatHistory[state.current.id]) state.chatHistory[state.current.id] = [];
+    state.chatHistory[state.current.id].push({ role: 'user', text });
+  }
+}
+
+function addBot(text, save = true) { 
+  const chat = el("chat");
+  if(!chat) return;
+  const d = document.createElement("div"); d.className = "msg bot"; d.innerHTML = renderBotText(text); chat.appendChild(d); scrollChat(); 
+  if (save && state.current) {
+    if (!state.chatHistory[state.current.id]) state.chatHistory[state.current.id] = [];
+    state.chatHistory[state.current.id].push({ role: 'bot', text });
+  }
+}
+
+function addTyping() { 
+  const chat = el("chat");
+  if(!chat) return;
+  const d = document.createElement("div"); d.className = "typing"; d.id = "typing"; d.innerHTML = 'ClassMate is reading the recording <span class="dot">●</span><span class="dot">●</span><span class="dot">●</span>'; chat.appendChild(d); scrollChat(); 
+}
+function removeTyping() { const t = el("typing"); if (t) t.remove(); }
+function scrollChat() { const c = el("chat"); if(c) c.scrollTop = c.scrollHeight; }
+
+if(el("clearChatBtn")) {
+  el("clearChatBtn").addEventListener("click", async () => {
+    if (!state.current) return;
+    if (confirm("Clear your saved chat history for this recording?")) {
+      delete state.chatHistory[state.current.id];
+      await saveServerProfile();
+      selectRecording(state.current);
+    }
+  });
+}
+
+if(el("askForm")) {
+  el("askForm").addEventListener("submit", async e => {
+    e.preventDefault();
+    const qInput = el("questionInput");
+    if(!qInput) return;
+    const q = qInput.value.trim();
+    if (!q || !state.current) return;
+    qInput.value = "";
+    if(el("askBtn")) el("askBtn").disabled = true;
+    addUser(q, true); 
+    addTyping();
+    try {
+      const res = await fetch(`${API}/api/ask`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ recording_id: state.current.id, question: q, language: "English", token: state.token })
+      });
+      const data = await res.json();
+      removeTyping();
+      if (data.error) addBot("Sorry, something went wrong: " + data.error, true);
+      else {
+        addBot(data.answer, true);
+        studentStats.questions++;
+        saveStudentStats();
+        await saveServerProfile();
+      }
+    } catch (err) { removeTyping(); addBot("Sorry, I couldn't reach the server. Please try again.", true); }
+    if(el("askBtn")) el("askBtn").disabled = false; 
+    qInput.focus();
+  });
+}
+
+// ---------- quiz ----------
+let quizData = null;
+if(el("quizBtn")) el("quizBtn").addEventListener("click", generateQuiz);
+
+async function generateQuiz() {
+  if (!state.current) return;
+  if(el("quizModal")) el("quizModal").classList.remove("hidden");
+  if(el("submitQuiz")) el("submitQuiz").classList.add("hidden"); 
+  if(el("retryQuiz")) el("retryQuiz").classList.add("hidden");
+  if(el("quizBody")) el("quizBody").innerHTML = '<div class="typing">Creating your quiz from the recording <span class="dot">●</span><span class="dot">●</span><span class="dot">●</span></div>';
+  try {
+    const res = await fetch(`${API}/api/quiz`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ recording_id: state.current.id, num_questions: 5, language: "English", token: state.token })
+    });
+    const data = await res.json();
+    if (data.error || !data.questions) { if(el("quizBody")) el("quizBody").innerHTML = '<p>Sorry, I could not build a quiz for this recording. Try another one.</p>'; return; }
+    quizData = data.questions; 
+    renderQuiz();
+    
+    studentStats.quizzes++;
+    saveStudentStats();
+  } catch (e) { if(el("quizBody")) el("quizBody").innerHTML = '<p>Could not reach the server. Please try again.</p>'; }
+}
+
+if(el("closeQuiz")) el("closeQuiz").addEventListener("click", () => el("quizModal").classList.add("hidden"));
+if(el("retryQuiz")) el("retryQuiz").addEventListener("click", generateQuiz);
+
+function renderQuiz() {
+  const body = el("quizBody"); 
+  if(!body) return;
+  body.innerHTML = "";
+  quizData.forEach((q, qi) => {
+    const block = document.createElement("div"); block.className = "q-block";
+    let opts = "";
+    q.options.forEach((opt, oi) => { opts += `<label class="opt" data-q="${qi}" data-o="${oi}"><input type="radio" name="q${qi}" value="${oi}" />${escapeHtml(opt)}</label>`; });
+    block.innerHTML = `<div class="q-title"><span class="q-num">Q${qi + 1}</span>${escapeHtml(q.question)}</div>${opts}<div class="explain hidden" id="exp${qi}"></div>`;
+    body.appendChild(block);
+  });
+  body.querySelectorAll(".opt").forEach(l => l.addEventListener("click", () => {
+    const qi = l.dataset.q;
+    body.querySelectorAll(`.opt[data-q="${qi}"]`).forEach(x => x.classList.remove("sel"));
+    l.classList.add("sel");
+  }));
+  if(el("submitQuiz")) el("submitQuiz").classList.remove("hidden"); 
+  if(el("retryQuiz")) el("retryQuiz").classList.add("hidden");
+}
+
+if(el("submitQuiz")) {
+  el("submitQuiz").addEventListener("click", () => {
+    let score = 0;
+    quizData.forEach((q, qi) => {
+      const chosen = document.querySelector(`input[name="q${qi}"]:checked`);
+      const ci = chosen ? parseInt(chosen.value) : -1;
+      document.querySelectorAll(`.opt[data-q="${qi}"]`).forEach((lab, oi) => {
+        lab.style.pointerEvents = "none";
+        if (oi === q.answer_index) lab.classList.add("correct");
+        else if (oi === ci) lab.classList.add("wrong");
+      });
+      if (ci === q.answer_index) score++;
+      const exp = el(`exp${qi}`);
+      if(exp) {
+        const ts = q.timestamp ? `<span class="ts-chip">⏱ ${escapeHtml(q.timestamp)}</span>` : "";
+        exp.innerHTML = `✅ <strong>Answer:</strong> ${escapeHtml(q.options[q.answer_index])} ${ts}<br>${escapeHtml(q.explanation || "")}`;
+        exp.classList.remove("hidden");
+      }
+    });
+    const head = document.createElement("div"); head.className = "score";
+    const pct = Math.round(100 * score / quizData.length);
+    head.textContent = `You scored ${score} / ${quizData.length}  (${pct}%) ${pct >= 80 ? "🎉" : pct >= 50 ? "👍" : "📖 keep reviewing!"}`;
+    if(el("quizBody")) el("quizBody").prepend(head);
+    if(el("submitQuiz")) el("submitQuiz").classList.add("hidden"); 
+    if(el("retryQuiz")) el("retryQuiz").classList.remove("hidden");
+  });
+}
+
+// ================= SPACED REPETITION (SRS) FLASHCARDS =================
+let currentDeckCards = [];
+let currentCardIndex = 0;
+
+const flashcardBtn = el("flashcardBtn");
+const flashcardModal = el("flashcardModal");
+const closeFlashcards = el("closeFlashcards");
+const flashcardBody = el("flashcardBody");
+const prevCardBtn = el("prevCardBtn");
+const nextCardBtn = el("nextCardBtn");
+const cardCountIndicator = el("cardCountIndicator");
+const srsRatingControls = el("srsRatingControls");
+const genFreshCardsBtn = el("genFreshCardsBtn");
+const srsStatusText = el("srsStatusText");
+
+function getDueFlashcards(recId) {
+  const now = new Date();
+  return state.flashcardDeck.filter(c => c.recording_id === recId && new Date(c.dueDate) <= now);
+}
+
+function getRecordingCards(recId) {
+  return state.flashcardDeck.filter(c => c.recording_id === recId);
+}
+
+if (flashcardBtn) {
+  flashcardBtn.addEventListener("click", async () => {
+    if (!state.current) return;
+    flashcardModal.classList.remove("hidden");
+    
+    const existing = getRecordingCards(state.current.id);
+    if (existing.length === 0) {
+      await generateNewFlashcards();
+    } else {
+      currentDeckCards = existing;
+      currentCardIndex = 0;
+      updateSrsHeader();
+      renderCurrentCard();
+    }
+  });
+}
+
+if (genFreshCardsBtn) {
+  genFreshCardsBtn.addEventListener("click", () => generateNewFlashcards());
+}
+
+async function generateNewFlashcards() {
+  if (!state.current) return;
+  flashcardBody.innerHTML = '<div class="typing">Crafting fresh flashcards from class <span class="dot">●</span><span class="dot">●</span><span class="dot">●</span></div>';
+  if (srsRatingControls) srsRatingControls.classList.add("hidden");
+  
+  const existingFronts = getRecordingCards(state.current.id).map(c => c.front);
+
+  try {
+    const res = await fetch(`${API}/api/flashcards`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ 
+        recording_id: state.current.id, 
+        existing_fronts: existingFronts,
+        token: state.token 
+      })
+    });
+    const data = await res.json();
+    if (data.error || !data.flashcards || data.flashcards.length === 0) {
+      flashcardBody.innerHTML = '<p>Could not generate new cards for this class.</p>';
+      return;
+    }
+
+    const now = new Date().toISOString();
+    const newCards = data.flashcards.map(fc => ({
+      id: "fc_" + Math.random().toString(36).substring(2, 9),
+      recording_id: state.current.id,
+      front: fc.front,
+      back: fc.back,
+      interval: 1,
+      reps: 0,
+      dueDate: now
+    }));
+
+    state.flashcardDeck.push(...newCards);
+    await saveServerProfile();
+
+    currentDeckCards = getRecordingCards(state.current.id);
+    currentCardIndex = currentDeckCards.length - newCards.length;
+    updateSrsHeader();
+    renderCurrentCard();
+  } catch (e) {
+    flashcardBody.innerHTML = '<p>Network error generating flashcards.</p>';
+  }
+}
+
+function updateSrsHeader() {
+  if (!state.current || !srsStatusText) return;
+  const due = getDueFlashcards(state.current.id).length;
+  const total = getRecordingCards(state.current.id).length;
+  srsStatusText.textContent = `🎯 Due for Review: ${due} / ${total} cards`;
+}
+
+if (closeFlashcards) closeFlashcards.addEventListener("click", () => flashcardModal.classList.add("hidden"));
+
+function renderCurrentCard() {
+  if (!currentDeckCards.length) {
+    flashcardBody.innerHTML = '<p class="meta">No flashcards in deck. Click "Generate New Cards" above!</p>';
+    if (srsRatingControls) srsRatingControls.classList.add("hidden");
+    return;
+  }
+  
+  const card = currentDeckCards[currentCardIndex];
+  cardCountIndicator.textContent = `${currentCardIndex + 1} / ${currentDeckCards.length}`;
+  if (srsRatingControls) srsRatingControls.classList.add("hidden");
+
+  let isFlipped = false;
+  flashcardBody.innerHTML = `
+    <div id="activeFlashcard" style="width: 100%; height: 200px; background: var(--panel2); border: 2px solid var(--line); border-radius: 16px; display: flex; align-items: center; justify-content: center; padding: 20px; cursor: pointer; text-align: center; box-shadow: var(--shadow-sm); transition: 0.2s;">
+      <div style="font-size: 16px; font-weight: 700; color: var(--text);" id="cardTextContent">
+        💡 <strong>Front (Question):</strong><br><br>${escapeHtml(card.front)}
+        <div class="meta" style="font-size: 11px; margin-top: 10px; font-weight: 600;">(Click card to reveal answer & Spaced Repetition ratings)</div>
+      </div>
+    </div>
+  `;
+  
+  const cardElem = el("activeFlashcard");
+  const textElem = el("cardTextContent");
+  
+  cardElem.addEventListener("click", () => {
+    isFlipped = !isFlipped;
+    if (isFlipped) {
+      cardElem.style.background = 'rgba(11,191,191,0.08)';
+      cardElem.style.borderColor = 'var(--brand)';
+      textElem.innerHTML = `✅ <strong>Back (Answer):</strong><br><br>${escapeHtml(card.back)}`;
+      if (srsRatingControls) srsRatingControls.classList.remove("hidden");
+    } else {
+      cardElem.style.background = 'var(--panel2)';
+      cardElem.style.borderColor = 'var(--line)';
+      textElem.innerHTML = `💡 <strong>Front (Question):</strong><br><br>${escapeHtml(card.front)}`;
+      if (srsRatingControls) srsRatingControls.classList.add("hidden");
+    }
+  });
+}
+
+async function rateCard(ratingFactor) {
+  if (!currentDeckCards.length) return;
+  const card = currentDeckCards[currentCardIndex];
+  const original = state.flashcardDeck.find(c => c.id === card.id);
+  if (!original) return;
+
+  const now = new Date();
+  if (ratingFactor === 'again') {
+    original.interval = 1;
+    original.reps = 0;
+  } else if (ratingFactor === 'hard') {
+    original.interval = Math.max(1, Math.round((original.interval || 1) * 1.2));
+  } else if (ratingFactor === 'good') {
+    original.interval = Math.max(2, Math.round((original.interval || 1) * 2.5));
+    original.reps = (original.reps || 0) + 1;
+  } else if (ratingFactor === 'easy') {
+    original.interval = Math.max(4, Math.round((original.interval || 1) * 3.5));
+    original.reps = (original.reps || 0) + 1;
+  }
+
+  const nextReview = new Date(now.getTime() + (original.interval * 24 * 60 * 60 * 1000));
+  original.dueDate = nextReview.toISOString();
+
+  await saveServerProfile();
+  updateSrsHeader();
+
+  if (currentCardIndex < currentDeckCards.length - 1) {
+    currentCardIndex++;
+  } else {
+    currentCardIndex = 0;
+  }
+  renderCurrentCard();
+}
+
+if (el("srsAgainBtn")) el("srsAgainBtn").addEventListener("click", () => rateCard('again'));
+if (el("srsHardBtn")) el("srsHardBtn").addEventListener("click", () => rateCard('hard'));
+if (el("srsGoodBtn")) el("srsGoodBtn").addEventListener("click", () => rateCard('good'));
+if (el("srsEasyBtn")) el("srsEasyBtn").addEventListener("click", () => rateCard('easy'));
+
+if (prevCardBtn) prevCardBtn.addEventListener("click", () => { if (currentCardIndex > 0) { currentCardIndex--; renderCurrentCard(); } });
+if (nextCardBtn) nextCardBtn.addEventListener("click", () => { if (currentCardIndex < currentDeckCards.length - 1) { currentCardIndex++; renderCurrentCard(); } });
+
+/* =========================================================
+   STUDY PLAN FEATURE
+   ========================================================= */
+const planClassSelect = document.getElementById('planClassSelect');
+const generatePlanBtn = document.getElementById('generatePlanBtn');
+const resetPlanBtn = document.getElementById('resetPlanBtn');
+const planEmptyState = document.getElementById('planEmptyState');
+const planResult = document.getElementById('planResult');
+
+const focusHints = {
+  "First-time learning": "💡 Focuses on deep understanding, concept breakdowns, and taking structured notes.",
+  "Reviewing and memorizing definitions": "💡 Combines rapid topic overviews with active recall, flashcards, and definition checks.",
+  "Past paper and exam practice": "💡 Prioritizes past-paper style questions, command words, and Cambridge/Edexcel mark scheme tips."
+};
+
+const planFocusEl = el("planFocus");
+if (planFocusEl) {
+  planFocusEl.addEventListener("change", (e) => {
+    const hintEl = el("focusHint");
+    if (hintEl) hintEl.textContent = focusHints[e.target.value] || "";
+  });
+}
+
+function initPlanner() {
+  if (!planClassSelect) return;
+  planClassSelect.innerHTML = '';
+  if (state.recordings.length === 0) {
+    planClassSelect.innerHTML = '<p class="meta" style="padding: 8px;">No classes available.</p>';
+  } else {
+    const courseGroups = {};
+    state.recordings.forEach(r => {
+      const courseName = (r.unit && r.unit.trim() !== "") ? r.unit.trim() : "Unassigned Course";
+      if (!courseGroups[courseName]) courseGroups[courseName] = [];
+      courseGroups[courseName].push(r);
+    });
+
+    Object.keys(courseGroups).sort().forEach(courseName => {
+      const courseSection = document.createElement('div');
+      courseSection.style.cssText = 'margin-bottom: 12px; background: var(--panel2); padding: 10px; border-radius: 8px; border: 1.5px solid var(--line);';
+      
+      const courseHeader = document.createElement('div');
+      courseHeader.style.cssText = 'display: flex; justify-content: space-between; align-items: center; font-weight: 800; font-size: 13px; color: var(--brand-d); margin-bottom: 6px; border-bottom: 1px solid var(--line); padding-bottom: 4px;';
+      
+      const titleSpan = document.createElement('span');
+      titleSpan.textContent = `📚 ${courseName}`;
+      
+      const courseToggleBtn = document.createElement('button');
+      courseToggleBtn.type = 'button';
+      courseToggleBtn.className = 'ghost-sm';
+      courseToggleBtn.style.cssText = 'font-size: 11px; padding: 2px 6px;';
+      courseToggleBtn.textContent = 'Select Course';
+      
+      const classesContainer = document.createElement('div');
+      classesContainer.style.cssText = 'display: flex; flex-direction: column; gap: 4px; margin-top: 4px;';
+
+      const checkboxesInCourse = [];
+
+      courseGroups[courseName].forEach(r => {
+        const label = document.createElement('label');
+        label.style.cssText = 'display: flex; align-items: center; gap: 8px; cursor: pointer; padding: 2px 0;';
+        
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.value = r.id;
+        checkbox.className = 'class-checkbox';
+        checkbox.dataset.course = courseName;
+        checkbox.style.cssText = 'transform: scale(1.1); cursor: pointer;';
+
+        checkboxesInCourse.push(checkbox);
+
+        const span = document.createElement('span');
+        span.style.cssText = 'font-size: 12.5px; font-weight: 600; color: var(--text);';
+        span.textContent = r.title;
+
+        label.appendChild(checkbox);
+        label.appendChild(span);
+        classesContainer.appendChild(label);
+      });
+
+      courseToggleBtn.addEventListener('click', () => {
+        const allChecked = checkboxesInCourse.every(cb => cb.checked);
+        checkboxesInCourse.forEach(cb => cb.checked = !allChecked);
+      });
+
+      courseHeader.appendChild(titleSpan);
+      courseHeader.appendChild(courseToggleBtn);
+      courseSection.appendChild(courseHeader);
+      courseSection.appendChild(classesContainer);
+      planClassSelect.appendChild(courseSection);
+    });
+  }
+
+  const setupDiv = document.getElementById('planSetup');
+  const formEls = setupDiv ? setupDiv.querySelectorAll('input, select') : [];
+  
+  if (currentStudyPlan) {
+    formEls.forEach(elem => elem.disabled = true);
+    if(generatePlanBtn) generatePlanBtn.classList.add('hidden');
+    if(resetPlanBtn) resetPlanBtn.classList.remove('hidden');
+    if(planEmptyState) planEmptyState.classList.add('hidden');
+    if(planResult) planResult.classList.remove('hidden');
+    renderPlan();
+  } else {
+    formEls.forEach(elem => elem.disabled = false);
+    if(generatePlanBtn) generatePlanBtn.classList.remove('hidden');
+    if(resetPlanBtn) resetPlanBtn.classList.add('hidden');
+    if(planEmptyState) planEmptyState.classList.remove('hidden');
+    if(planResult) planResult.classList.add('hidden');
+  }
+}
+
+window.toggleAllClasses = function(selectState) {
+  const checkboxes = document.querySelectorAll('.class-checkbox');
+  checkboxes.forEach(cb => cb.checked = selectState);
+};
+
+if (generatePlanBtn) {
+  generatePlanBtn.addEventListener('click', async () => {
+    const selectedIds = Array.from(planClassSelect.querySelectorAll('.class-checkbox:checked')).map(cb => cb.value);
+    if (selectedIds.length === 0) {
+      alert("Please select at least one class to review.");
+      return;
+    }
+
+    const days = document.getElementById('planDays').value;
+    const hours = document.getElementById('planHours').value;
+    const focus = document.getElementById('planFocus').value;
+
+    const btnOrig = generatePlanBtn.innerText;
+    generatePlanBtn.innerText = "⏳ Building your schedule...";
+    generatePlanBtn.disabled = true;
+
+    try {
+      const res = await fetch(`${API}/api/student/plan`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          recording_ids: selectedIds,
+          days: parseInt(days),
+          hours_per_day: parseFloat(hours),
+          focus: focus,
+          token: state.token
         })
-    if not segments:
-        whole = (payload.get("text") or "").strip()
-        if whole:
-            segments.append({
-                "start": _fmt_seconds_to_ts(time_offset),
-                "speaker": "",
-                "text": whole,
-            })
-    return segments
+      });
 
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to generate plan");
 
-async def fetch_zoom_recording_files(meeting_id):
-    import httpx
-    from urllib.parse import quote
-    token = await zoom_token()
-    mid = str(meeting_id)
-    needs_double = mid.startswith("/") or "//" in mid or "/" in mid
-    path_id = quote(quote(mid, safe=""), safe="") if needs_double else quote(mid, safe="")
-    async with httpx.AsyncClient(timeout=60) as client:
-        r = await client.get(
-            f"https://api.zoom.us/v2/meetings/{path_id}/recordings",
-            headers={"Authorization": f"Bearer {token}"},
-        )
-        if r.status_code != 200:
-            raise LLMUpstreamError(f"Zoom recordings lookup returned {r.status_code}: {r.text[:300]}")
-        return r.json().get("recording_files", []) or []
+      data.plan.forEach(day => {
+        day.tasks.forEach(task => task.completed = false);
+      });
 
-
-async def fetch_zoom_recording_object(meeting_id):
-    import httpx
-    from urllib.parse import quote
-    token = await zoom_token()
-    mid = str(meeting_id)
-    needs_double = mid.startswith("/") or "//" in mid or "/" in mid
-    path_id = quote(quote(mid, safe=""), safe="") if needs_double else quote(mid, safe="")
-    async with httpx.AsyncClient(timeout=60) as client:
-        r = await client.get(
-            f"https://api.zoom.us/v2/meetings/{path_id}/recordings",
-            headers={"Authorization": f"Bearer {token}"},
-        )
-        if r.status_code == 404:
-            raise LLMUpstreamError("No cloud recording found for that meeting ID.")
-        if r.status_code != 200:
-            raise LLMUpstreamError(f"Zoom lookup returned {r.status_code}: {r.text[:300]}")
-        return r.json()
-
-
-def _parse_meeting_id(raw: str) -> str:
-    import re as _re
-    from urllib.parse import urlparse, parse_qs, unquote
-    s = (raw or "").strip()
-    if not s:
-        return ""
-    if s.startswith("http"):
-        u = urlparse(s)
-        qs = parse_qs(u.query)
-        for key in ("meeting_id", "meetingId", "confId"):
-            if key in qs and qs[key]:
-                return unquote(qs[key][0])
-        m = _re.search(r"/j/(\d{9,})", u.path)
-        if m:
-            return m.group(1)
-        m = _re.search(r"(\d{9,})", u.path)
-        if m:
-            return m.group(1)
-        return ""
-    return s.replace(" ", "")
-
-
-def _pick_audio_file(files):
-    audio = next((f for f in files if (f.get("file_type") or "").upper() == "M4A"), None)
-    if audio:
-        return audio
-    return next((f for f in files if (f.get("file_type") or "").upper() == "MP4"), None)
-
-
-async def _transcribe_large_audio(src_path):
-    import os as _os
-    workdir = _os.path.dirname(src_path)
-    full_mp3 = _os.path.join(workdir, "full.mp3")
-    _ffmpeg_to_mp3(src_path, full_mp3)
-
-    size = _os.path.getsize(full_mp3)
-    if size <= _CHUNK_SAFETY_BYTES:
-        with open(full_mp3, "rb") as f:
-            data = f.read()
-        return await transcribe_audio_bytes(data, filename="full.mp3")
-
-    duration = _ffprobe_duration(full_mp3)
-    if duration <= 0:
-        with open(full_mp3, "rb") as f:
-            data = f.read()
-        return await transcribe_audio_bytes(data, filename="full.mp3")
-
-    bytes_per_sec = size / duration
-    chunk_secs = max(60.0, (_CHUNK_SAFETY_BYTES / bytes_per_sec) * 0.9)
-
-    all_segments = []
-    start = 0.0
-    idx = 0
-    while start < duration:
-        this_len = min(chunk_secs, duration - start)
-        chunk_path = _os.path.join(workdir, f"chunk_{idx}.mp3")
-        _ffmpeg_to_mp3(src_path, chunk_path, start=start, duration=this_len)
-        with open(chunk_path, "rb") as f:
-            cdata = f.read()
-        seg = await transcribe_audio_bytes(cdata, filename=f"chunk_{idx}.mp3", time_offset=start)
-        all_segments.extend(seg)
-        try:
-            _os.remove(chunk_path)
-        except OSError:
-            pass
-        start += this_len
-        idx += 1
-    return all_segments
-
-
-async def transcribe_recording_by_id(meeting_id):
-    import os as _os
-    import tempfile
-    rec = REC_BY_ID.get(meeting_id)
-    if not rec:
-        raise LLMUpstreamError("Recording not found.")
-    files = await fetch_zoom_recording_files(meeting_id)
-    audio = _pick_audio_file(files)
-    if not audio:
-        raise LLMUpstreamError("No audio/video file is available for this recording in Zoom's cloud.")
-    import httpx
-    token = await zoom_token()
-    url = audio.get("download_url")
-    ext = (audio.get("file_extension") or audio.get("file_type") or "m4a").lower()
-    async with httpx.AsyncClient(timeout=httpx.Timeout(600.0, connect=15.0), follow_redirects=True) as client:
-        r = await client.get(url, headers={"Authorization": f"Bearer {token}"})
-        if r.status_code != 200:
-            raise LLMUpstreamError(f"Could not download audio from Zoom ({r.status_code}).")
-        audio_bytes = r.content
-
-    if len(audio_bytes) <= _CHUNK_SAFETY_BYTES:
-        segments = await transcribe_audio_bytes(audio_bytes, filename=f"{meeting_id}.{ext}")
-    elif _have_ffmpeg():
-        with tempfile.TemporaryDirectory() as tmp:
-            src_path = _os.path.join(tmp, f"src.{ext}")
-            with open(src_path, "wb") as f:
-                f.write(audio_bytes)
-            segments = await _transcribe_large_audio(src_path)
-    else:
-        raise LLMUpstreamError("Audio file exceeds 25 MB and ffmpeg is unavailable.")
-
-    rec["segments"] = segments
-    save_recordings(RECORDINGS)
-    try:
-        audio_bytes = None
-    except Exception:
-        pass
-    rec.pop("embeddings", None)
-    gc.collect()
-    return len(segments)
-
-
-# ---------- Zoom integration ----------
-ZOOM_ACCOUNT_ID     = os.environ.get("ZOOM_ACCOUNT_ID", "").strip()
-ZOOM_CLIENT_ID      = os.environ.get("ZOOM_CLIENT_ID", "").strip()
-ZOOM_CLIENT_SECRET  = os.environ.get("ZOOM_CLIENT_SECRET", "").strip()
-ZOOM_WEBHOOK_SECRET = os.environ.get("ZOOM_WEBHOOK_SECRET", "").strip()
-_zoom_tok = {"token": None, "exp": 0}
-
-
-async def zoom_token():
-    if _zoom_tok["token"] and _zoom_tok["exp"] > time.time():
-        return _zoom_tok["token"]
-    creds = base64.b64encode(f"{ZOOM_CLIENT_ID}:{ZOOM_CLIENT_SECRET}".encode()).decode()
-    import httpx
-    async with httpx.AsyncClient(timeout=30) as client:
-        r = await client.post(
-            "https://zoom.us/oauth/token",
-            headers={"Authorization": f"Basic {creds}"},
-            params={"grant_type": "account_credentials", "account_id": ZOOM_ACCOUNT_ID},
-        )
-        r.raise_for_status()
-        d = r.json()
-    _zoom_tok["token"] = d["access_token"]
-    _zoom_tok["exp"] = time.time() + d.get("expires_in", 3600) - 60
-    return _zoom_tok["token"]
-
-
-async def _download_zoom_text(url: str, token: str) -> str:
-    """Download transcript (.vtt) safely through Zoom S3 redirects by appending token."""
-    sep = "&" if "?" in url else "?"
-    auth_url = f"{url}{sep}access_token={token}"
-    import httpx
-    headers = {"Authorization": f"Bearer {token}"}
-    async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
-        r = await client.get(auth_url, headers=headers)
-        if r.status_code == 200:
-            text = r.text.strip()
-            if "WEBVTT" in text or "-->" in text:
-                return text
-        r2 = await client.get(url, headers=headers)
-        if r2.status_code == 200:
-            text2 = r2.text.strip()
-            if "WEBVTT" in text2 or "-->" in text2:
-                return text2
-    return ""
-
-
-def parse_vtt(text):
-    segments = []
-    blocks = re.split(r"\n\s*\n", text.strip())
-    for b in blocks:
-        lines = [l for l in b.splitlines() if l.strip()]
-        if not lines:
-            continue
-        tline_i = next((i for i, l in enumerate(lines) if "-->" in l), None)
-        if tline_i is None:
-            continue
-        start = lines[tline_i].split("-->")[0].strip().split(".")[0]
-        body = " ".join(lines[tline_i + 1:]).strip()
-        speaker = ""
-        m = re.match(r"^([^:]{1,40}):\s*(.*)$", body)
-        if m:
-            speaker, body = m.group(1).strip(), m.group(2).strip()
-        if body:
-            segments.append({"start": start, "speaker": speaker, "text": body})
-    return segments
-
-
-def _detect_source(obj):
-    t = obj.get("type")
-    try:
-        if int(t) in (5, 6, 9):
-            return "webinar"
-    except (TypeError, ValueError):
-        if isinstance(t, str) and "webinar" in t.lower():
-            return "webinar"
-    return "meeting"
-
-
-async def ingest_zoom_meeting(obj, allow_whisper_fallback=True):
-    uuid = obj.get("uuid")
-    mid = obj.get("id")
-    meeting_id = str(uuid or mid or secrets.token_hex(6))
-    numeric_id = str(mid) if mid else ""
-    
-    existing = REC_BY_ID.get(meeting_id) or (REC_BY_ID.get(numeric_id) if numeric_id else None)
-    
-    if existing and len(existing.get("segments", [])) > 0:
-        return False
-
-    topic = obj.get("topic", "Untitled class")
-    start_time = (obj.get("start_time") or "")[:10]
-    source = _detect_source(obj)
-    files = obj.get("recording_files", [])
-
-    if not files and (mid or uuid):
-        try:
-            files = await fetch_zoom_recording_files(mid or uuid)
-        except Exception:
-            files = []
-    
-    transcript = next(
-        (f for f in files if (f.get("file_type") or "").upper() in ("TRANSCRIPT", "AUDIO_TRANSCRIPT", "CC") 
-         or (f.get("file_extension") or "").upper() == "VTT"
-         or f.get("recording_type") == "audio_transcript"), 
-        None
-    )
-    
-    segments = []
-    if transcript and transcript.get("download_url"):
-        try:
-            token = await zoom_token()
-            vtt_text = await _download_zoom_text(transcript["download_url"], token)
-            if vtt_text:
-                segments = parse_vtt(vtt_text)
-        except Exception as e:
-            print(f"[zoom] VTT transcript download failed for {meeting_id}: {e}")
-
-    if existing:
-        if segments:
-            existing["segments"] = segments
-            save_recordings(RECORDINGS)
-            print(f"[zoom] Attached {len(segments)} transcript lines to: '{existing.get('display_title')}'")
-            return True
-        return False
-
-    if allow_whisper_fallback and not segments and OPENAI_API_KEY:
-        audio = _pick_audio_file(files)
-        if audio and audio.get("download_url"):
-            try:
-                token = await zoom_token()
-                import httpx
-                sep = "&" if "?" in audio["download_url"] else "?"
-                audio_url = f"{audio['download_url']}{sep}access_token={token}"
-                async with httpx.AsyncClient(timeout=httpx.Timeout(600.0, connect=15.0), follow_redirects=True) as client:
-                    ar = await client.get(audio_url, headers={"Authorization": f"Bearer {token}"})
-                if ar.status_code == 200:
-                    ext = (audio.get("file_extension") or audio.get("file_type") or "m4a").lower()
-                    segments = await transcribe_audio_bytes(ar.content, filename=f"{meeting_id}.{ext}")
-            except Exception as e:
-                print(f"[ingest] whisper fallback failed for {meeting_id}: {e}")
-    new_rec = {
-        "id": meeting_id,
-        "topic": topic,
-        "original_topic": topic,
-        "display_title": topic,
-        "date": start_time,
-        "source": source,
-        "unit": "",
-        "visible": False,
-        "segments": segments,
-        "note_ids": []
+      currentStudyPlan = data.plan;
+      await saveServerProfile();
+      initPlanner();
+    } catch (err) {
+      alert(err.message);
+    } finally {
+      generatePlanBtn.innerText = btnOrig;
+      generatePlanBtn.disabled = false;
     }
-    RECORDINGS.append(new_rec)
-    REC_BY_ID[meeting_id] = new_rec
-    if numeric_id:
-        REC_BY_ID[numeric_id] = new_rec
-    save_recordings(RECORDINGS)
-    print(f"[zoom] Successfully imported '{topic}' with {len(segments)} lines.")
-    return True
+  });
+}
 
+function renderPlan() {
+  if (!planResult) return;
+  planResult.innerHTML = '';
+  let totalTasks = 0;
+  let completedTasks = 0;
 
-# ---------- API Endpoints ----------
-def _card(r, include_hidden=False):
-    return {
-        "id": r["id"],
-        "title": r.get("display_title") or r.get("topic"),
-        "original_title": r.get("original_topic") or r.get("topic"),
-        "date": r.get("date"),
-        "source": r.get("source") or "meeting",
-        "unit": r.get("unit") or "Unassigned",
-        "visible": r.get("visible", True),
-        "segments": len(r.get("segments", [])),
-        "has_summary": bool(r.get("summary")),
-        "summary": r.get("summary") or "",
-        "topics": r.get("topics") or [],
-        "has_notes": bool(r.get("note_ids")),
-        "notes_count": len(r.get("note_ids") or []),
-        "notes": (_card_notes_meta(r) if include_hidden else None),
+  const planContainer = document.createElement('div');
+  planContainer.style.display = 'flex';
+  planContainer.style.flexDirection = 'column';
+  planContainer.style.gap = '16px';
+
+  currentStudyPlan.forEach((day, dIdx) => {
+    const dayCard = document.createElement('div');
+    dayCard.className = 'q-block'; 
+    
+    const quoteHtml = day.quote ? `
+      <div class="explain" style="margin-top:0; margin-bottom:12px; border-left: 3px solid var(--brand); font-style: italic; color: var(--brand-d);">
+        💡 "${escapeHtml(day.quote)}"
+      </div>` : '';
+
+    const tasksContainer = document.createElement('div');
+    tasksContainer.style.display = 'flex';
+    tasksContainer.style.flexDirection = 'column';
+    tasksContainer.style.gap = '8px';
+
+    day.tasks.forEach((task, tIdx) => {
+      totalTasks++;
+      if (task.completed) completedTasks++;
+      
+      const taskCard = document.createElement('div');
+      taskCard.style.cssText = `display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 12px; background: var(--panel); border: 1.5px solid var(--line); border-radius: 12px; opacity: ${task.completed ? '0.55' : '1'}; transition: 0.15s;`;
+      
+      const leftGroup = document.createElement('div');
+      leftGroup.style.cssText = 'display: flex; align-items: flex-start; gap: 12px; flex: 1;';
+
+      const checkbox = document.createElement('input');
+      checkbox.type = 'checkbox';
+      checkbox.style.cssText = 'margin-top: 3px; transform: scale(1.3); cursor: pointer;';
+      checkbox.checked = task.completed;
+      
+      checkbox.addEventListener('change', async (e) => {
+        e.stopPropagation();
+        await togglePlanTask(dIdx, tIdx);
+      });
+
+      const textDiv = document.createElement('div');
+      textDiv.style.flex = '1';
+      textDiv.innerHTML = `
+        <strong style="display:block; font-size: 14.5px; margin-bottom: 3px; color: ${task.completed ? 'var(--muted)' : 'var(--text)'};">
+          ${escapeHtml(task.title)} <span class="meta" style="font-weight:800; color: var(--brand-d);">(${task.est_minutes}m)</span>
+        </strong>
+        <span style="font-size: 13px; color: var(--muted); font-weight:600; line-height: 1.4; display: block;">${escapeHtml(task.description)}</span>
+      `;
+
+      leftGroup.appendChild(checkbox);
+      leftGroup.appendChild(textDiv);
+
+      const editBtn = document.createElement('button');
+      editBtn.type = 'button';
+      editBtn.className = 'ghost-sm';
+      editBtn.style.cssText = 'font-size: 11px; padding: 4px 8px; white-space: nowrap;';
+      editBtn.textContent = '✏️ Edit';
+
+      editBtn.addEventListener('click', async () => {
+        const newTitle = prompt("Edit task title:", task.title);
+        if (newTitle === null) return;
+        const newDesc = prompt("Edit task details / description:", task.description);
+        if (newDesc === null) return;
+        const newTime = prompt("Edit estimated minutes:", task.est_minutes);
+        if (newTime === null) return;
+
+        currentStudyPlan[dIdx].tasks[tIdx].title = newTitle.trim() || task.title;
+        currentStudyPlan[dIdx].tasks[tIdx].description = newDesc.trim() || task.description;
+        currentStudyPlan[dIdx].tasks[tIdx].est_minutes = parseInt(newTime) || task.est_minutes;
+
+        await saveServerProfile();
+        renderPlan();
+      });
+
+      taskCard.appendChild(leftGroup);
+      taskCard.appendChild(editBtn);
+      tasksContainer.appendChild(taskCard);
+    });
+
+    dayCard.innerHTML = `
+      <div class="q-title"><span class="q-num" style="padding: 4px 12px; font-size: 13px;">Day ${day.day}</span></div>
+      ${quoteHtml}
+    `;
+    dayCard.appendChild(tasksContainer);
+    planContainer.appendChild(dayCard);
+  });
+
+  const pct = totalTasks === 0 ? 0 : Math.round((completedTasks / totalTasks) * 100);
+  const isComplete = totalTasks > 0 && completedTasks === totalTasks;
+
+  const progressHtml = `
+    <div style="margin-bottom: 20px; background: var(--panel); border: 1.5px solid var(--line); padding: 16px; border-radius: 14px; box-shadow: var(--shadow-sm);">
+      <div style="display: flex; justify-content: space-between; align-items: center; font-weight: 900; font-size: 15px; margin-bottom: 10px;">
+        <span>Plan Progress</span>
+        <span style="color: var(--brand-d);">${pct}% Completed</span>
+      </div>
+      <div class="bulk-bar" style="max-width: 100%; height: 14px; background: var(--bg2); margin-bottom: 14px;">
+        <div class="bulk-bar-fill" style="width: ${pct}%; border-radius: 20px;"></div>
+      </div>
+      
+      <button id="finishPlanBtn" class="primary" ${isComplete ? '' : 'disabled'} style="width: 100%; opacity: ${isComplete ? '1' : '0.5'}; cursor: ${isComplete ? 'pointer' : 'not-allowed'}; background: ${isComplete ? 'linear-gradient(135deg, var(--ok), #0ca678)' : 'var(--line)'};">
+        ${isComplete ? '✅ Plan Completed' : '🔒 Complete all tasks to finish plan'}
+      </button>
+    </div>
+  `;
+
+  planResult.innerHTML = progressHtml;
+  planResult.appendChild(planContainer);
+
+  const finishBtn = document.getElementById('finishPlanBtn');
+  if (finishBtn && isComplete) {
+    finishBtn.addEventListener('click', async () => {
+      if (confirm("Congratulations on completing your study plan! 🎉 Would you like to wrap this up and clear it so you can start a new one?")) {
+        currentStudyPlan = null;
+        await saveServerProfile();
+        initPlanner();
+      }
+    });
+  }
+}
+
+async function togglePlanTask(dIdx, tIdx) {
+  currentStudyPlan[dIdx].tasks[tIdx].completed = !currentStudyPlan[dIdx].tasks[tIdx].completed;
+  await saveServerProfile();
+  renderPlan(); 
+}
+
+if (resetPlanBtn) {
+  resetPlanBtn.addEventListener('click', async () => {
+    if(confirm("Are you sure you want to delete your current plan and start over?")) {
+      currentStudyPlan = null;
+      await saveServerProfile();
+      initPlanner(); 
+    }
+  });
+}
+
+// ================= TEACHER VIEW =================
+if(el("tabRecordings")) el("tabRecordings").addEventListener("click", () => switchTab("Recordings"));
+if(el("tabStudents")) el("tabStudents").addEventListener("click", () => switchTab("Students"));
+if(el("tabPastPapers")) el("tabPastPapers").addEventListener("click", () => switchTab("PastPapers"));
+if(el("tabQuestions")) el("tabQuestions").addEventListener("click", () => switchTab("Questions"));
+if(el("tabAnalytics")) el("tabAnalytics").addEventListener("click", () => switchTab("Analytics"));
+if(el("tabSettings")) el("tabSettings").addEventListener("click", () => switchTab("Settings"));
+
+function switchTab(name) {
+  // 1. Toggle Active Header Button
+  if(el("tabRecordings")) el("tabRecordings").classList.toggle("active", name === "Recordings");
+  if(el("tabStudents")) el("tabStudents").classList.toggle("active", name === "Students");
+  if(el("tabPastPapers")) el("tabPastPapers").classList.toggle("active", name === "PastPapers");
+  if(el("tabQuestions")) el("tabQuestions").classList.toggle("active", name === "Questions");
+  if(el("tabAnalytics")) el("tabAnalytics").classList.toggle("active", name === "Analytics");
+  if(el("tabSettings")) el("tabSettings").classList.toggle("active", name === "Settings");
+  
+  // 2. Unhide Selected Pane and Hide Others
+  if(el("teacherRecordings")) el("teacherRecordings").classList.toggle("hidden", name !== "Recordings");
+  if(el("teacherStudents")) el("teacherStudents").classList.toggle("hidden", name !== "Students");
+  if(el("teacherPastPapers")) el("teacherPastPapers").classList.toggle("hidden", name !== "PastPapers");
+  if(el("teacherQuestions")) el("teacherQuestions").classList.toggle("hidden", name !== "Questions");
+  if(el("teacherAnalytics")) el("teacherAnalytics").classList.toggle("hidden", name !== "Analytics");
+  if(el("teacherSettings")) el("teacherSettings").classList.toggle("hidden", name !== "Settings");
+  
+  // 3. Trigger Data Loaders
+  if (name === "Recordings") { loadTeacherRecordings(); loadStats(); }
+  if (name === "Students") loadStudents();
+  if (name === "PastPapers") loadTeacherPastPaperHub();
+  if (name === "Questions") loadQuestions();
+  if (name === "Analytics") loadAnalytics();
+}
+
+function toast(msg, kind = "info", ms = 3200) {
+  const host = el("toastHost");
+  if (!host) return;
+  const t = document.createElement("div");
+  t.className = `toast toast-${kind}`;
+  t.textContent = msg;
+  host.appendChild(t);
+  requestAnimationFrame(() => t.classList.add("show"));
+  setTimeout(() => { t.classList.remove("show"); setTimeout(() => t.remove(), 300); }, ms);
+}
+
+async function loadStats() {
+  const bar = el("statsBar");
+  if (!bar) return;
+  if (!bar.dataset.loaded) bar.innerHTML = '<div class="stat-skeleton"></div>'.repeat(5);
+  try {
+    const res = await fetch(`${API}/api/teacher/stats`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ passcode: state.passcode })
+    });
+    const s = await res.json();
+    if (!res.ok) return;
+    const cards = [
+      { label: "Recordings", value: s.recordings_total, sub: `${s.recordings_visible} visible` },
+      { label: "Transcribed", value: `${s.recordings_transcribed}/${s.recordings_total}`, sub: s.recordings_missing ? `${s.recordings_missing} missing` : "all done ✓" },
+      { label: "Courses", value: s.courses, sub: s.recordings_unassigned ? `${s.recordings_unassigned} unassigned` : "all assigned" },
+      { label: "Students", value: s.students, sub: "on roster" },
+      { label: "Questions", value: s.questions_total, sub: `${s.questions_this_week} this week` },
+    ];
+    bar.innerHTML = cards.map(c =>
+      `<div class="stat-card"><div class="stat-value">${escapeHtml(String(c.value))}</div><div class="stat-label">${escapeHtml(c.label)}</div><div class="stat-sub">${escapeHtml(c.sub)}</div></div>`
+    ).join("");
+    bar.dataset.loaded = "1";
+  } catch (e) {}
+}
+
+async function loadAnalytics() {
+  const box = el("analyticsBody");
+  if(!box) return;
+  box.innerHTML = '<div class="stat-skeleton" style="height:120px;"></div>';
+  try {
+    const res = await fetch(`${API}/api/teacher/analytics`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ passcode: state.passcode })
+    });
+    const a = await res.json();
+    if (!res.ok) { box.innerHTML = `<div class="q-empty">${escapeHtml(a.error || "Could not load analytics.")}</div>`; return; }
+    if (!a.total) { box.innerHTML = '<div class="q-empty">No questions yet — analytics will appear once students start asking.</div>'; return; }
+    const maxKw = Math.max(...a.top_keywords.map(k => k[1]), 1);
+    const kwHtml = a.top_keywords.map(([w, c]) =>
+      `<div class="bar-row"><span class="bar-label">${escapeHtml(w)}</span><span class="bar-track"><span class="bar-fill" style="width:${Math.round(c / maxKw * 100)}%"></span></span><span class="bar-num">${c}</span></div>`
+    ).join("");
+    const studentsHtml = a.top_students.map(([n, c]) => `<li>${escapeHtml(n)} <span class="pill">${c}</span></li>`).join("");
+    const courseHtml = a.by_course.map(([n, c]) => `<li>${escapeHtml(n)} <span class="pill">${c}</span></li>`).join("");
+    box.innerHTML = `
+      <div class="analytics-grid">
+        <div class="analytics-card">
+          <h3>Most-asked keywords</h3>
+          <div class="bars">${kwHtml || '<p class="meta">Not enough data yet.</p>'}</div>
+        </div>
+        <div class="analytics-card">
+          <h3>Most active students</h3>
+          <ul class="rank-list">${studentsHtml || '<li class="meta">No data</li>'}</ul>
+        </div>
+        <div class="analytics-card">
+          <h3>Questions by course</h3>
+          <ul class="rank-list">${courseHtml || '<li class="meta">No data</li>'}</ul>
+        </div>
+      </div>`;
+  } catch (e) { box.innerHTML = '<div class="q-empty">Network error loading analytics.</div>'; }
+}
+
+function downloadUrl(path) {
+  const url = `${API}${path}${path.includes("?") ? "&" : "?"}passcode=${encodeURIComponent(state.passcode)}`;
+  const a = document.createElement("a");
+  a.href = url; a.download = ""; document.body.appendChild(a); a.click(); a.remove();
+}
+if(el("exportQCsv")) el("exportQCsv").addEventListener("click", () => { downloadUrl("/api/teacher/export/questions.csv"); toast("Downloading questions CSV…", "info"); });
+if(el("exportQPdf")) el("exportQPdf").addEventListener("click", () => { downloadUrl("/api/teacher/export/questions.pdf"); toast("Downloading questions PDF…", "info"); });
+if(el("exportRosterCsv")) el("exportRosterCsv").addEventListener("click", () => { downloadUrl("/api/teacher/export/roster.csv"); toast("Downloading roster CSV…", "info"); });
+
+async function loadStudents() {
+  try {
+    const res = await fetch(`${API}/api/teacher/students`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ passcode: state.passcode })
+    });
+    const data = await res.json();
+    teacherStudentsCache = data.students || [];
+    renderStudents(teacherStudentsCache);
+
+    const studentSearchInput = el("studentSearchInput");
+    if (studentSearchInput && !studentSearchInput.dataset.bound) {
+      studentSearchInput.dataset.bound = "true";
+      studentSearchInput.addEventListener("input", (e) => {
+        const query = (e.target.value || "").toLowerCase().trim();
+        if (!query) {
+          renderStudents(teacherStudentsCache);
+          return;
+        }
+        const filtered = teacherStudentsCache.filter(s => 
+          (s.name || "").toLowerCase().includes(query) || 
+          (s.email || "").toLowerCase().includes(query)
+        );
+        renderStudents(filtered);
+      });
+    }
+  } catch (e) {
+    const box = el("studentList");
+    if(box) box.innerHTML = '<div class="roster-empty">Could not load students.</div>';
+  }
+}
+
+function renderStudents(list) {
+  const box = el("studentList"); 
+  if(!box) return;
+  box.innerHTML = "";
+  if (!list.length) { box.innerHTML = '<div class="roster-empty">No students found matching your search.</div>'; return; }
+  list.forEach(s => {
+    const row = document.createElement("div"); row.className = "student-row";
+    const courses = (s.courses && s.courses.length) ? s.courses.join(", ") : "— no course —";
+    const pw = s.has_password
+      ? '<span class="pw-status ok">🔑 Password set</span>'
+      : '<span class="pw-status warn">⚠️ No password</span>';
+    row.innerHTML = `
+      <div>
+        <div class="s-name">${escapeHtml(s.name)}</div>
+        ${s.email ? `<div class="s-email">${escapeHtml(s.email)}</div>` : ""}
+        <div class="s-email">Courses: ${escapeHtml(courses)}</div>
+        ${pw}
+      </div>
+      <button class="s-btn edit-btn">✏️ Edit</button>`;
+    row.querySelector(".edit-btn").addEventListener("click", () => openStudentEditor(s));
+    box.appendChild(row);
+  });
+}
+
+let editingStudent = null;
+let editCourses = [];
+
+function renderEditCourses() {
+  const wrap = el("edCourseList");
+  if(!wrap) return;
+  wrap.innerHTML = "";
+  if (!editCourses.length) { wrap.innerHTML = '<span class="ed-no-course">No courses — this student will see nothing until you add one.</span>'; return; }
+  editCourses.forEach((c, i) => {
+    const chip = document.createElement("span");
+    chip.className = "course-chip";
+    chip.innerHTML = `${escapeHtml(c)} <button type="button" class="chip-x" title="Remove">✕</button>`;
+    chip.querySelector(".chip-x").addEventListener("click", () => { editCourses.splice(i, 1); renderEditCourses(); });
+    wrap.appendChild(chip);
+  });
+}
+
+function openStudentEditor(s) {
+  editingStudent = s;
+  editCourses = Array.isArray(s.courses) ? [...s.courses] : [];
+  if(el("edName")) el("edName").value = s.name || "";
+  if(el("edEmail")) el("edEmail").value = s.email || "";
+  if(el("edPassword")) el("edPassword").value = "";
+  if(el("edCourseInput")) el("edCourseInput").value = "";
+  if(el("edStatus")) el("edStatus").textContent = "";
+  renderEditCourses();
+  if(el("studentModal")) el("studentModal").classList.remove("hidden");
+}
+function closeStudentEditor() { 
+  if(el("studentModal")) el("studentModal").classList.add("hidden"); 
+  editingStudent = null; 
+}
+
+if(el("closeStudentModal")) el("closeStudentModal").addEventListener("click", closeStudentEditor);
+if(el("edCancel")) el("edCancel").addEventListener("click", closeStudentEditor);
+
+if(el("edCourseAddBtn")) {
+  el("edCourseAddBtn").addEventListener("click", () => {
+    const input = el("edCourseInput");
+    if(!input) return;
+    const v = input.value.trim();
+    if (!v) return;
+    if (!editCourses.some(c => c.toLowerCase() === v.toLowerCase())) editCourses.push(v);
+    input.value = "";
+    renderEditCourses();
+  });
+  if(el("edCourseInput")) el("edCourseInput").addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); el("edCourseAddBtn").click(); } });
+}
+
+if(el("edGenPw")) {
+  el("edGenPw").addEventListener("click", () => {
+    const abc = "abcdefghijkmnpqrstuvwxyz23456789";
+    let p = ""; for (let i = 0; i < 8; i++) p += abc[Math.floor(Math.random() * abc.length)];
+    if(el("edPassword")) el("edPassword").value = p;
+  });
+}
+
+if(el("edSave")) {
+  el("edSave").addEventListener("click", async () => {
+    if (!editingStudent) return;
+    const payload = {
+      passcode: state.passcode,
+      id: editingStudent.id,
+      name: el("edName") ? el("edName").value.trim() : "",
+      email: el("edEmail") ? el("edEmail").value.trim() : "",
+      courses: editCourses,
+    };
+    const np = el("edPassword") ? el("edPassword").value.trim() : "";
+    if (np) payload.new_password = np;
+    el("edSave").disabled = true;
+    try {
+      const res = await fetch(`${API}/api/teacher/students/update`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload)
+      });
+      const data = await res.json();
+      if (res.ok) {
+        let msg = "Student updated.";
+        if (np) msg += " New password set — they'll need to log in again.";
+        toast(msg, "success", 5000);
+        closeStudentEditor();
+        loadStudents();
+      } else {
+        const stat = el("edStatus");
+        if(stat) {
+          stat.textContent = data.error || "Could not save.";
+          stat.className = "ed-status err";
+        }
+      }
+    } catch (e) {
+      const stat = el("edStatus");
+      if(stat) {
+        stat.textContent = "Network error while saving."; 
+        stat.className = "ed-status err";
+      }
+    } finally { el("edSave").disabled = false; }
+  });
+}
+
+if(el("edDelete")) {
+  el("edDelete").addEventListener("click", async () => {
+    if (!editingStudent) return;
+    if (!confirm(`Delete ${editingStudent.name || editingStudent.email}? This permanently removes their account and access.`)) return;
+    try {
+      const res = await fetch(`${API}/api/teacher/students/remove`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ passcode: state.passcode, id: editingStudent.id })
+      });
+      if (res.ok) { toast("Student deleted.", "success"); closeStudentEditor(); loadStudents(); }
+      else { const d = await res.json(); toast(d.error || "Could not delete.", "error"); }
+    } catch (e) { toast("Network error during delete.", "error"); }
+  });
+}
+
+if(el("addStudentBtn")) {
+  el("addStudentBtn").addEventListener("click", async () => {
+    const name = el("newStudentName") ? el("newStudentName").value.trim() : "";
+    const email = el("newStudentEmail") ? el("newStudentEmail").value.trim() : "";
+    const password = el("newStudentPassword") ? el("newStudentPassword").value : "";
+    const courses = el("newStudentCourses") ? el("newStudentCourses").value.trim() : "";
+    const err = el("addStudentErr"); 
+    if(err) err.classList.add("hidden");
+    if (!email) { if(err) { err.textContent = "Enter a student email."; err.classList.remove("hidden"); } return; }
+    const res = await fetch(`${API}/api/teacher/students/add`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ passcode: state.passcode, name, email, password, courses })
+    });
+    const data = await res.json();
+    if (!res.ok || data.error) { if(err) { err.textContent = data.error || "Could not add student."; err.classList.remove("hidden"); } return; }
+    if(el("newStudentName")) el("newStudentName").value = ""; 
+    if(el("newStudentEmail")) el("newStudentEmail").value = ""; 
+    if(el("newStudentPassword")) el("newStudentPassword").value = ""; 
+    if(el("newStudentCourses")) el("newStudentCourses").value = "";
+    if (data.merged) toast(data.message || "Student updated.", "success", 5000);
+    else toast("Student added.", "success");
+    loadStudents();
+  });
+}
+
+if(el("importBtn")) {
+  el("importBtn").addEventListener("click", async () => {
+    const fileInput = el("excelFile");
+    const msg = el("importMsg"); const err = el("importErr");
+    if(msg) msg.classList.add("hidden"); 
+    if(err) err.classList.add("hidden");
+    if (!fileInput || !fileInput.files.length) { if(err) { err.textContent = "Choose an .xlsx file first."; err.classList.remove("hidden"); } return; }
+    const fd = new FormData();
+    fd.append("file", fileInput.files[0]);
+    fd.append("passcode", state.passcode);
+    try {
+      const res = await fetch(`${API}/api/teacher/students/import`, { method: "POST", body: fd });
+      const data = await res.json();
+      if (!res.ok || data.error) { if(err) { err.textContent = data.error || "Import failed."; err.classList.remove("hidden"); } return; }
+      if(msg) {
+        msg.textContent = `Imported ✓  ${data.added} added, ${data.updated} updated.`;
+        msg.classList.remove("hidden");
+      }
+      fileInput.value = "";
+      loadStudents();
+    } catch (e) {
+      if(err) {
+        err.textContent = "Couldn't reach the server. Try again.";
+        err.classList.remove("hidden");
+      }
+    }
+  });
+}
+// ================= ROSTER DEDUPLICATION =================
+let duplicatesData = [];
+
+if (el("dedupeBtn")) {
+  el("dedupeBtn").addEventListener("click", async () => {
+    const modal = el("dedupeModal");
+    const body = el("dedupeBody");
+    const applyBtn = el("dedupeApply");
+    if (modal) modal.classList.remove("hidden");
+    if (body) body.innerHTML = '<div class="typing">Scanning roster for duplicate accounts <span class="dot">●</span><span class="dot">●</span><span class="dot">●</span></div>';
+    if (applyBtn) applyBtn.classList.add("hidden");
+
+    try {
+      const res = await fetch(`${API}/api/teacher/students/duplicates`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ passcode: state.passcode })
+      });
+      const data = await res.json();
+      duplicatesData = data.duplicates || [];
+
+      if (!duplicatesData.length) {
+        if (body) body.innerHTML = '<div class="roster-empty">No duplicate student emails found. Your roster is clean! ✓</div>';
+        return;
+      }
+
+      let html = `<p class="meta" style="margin-bottom: 12px;">Found <strong>${duplicatesData.length}</strong> duplicate student record(s). Merging will consolidate courses and retain active passwords.</p>`;
+      duplicatesData.forEach(d => {
+        html += `
+          <div class="q-block" style="margin-bottom: 8px; padding: 10px 14px;">
+            <strong>${escapeHtml(d.email)}</strong> (${escapeHtml(d.name || "No name")})<br>
+            <span class="meta">Combined courses: ${escapeHtml(d.courses ? d.courses.join(", ") : "None")}</span>
+          </div>
+        `;
+      });
+      if (body) body.innerHTML = html;
+      if (applyBtn) applyBtn.classList.remove("hidden");
+    } catch (e) {
+      if (body) body.innerHTML = '<div class="roster-empty">Failed to scan for duplicate accounts.</div>';
+    }
+  });
+}
+
+if (el("closeDedupe")) el("closeDedupe").addEventListener("click", () => el("dedupeModal").classList.add("hidden"));
+if (el("dedupeCancel")) el("dedupeCancel").addEventListener("click", () => el("dedupeModal").classList.add("hidden"));
+
+if (el("dedupeApply")) {
+  el("dedupeApply").addEventListener("click", async () => {
+    const btn = el("dedupeApply");
+    btn.disabled = true;
+    try {
+      const res = await fetch(`${API}/api/teacher/students/dedupe`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ passcode: state.passcode })
+      });
+      const data = await res.json();
+      if (res.ok) {
+        toast("Duplicate accounts merged successfully ✓", "success");
+        if (el("dedupeModal")) el("dedupeModal").classList.add("hidden");
+        loadStudents();
+        loadStats();
+      } else {
+        toast(data.error || "Merge failed.", "error");
+      }
+    } catch (e) {
+      toast("Network error while merging.", "error");
+    } finally {
+      btn.disabled = false;
+    }
+  });
+}
+// ================= ZOOM RECORDINGS & BULK CONTROLS =================
+if (el("importRecBtn")) {
+  el("importRecBtn").addEventListener("click", async () => {
+    const btn = el("importRecBtn");
+    const status = el("importRecStatus");
+    btn.disabled = true;
+    if (status) status.textContent = "Checking Zoom cloud for recordings…";
+    try {
+      const res = await fetch(`${API}/api/teacher/import-recordings`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ passcode: state.passcode })
+      });
+      const data = await res.json();
+      if (res.ok) {
+        toast(`Import complete: ${data.added || 0} new recording(s) added.`, "success");
+        if (status) status.textContent = `Imported ${data.added || 0} new.`;
+        loadTeacherRecordings();
+        loadStats();
+      } else {
+        toast(data.error || "Import failed.", "error");
+        if (status) status.textContent = "";
+      }
+    } catch (e) {
+      toast("Network error during import.", "error");
+      if (status) status.textContent = "";
+    } finally {
+      btn.disabled = false;
+    }
+  });
+}
+
+if (el("importOneBtn")) {
+  el("importOneBtn").addEventListener("click", async () => {
+    const input = el("importOneInput");
+    const status = el("importOneStatus");
+    const btn = el("importOneBtn");
+    const val = input ? input.value.trim() : "";
+    if (!val) { toast("Enter a Zoom meeting ID or recording URL.", "info"); return; }
+    btn.disabled = true;
+    if (status) status.textContent = "Importing…";
+    try {
+      const res = await fetch(`${API}/api/teacher/import-one`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ passcode: state.passcode, query: val })
+      });
+      const data = await res.json();
+      if (res.ok) {
+        toast("Recording imported successfully ✓", "success");
+        if (status) status.textContent = "Done ✓";
+        input.value = "";
+        loadTeacherRecordings();
+        loadStats();
+      } else {
+        toast(data.error || "Failed to import recording.", "error");
+        if (status) status.textContent = "";
+      }
+    } catch (e) {
+      toast("Network error during import.", "error");
+      if (status) status.textContent = "";
+    } finally {
+      btn.disabled = false;
+    }
+  });
+}
+
+if (el("deleteUnassignedBtn")) {
+  el("deleteUnassignedBtn").addEventListener("click", async () => {
+    if (!confirm("Are you sure you want to delete all recordings without an assigned unit/course?")) return;
+    const btn = el("deleteUnassignedBtn");
+    btn.disabled = true;
+    try {
+      const res = await fetch(`${API}/api/teacher/recordings/delete-unassigned`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ passcode: state.passcode })
+      });
+      const data = await res.json();
+      if (res.ok) {
+        toast("Unassigned recordings deleted.", "success");
+        loadTeacherRecordings();
+        loadStats();
+      } else {
+        toast(data.error || "Delete failed.", "error");
+      }
+    } catch (e) {
+      toast("Network error.", "error");
+    } finally {
+      btn.disabled = false;
+    }
+  });
+}
+
+if (el("transcribeAllBtn")) {
+  el("transcribeAllBtn").addEventListener("click", async () => {
+    if (!confirm("Transcribe all recordings that are missing transcripts? This runs in the background.")) return;
+    const btn = el("transcribeAllBtn");
+    const progressBox = el("bulkProgress");
+    const fill = el("bulkBarFill");
+    const txt = el("bulkProgressText");
+    btn.disabled = true;
+    if (progressBox) progressBox.classList.remove("hidden");
+    if (fill) fill.style.width = "15%";
+    if (txt) txt.textContent = "Starting transcription queue…";
+
+    try {
+      const res = await fetch(`${API}/api/teacher/transcribe-all`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ passcode: state.passcode })
+      });
+      const data = await res.json();
+      if (res.ok) {
+        toast("Transcription queue started.", "info");
+        if (fill) fill.style.width = "100%";
+        if (txt) txt.textContent = data.message || "Background transcription in progress.";
+        setTimeout(() => {
+          if (progressBox) progressBox.classList.add("hidden");
+          loadTeacherRecordings();
+        }, 3000);
+      } else {
+        toast(data.error || "Failed to start queue.", "error");
+        if (progressBox) progressBox.classList.add("hidden");
+      }
+    } catch (e) {
+      toast("Network error.", "error");
+      if (progressBox) progressBox.classList.add("hidden");
+    } finally {
+      btn.disabled = false;
+    }
+  });
+}
+let teacherRecordings = [];
+
+async function loadTeacherRecordings() {
+  const res = await fetch(`${API}/api/teacher/recordings`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ passcode: state.passcode })
+  });
+  const data = await res.json();
+  teacherRecordings = (data.recordings || []).map((r, i) => ({ ...r, _order: i }));
+  populateCourseFilter(teacherRecordings);
+  applyRecFilters();
+}
+
+function populateCourseFilter(list) {
+  const sel = el("recCourseFilter");
+  if(!sel) return;
+  const current = sel.value;
+  const units = Array.from(new Set(list.map(r => r.unit || "Unassigned"))).sort();
+  sel.innerHTML = '<option value="">All courses</option>' +
+    units.map(u => `<option value="${escapeHtml(u)}">${escapeHtml(u)}</option>`).join("");
+  if (current && units.includes(current)) sel.value = current;
+}
+
+function applyRecFilters() {
+  const searchEl = el("recSearch");
+  const courseEl = el("recCourseFilter");
+  const typeEl = el("recTypeFilter");
+  const sortEl = el("recSort");
+
+  const q = searchEl ? (searchEl.value || "").toLowerCase() : "";
+  const course = courseEl ? courseEl.value : "";
+  const type = typeEl ? typeEl.value : "";
+  const sort = sortEl ? sortEl.value : "date_asc";
+
+  let list = teacherRecordings.filter(r => {
+    const matchesCourse = !course || (r.unit || "Unassigned") === course;
+    const matchesType = !type || (r.source || "meeting") === type;
+    const matchesText = !q ||
+      (r.title || "").toLowerCase().includes(q) ||
+      (r.original_title || "").toLowerCase().includes(q) ||
+      (r.unit || "").toLowerCase().includes(q);
+    return matchesCourse && matchesType && matchesText;
+  });
+
+  const byDate = (a, b) => String(a.date || "").localeCompare(String(b.date || ""));
+  const byCourse = (a, b) => (a.unit || "Unassigned").localeCompare(b.unit || "Unassigned");
+  const byTitle = (a, b) => (a.title || "").localeCompare(b.title || "");
+  const sorters = {
+    added_desc: (a, b) => b._order - a._order,
+    added_asc: (a, b) => a._order - b._order,
+    date_desc: (a, b) => byDate(b, a),
+    date_asc: (a, b) => byDate(a, b),
+    course_az: (a, b) => byCourse(a, b) || byTitle(a, b),
+    title_az: (a, b) => byTitle(a, b),
+  };
+  list.sort(sorters[sort] || sorters.date_asc);
+
+  const countEl = el("recCount");
+  if(countEl) countEl.textContent = `${list.length} of ${teacherRecordings.length} recording${teacherRecordings.length === 1 ? "" : "s"}`;
+  renderTeacherRecordings(list);
+}
+
+if(el("recSearch")) el("recSearch").addEventListener("input", applyRecFilters);
+if(el("recCourseFilter")) el("recCourseFilter").addEventListener("change", applyRecFilters);
+if(el("recTypeFilter")) el("recTypeFilter").addEventListener("change", applyRecFilters);
+if(el("recSort")) el("recSort").addEventListener("change", applyRecFilters);
+
+function renderTeacherRecordings(list) {
+  const box = el("tRecList"); 
+  if(!box) return;
+  box.innerHTML = "";
+  if (!list.length) { box.innerHTML = '<div class="roster-empty">No recordings match your filter.</div>'; return; }
+  list.forEach(r => {
+    const row = document.createElement("div"); row.className = "t-rec";
+    const isWebinar = (r.source || "meeting") === "webinar";
+    const badge = `<span class="type-badge ${isWebinar ? "webinar" : "meeting"}">${isWebinar ? "📢 Webinar" : "🎥 Meeting"}</span>`;
+    const noTranscript = !r.segments;
+    const btnLabel = noTranscript ? "Generate transcript" : "Re-transcribe";
+    const topicsHtml = (r.topics && r.topics.length)
+      ? `<div class="rec-topics">${r.topics.map(t => `<span class="topic-tag">${escapeHtml(t)}</span>`).join("")}</div>` : "";
+    const summaryHtml = r.summary ? `<div class="rec-summary">${escapeHtml(r.summary)}</div>` : "";
+    const summaryLabel = r.summary ? "Regenerate summary" : "Generate summary";
+    row.innerHTML = `
+      <div>
+        <input class="title-in" value="${escapeHtml(r.title)}" />
+        <div class="orig">${badge}Original: ${escapeHtml(r.original_title)} · ${escapeHtml(r.date || "")} · <span class="seg-count">${r.segments}</span> lines</div>
+        <div class="transcribe-wrap">
+          <button class="transcribe-btn ${noTranscript ? "needs" : ""}">${btnLabel}</button>
+          <button class="summary-btn ghost-sm" ${noTranscript ? "disabled title='Transcribe first'" : ""}>${summaryLabel}</button>
+          <button class="delete-btn danger-btn">🗑️ Delete</button>
+          <span class="transcribe-status"></span>
+        </div>
+        ${summaryHtml}
+        ${topicsHtml}
+        <div class="notes-box">
+          <div class="notes-head">📎 Teacher notes <span class="notes-hint">(used by the AI to answer; students can't view or download them)</span></div>
+          <div class="notes-list"></div>
+          <div class="notes-attach">
+            <select class="note-lib-select"><option value="">Attach existing note ▾</option></select>
+            <button class="note-attach-btn ghost-sm">Attach</button>
+          </div>
+          <div class="notes-add">
+            <input type="file" class="note-file" accept=".pdf,.docx,.txt,.md" />
+            <button class="note-upload-btn ghost-sm">Upload new note</button>
+            <span class="note-status"></span>
+          </div>
+        </div>
+      </div>
+      <input class="unit-in" value="${escapeHtml(r.unit)}" placeholder="Unit / class" />
+      <div>
+        <div class="vis-toggle"><span class="switch ${r.visible ? "on" : ""}"></span><span class="vis-label">${r.visible ? "Visible" : "Hidden"}</span></div>
+        <div class="saved-flash">saved ✓</div>
+      </div>`;
+    const titleIn = row.querySelector(".title-in");
+    const unitIn = row.querySelector(".unit-in");
+    const sw = row.querySelector(".switch");
+    const visLabel = row.querySelector(".vis-label");
+    const flash = row.querySelector(".saved-flash");
+    const transBtn = row.querySelector(".transcribe-btn");
+    const transStatus = row.querySelector(".transcribe-status");
+    const segCount = row.querySelector(".seg-count");
+    const summaryBtn = row.querySelector(".summary-btn");
+    const deleteBtn = row.querySelector(".delete-btn");
+    let visible = r.visible;
+
+    summaryBtn.addEventListener("click", async () => {
+      if (summaryBtn.disabled) return;
+      summaryBtn.disabled = true;
+      const prev = summaryBtn.textContent;
+      summaryBtn.textContent = "Summarizing…";
+      try {
+        const res = await fetch(`${API}/api/teacher/summary`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ passcode: state.passcode, id: r.id })
+        });
+        const data = await res.json();
+        if (!res.ok) { toast(data.error || "Summary failed.", "error"); summaryBtn.textContent = prev; }
+        else {
+          toast("Summary generated ✓", "success");
+          const cached = teacherRecordings.find(x => x.id === r.id);
+          if (cached) { cached.summary = data.summary; cached.topics = data.topics; }
+          applyRecFilters();
+        }
+      } catch (e) { toast("Network error.", "error"); summaryBtn.textContent = prev; }
+      finally { summaryBtn.disabled = false; }
+    });
+
+    deleteBtn.addEventListener("click", async () => {
+      if (!confirm(`Permanently delete "${r.title}"? This cannot be undone.`)) return;
+      deleteBtn.disabled = true;
+      try {
+        const res = await fetch(`${API}/api/teacher/recordings/delete`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ passcode: state.passcode, id: r.id })
+        });
+        const data = await res.json();
+        if (res.ok) {
+          toast(`Deleted "${r.title}".`, "success");
+          teacherRecordings = teacherRecordings.filter(x => x.id !== r.id);
+          applyRecFilters(); loadStats();
+        } else { toast(data.error || "Delete failed.", "error"); deleteBtn.disabled = false; }
+      } catch (e) { toast("Network error during delete.", "error"); deleteBtn.disabled = false; }
+    });
+
+    const notesList = row.querySelector(".notes-list");
+    const noteFile = row.querySelector(".note-file");
+    const noteUploadBtn = row.querySelector(".note-upload-btn");
+    const noteStatus = row.querySelector(".note-status");
+    const noteLibSelect = row.querySelector(".note-lib-select");
+    const noteAttachBtn = row.querySelector(".note-attach-btn");
+
+    function renderNotes(notes) {
+      notesList.innerHTML = "";
+      if (!notes || !notes.length) { notesList.innerHTML = '<span class="notes-empty">No notes attached yet.</span>'; return; }
+      notes.forEach(n => {
+        const item = document.createElement("div");
+        item.className = "note-item";
+        item.innerHTML = `<span class="note-name">📄 ${escapeHtml(n.filename)}</span><span class="note-meta">${n.chars.toLocaleString()} chars</span><button class="note-del danger-btn">Detach</button>`;
+        item.querySelector(".note-del").addEventListener("click", async () => {
+          if (!confirm(`Detach "${n.filename}" from this recording?\n(The note stays in your library and on any other recordings using it.)`)) return;
+          try {
+            const res = await fetch(`${API}/api/teacher/notes/detach`, {
+              method: "POST", headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ passcode: state.passcode, id: r.id, note_id: n.id })
+            });
+            const data = await res.json();
+            if (res.ok) {
+              toast("Note detached from this recording.", "success");
+              const cached = teacherRecordings.find(x => x.id === r.id);
+              if (cached) cached.notes = data.recording.notes;
+              renderNotes(data.recording.notes);
+            } else toast(data.error || "Could not detach note.", "error");
+          } catch (e) { toast("Network error.", "error"); }
+        });
+        notesList.appendChild(item);
+      });
+    }
+    renderNotes(r.notes);
+
+    async function refreshLibDropdown() {
+      try {
+        const res = await fetch(`${API}/api/teacher/notes/library`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ passcode: state.passcode, for_recording: r.id })
+        });
+        const data = await res.json();
+        const attachedIds = new Set((r.notes || []).map(n => n.id));
+        noteLibSelect.innerHTML = '<option value="">Attach existing note ▾</option>';
+        (data.library || []).filter(n => !attachedIds.has(n.id)).forEach(n => {
+          const opt = document.createElement("option");
+          opt.value = n.id;
+          opt.textContent = `${n.filename} (used by ${n.used_by})`;
+          noteLibSelect.appendChild(opt);
+        });
+      } catch (e) {}
+    }
+    refreshLibDropdown();
+
+    noteAttachBtn.addEventListener("click", async () => {
+      const nid = noteLibSelect.value;
+      if (!nid) { toast("Pick a note from the list first.", "info"); return; }
+      try {
+        const res = await fetch(`${API}/api/teacher/notes/attach`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ passcode: state.passcode, id: r.id, note_id: nid })
+        });
+        const data = await res.json();
+        if (res.ok) {
+          toast("Shared note attached ✓", "success");
+          const cached = teacherRecordings.find(x => x.id === r.id);
+          if (cached) cached.notes = data.recording.notes;
+          renderNotes(data.recording.notes);
+          refreshLibDropdown();
+        } else toast(data.error || "Could not attach note.", "error");
+      } catch (e) { toast("Network error.", "error"); }
+    });
+
+    noteUploadBtn.addEventListener("click", async () => {
+      const f = noteFile.files[0];
+      if (!f) { toast("Choose a PDF, DOCX or TXT file first.", "info"); return; }
+      noteUploadBtn.disabled = true;
+      noteStatus.textContent = "Uploading & reading…";
+      const fd = new FormData();
+      fd.append("passcode", state.passcode);
+      fd.append("id", r.id);
+      fd.append("file", f);
+      try {
+        const res = await fetch(`${API}/api/teacher/notes/upload`, { method: "POST", body: fd });
+        const data = await res.json();
+        if (res.ok) {
+          noteStatus.textContent = "";
+          const fileKB = Math.round((data.file_bytes || 0) / 1024);
+          const textKB = Math.max(1, Math.round((data.text_chars || 0) / 1024));
+          let msg = `Note "${data.note.filename}" attached ✓ (${fileKB} KB file → ${textKB} KB text stored)`;
+          if (data.trimmed) msg += ` — very long, trimmed to the first ${textKB} KB of text.`;
+          toast(msg, "success", data.trimmed ? 6000 : 4000);
+          const cached = teacherRecordings.find(x => x.id === r.id);
+          if (cached) cached.notes = data.recording.notes;
+          renderNotes(data.recording.notes);
+          refreshLibDropdown();
+          noteFile.value = "";
+        } else { noteStatus.textContent = ""; toast(data.error || "Upload failed.", "error"); }
+      } catch (e) { noteStatus.textContent = ""; toast("Network error during upload.", "error"); }
+      finally { noteUploadBtn.disabled = false; }
+    });
+
+    transBtn.addEventListener("click", async () => {
+      if (transBtn.disabled) return;
+      transBtn.disabled = true;
+      transStatus.className = "transcribe-status working";
+      transStatus.textContent = "Transcribing… this can take a few minutes.";
+      try {
+        const res = await fetch(`${API}/api/teacher/transcribe`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ passcode: state.passcode, id: r.id })
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          transStatus.className = "transcribe-status error";
+          transStatus.textContent = data.error || "Transcription failed.";
+        } else {
+          segCount.textContent = data.segments;
+          transStatus.className = "transcribe-status ok";
+          transStatus.textContent = `Done — ${data.segments} lines.`;
+          transBtn.textContent = "Re-transcribe";
+          transBtn.classList.remove("needs");
+          const cached = teacherRecordings.find(x => x.id === r.id);
+          if (cached) cached.segments = data.segments;
+        }
+      } catch (e) {
+        transStatus.className = "transcribe-status error";
+        transStatus.textContent = "Network error — please try again.";
+      } finally {
+        transBtn.disabled = false;
+      }
+    });
+
+    function save() {
+      fetch(`${API}/api/teacher/update`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ passcode: state.passcode, id: r.id, display_title: titleIn.value, unit: unitIn.value, visible })
+      }).then(() => {
+        flash.classList.add("show"); setTimeout(() => flash.classList.remove("show"), 1200);
+        const cached = teacherRecordings.find(x => x.id === r.id);
+        if (cached) { cached.title = titleIn.value; cached.unit = unitIn.value; cached.visible = visible; }
+        populateCourseFilter(teacherRecordings);
+      });
+    }
+    titleIn.addEventListener("change", save);
+    unitIn.addEventListener("change", save);
+    sw.addEventListener("click", () => {
+      visible = !visible;
+      sw.classList.toggle("on", visible);
+      visLabel.textContent = visible ? "Visible" : "Hidden";
+      save();
+    });
+    box.appendChild(row);
+  });
+}
+
+async function loadQuestions() {
+  const res = await fetch(`${API}/api/teacher/questions`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ passcode: state.passcode })
+  });
+  const data = await res.json();
+  const box = el("qLog"); 
+  if(!box) return;
+  box.innerHTML = "";
+  const qs = data.questions || [];
+  if (!qs.length) { box.innerHTML = '<div class="q-empty">No questions yet. They\'ll show up here as students ask.</div>'; return; }
+  
+  qs.forEach(q => {
+    const row = document.createElement("div"); 
+    row.className = "q-row";
+    row.style.cssText = "display: flex; flex-direction: column; gap: 8px; padding: 14px; background: var(--panel); border: 1.5px solid var(--line); border-radius: 12px; margin-bottom: 12px;";
+    
+    row.innerHTML = `
+      <div class="q-meta" style="font-weight: 700; color: var(--brand-d);">
+        👤 ${escapeHtml(q.student)} · 📁 ${escapeHtml(q.recording_title)} (${escapeHtml(q.unit)}) · 🕒 ${escapeHtml(q.time)}
+      </div>
+      <div style="font-size: 14px; font-weight: 800; color: var(--text);">
+        ❓ Q: ${escapeHtml(q.question)}
+      </div>
+      <div style="font-size: 13.5px; color: var(--muted); background: var(--bg); padding: 10px; border-radius: 8px; border-left: 3px solid var(--brand); line-height: 1.4;">
+        🤖 <strong>AI Answer:</strong> ${escapeHtml(q.answer || "No answer recorded.")}
+      </div>
+    `;
+    box.appendChild(row);
+  });
+}
+
+if(el("savePass")) {
+  el("savePass").addEventListener("click", async () => {
+    const newPassEl = el("newPass");
+    if(!newPassEl) return;
+    const np = newPassEl.value.trim();
+    if (!np) return;
+    const res = await fetch(`${API}/api/teacher/passcode`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ passcode: state.passcode, new_passcode: np })
+    });
+    if (res.ok) { 
+      state.passcode = np; 
+      newPassEl.value = ""; 
+      if(el("passSaved")) {
+        el("passSaved").classList.remove("hidden"); 
+        setTimeout(() => el("passSaved").classList.add("hidden"), 2000); 
+      }
+    }
+  });
+}
+
+function signOut() {
+  state.name = ""; state.token = ""; state.passcode = ""; state.current = null; state.recordings = [];
+  localStorage.removeItem("ng_studentToken");
+  localStorage.removeItem("ng_studentName");
+  localStorage.removeItem("ng_teacherPasscode");
+  const p = el("passInput"); if (p) p.value = "";
+  const em = el("emailInput"); if (em) em.value = "";
+  const pw = el("passwordInput"); if (pw) pw.value = "";
+  show("landing");
+}
+if(el("studentSignOut")) el("studentSignOut").addEventListener("click", signOut);
+if(el("teacherSignOut")) el("teacherSignOut").addEventListener("click", signOut);
+
+if(el("saveLogo")) {
+  el("saveLogo").addEventListener("click", async () => {
+    const fileInput = el("logoFile");
+    const ok = el("logoSaved"); const err = el("logoErr");
+    if(ok) ok.classList.add("hidden"); 
+    if(err) err.classList.add("hidden");
+    if (!fileInput || !fileInput.files.length) { if(err) { err.textContent = "Choose an image file first."; err.classList.remove("hidden"); } return; }
+    const fd = new FormData();
+    fd.append("file", fileInput.files[0]);
+    fd.append("passcode", state.passcode);
+    try {
+      const res = await fetch(`${API}/api/teacher/logo`, { method: "POST", body: fd });
+      const data = await res.json();
+      if (!res.ok || data.error) { if(err) { err.textContent = data.error || "Upload failed."; err.classList.remove("hidden"); } return; }
+      if(ok) {
+        ok.classList.remove("hidden"); 
+        setTimeout(() => ok.classList.add("hidden"), 2500);
+      }
+      fileInput.value = "";
+      applyLogo(data.logo + "?t=" + Date.now());
+    } catch (e) {
+      if(err) {
+        err.textContent = "Couldn't reach the server. Try again.";
+        err.classList.remove("hidden");
+      }
+    }
+  });
+}
+
+function applyLogo(url) {
+  if (!url) return;
+  document.querySelectorAll(".logo, .logo-sm").forEach(node => {
+    if (node.dataset.emoji === undefined) node.dataset.emoji = node.innerHTML;
+    const img = document.createElement("img");
+    img.alt = "logo";
+    img.addEventListener("error", () => { node.innerHTML = node.dataset.emoji; });
+    img.src = url;
+    node.innerHTML = "";
+    node.appendChild(img);
+  });
+  const preview = el("logoPreview");
+  if (preview) { preview.src = url; preview.classList.remove("hidden"); }
+}
+
+async function loadBranding() {
+  try {
+    const res = await fetch(`${API}/api/branding`);
+    const data = await res.json();
+    if (data.logo) applyLogo(data.logo + "?t=" + Date.now());
+  } catch (e) {}
+}
+
+// ==============================================================================
+// STUDENT PAST PAPER SOLVER (DIRECT LIBRARY SELECTION)
+// ==============================================================================
+let ppStudentLibrary = [];
+
+async function initStudentPastPapers() {
+  const sel = el("ppCourseSelect");
+  if (!sel) return;
+
+  const courseSet = new Set();
+  (state.recordings || []).forEach(r => {
+    const u = (r.unit || "").trim();
+    if (u && u.toLowerCase() !== "unassigned") courseSet.add(u);
+  });
+
+  try {
+    const res = await fetch(`${API}/api/student/pastpaper/meta`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token: state.token })
+    });
+    if (res.ok) {
+      const data = await res.json();
+      state.courseSyllabi = data.syllabi || {};
+      ppStudentLibrary = data.library || [];
+      (data.courses || []).forEach(c => {
+        if (c && c.trim() && c.trim().toLowerCase() !== "unassigned") courseSet.add(c.trim());
+      });
+    }
+  } catch (e) {
+    console.error("Error loading past paper metadata:", e);
+  }
+
+  const courses = Array.from(courseSet).sort();
+  sel.innerHTML = '<option value="">Select course...</option>';
+  if (courses.length === 0) {
+    sel.innerHTML += '<option value="" disabled>(No courses available)</option>';
+  } else {
+    courses.forEach(c => sel.appendChild(new Option(c, c)));
+  }
+
+  sel.onchange = () => {
+    const chosen = sel.value;
+    const badge = el("ppSyllabusBadge");
+    if (badge) {
+      badge.textContent = state.courseSyllabi[chosen]
+        ? `🎯 Syllabus: ${state.courseSyllabi[chosen]}`
+        : "Standard Exam Board Specification";
+    }
+    populateStudentCascade("year");
+  };
+}
+
+function populateStudentCascade(level) {
+  const course = el("ppCourseSelect").value;
+  const yearSel = el("ppYearSelect");
+  const seriesSel = el("ppSeriesSelect");
+  const paperSel = el("ppPaperSelect");
+  const qSel = el("ppQuestionSelect");
+
+  if (!course) return;
+
+  if (level === "year") {
+    const years = [...new Set(ppStudentLibrary.filter(x => x.course === course).map(x => x.year))].sort().reverse();
+    yearSel.innerHTML = '<option value="">Select Year...</option>';
+    years.forEach(y => yearSel.appendChild(new Option(y, y)));
+    yearSel.disabled = years.length === 0;
+    seriesSel.disabled = true; paperSel.disabled = true; qSel.disabled = true;
+    yearSel.onchange = () => populateStudentCascade("series");
+  } else if (level === "series") {
+    const year = yearSel.value;
+    const series = [...new Set(ppStudentLibrary.filter(x => x.course === course && x.year === year).map(x => x.series))];
+    seriesSel.innerHTML = '<option value="">Select Series...</option>';
+    series.forEach(s => seriesSel.appendChild(new Option(s, s)));
+    seriesSel.disabled = series.length === 0;
+    paperSel.disabled = true; qSel.disabled = true;
+    seriesSel.onchange = () => populateStudentCascade("paper");
+  } else if (level === "paper") {
+    const year = yearSel.value;
+    const series = seriesSel.value;
+    const papers = [...new Set(ppStudentLibrary.filter(x => x.course === course && x.year === year && x.series === series).map(x => x.paper))];
+    paperSel.innerHTML = '<option value="">Select Paper...</option>';
+    papers.forEach(p => paperSel.appendChild(new Option(p, p)));
+    paperSel.disabled = papers.length === 0;
+    qSel.disabled = true;
+    paperSel.onchange = () => populateStudentCascade("question");
+  } else if (level === "question") {
+    const year = yearSel.value;
+    const series = seriesSel.value;
+    const paper = paperSel.value;
+    const qs = [...new Set(ppStudentLibrary.filter(x => x.course === course && x.year === year && x.series === series && x.paper === paper).map(x => x.question))];
+    qSel.innerHTML = '<option value="">Select Question...</option>';
+    qs.forEach(q => qSel.appendChild(new Option(q, q)));
+    qSel.disabled = qs.length === 0;
+  }
+}
+
+if (el("solvePastPaperBtn")) {
+  el("solvePastPaperBtn").addEventListener("click", async () => {
+    const course = el("ppCourseSelect").value;
+    const year = el("ppYearSelect").value;
+    const series = el("ppSeriesSelect").value;
+    const paper = el("ppPaperSelect").value;
+    const question = el("ppQuestionSelect").value;
+
+    if (!course) { toast("Please select a course.", "info"); return; }
+    if (!year || !series || !paper || !question) {
+      toast("Please complete all dropdowns to pick a question.", "info");
+      return;
     }
 
+    const fd = new FormData();
+    fd.append("token", state.token);
+    fd.append("course", course);
+    fd.append("year", year);
+    fd.append("series", series);
+    fd.append("paper", paper);
+    fd.append("question", question);
+    fd.append("doubt", el("ppDoubtInput") ? el("ppDoubtInput").value.trim() : "");
 
-def _card_notes_meta(r):
-    lib = load_notes_library()
-    out = []
-    for nid in (r.get("note_ids") or []):
-        n = note_by_id(nid, lib)
-        if n:
-            out.append({"id": n["id"], "filename": n.get("filename"),
-                        "chars": n.get("chars", sum(len(c) for c in n.get("chunks", []))),
-                        "chunks": len(n.get("chunks", []))})
-    return out
+    const btn = el("solvePastPaperBtn");
+    const origText = btn.innerText;
+    btn.innerText = "⏳ Generating Official Solution & Model Answer...";
+    btn.disabled = true;
 
+    try {
+      const res = await fetch(`${API}/api/student/pastpaper/solve`, { method: "POST", body: fd });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Solving failed.");
+      renderStudentPastPaperSolution(data);
+    } catch (err) {
+      toast(err.message, "error");
+    } finally {
+      btn.innerText = origText;
+      btn.disabled = false;
+    }
+  });
+}
 
-class RecListBody(BaseModel):
-    token: str | None = None
+function renderStudentPastPaperSolution(data) {
+  if (el("ppEmptyState")) el("ppEmptyState").classList.add("hidden");
+  const resBox = el("ppSolutionResult");
+  if (!resBox) return;
+  resBox.classList.remove("hidden");
+  resBox.innerHTML = "";
 
+  // Smoothly scroll the container to the top of the answer
+  const pane = el("studentPastPapersPane");
+  if (pane) pane.scrollTo({ top: 0, behavior: "smooth" });
+  
+  // 1. Optional Teacher Resource Card
+  if (data.teacher_asset) {
+    const asset = data.teacher_asset;
+    const assetCard = document.createElement("div");
+    assetCard.style.cssText = "background: linear-gradient(135deg, rgba(11,191,191,0.08), rgba(12,166,120,0.12)); border: 1.5px solid var(--brand); border-radius: 12px; padding: 14px; margin-bottom: 16px;";
+    
+    let links = "";
+    if (asset.video_url) {
+      links += `<a href="${escapeHtml(asset.video_url)}" target="_blank" class="primary" style="display:inline-flex; align-items:center; gap:6px; padding:6px 12px; font-size:12px; text-decoration:none; margin-right:8px; border-radius:8px;">🎥 Watch Video Walkthrough</a>`;
+    }
+    if (asset.answered_doc_name) {
+      links += `<span class="ghost-sm" style="padding:6px 12px; font-size:12px; border-radius:8px;">📄 Model Answer Doc: <strong>${escapeHtml(asset.answered_doc_name)}</strong></span>`;
+    }
 
-@app.post("/api/recordings")
-def list_recordings(body: RecListBody):
-    sess = valid_session(body.token)
-    if not sess:
-        return JSONResponse({"error": "Your session has expired. Please log in again."}, status_code=401)
-    my_courses = sess.get("courses", [])
-    def allowed(r):
-        if not r.get("visible", True):
-            return False
-        if not my_courses:
-            return False
-        return (r.get("unit") or "Unassigned") in my_courses
-    def _date_key(r):
-        return (r.get("date") or "9999-12-31 23:59:59")
-    allowed_recs = sorted([r for r in RECORDINGS if allowed(r)], key=_date_key)
-    out = [_card(r) for r in allowed_recs]
-    units = []
-    seen = set()
-    for r in allowed_recs:
-        u = r.get("unit") or "Unassigned"
-        if u not in seen:
-            seen.add(u)
-            units.append(u)
-    return {"recordings": out, "units": units}
+    assetCard.innerHTML = `
+      <div style="font-weight:800; font-size:13.5px; color:var(--brand-d); margin-bottom:6px;">👨‍🏫 Teacher Materials Linked</div>
+      <div>${links || '<span class="meta">Teacher resources indexed for this question.</span>'}</div>
+    `;
+    resBox.appendChild(assetCard);
+  }
 
+  const formatText = (txt) => {
+    let clean = escapeHtml(txt || "");
+    return clean.replace(/\*\*(.+?)\*\*/g, '<strong style="color: var(--brand-d); background: rgba(11,191,191,0.12); padding: 1px 6px; border-radius: 4px; font-weight: 700;">$1</strong>');
+  };
 
-class LoginBody(BaseModel):
-    passcode: str
+  // 2. Parse the 4 Sections
+  const raw = data.solution_markdown || "";
+  const sec1Match = raw.match(/###\s*1\.[^\n]*\n([\s\S]*?)(?=###\s*2\.|$)/i);
+  const sec2Match = raw.match(/###\s*2\.[^\n]*\n([\s\S]*?)(?=###\s*3\.|$)/i);
+  const sec3Match = raw.match(/###\s*3\.[^\n]*\n([\s\S]*?)(?=###\s*4\.|$)/i);
+  const sec4Match = raw.match(/###\s*4\.[^\n]*\n([\s\S]*?)$/i);
 
+  const sec1Raw = sec1Match ? sec1Match[1].trim() : "";
+  const sec2Raw = sec2Match ? sec2Match[1].trim() : "";
+  const sec3Raw = sec3Match ? sec3Match[1].trim() : "";
+  const sec4Raw = sec4Match ? sec4Match[1].trim() : "";
 
-def check_passcode(passcode: str) -> bool:
-    return passcode == load_config().get("passcode")
-check_teacher = check_passcode
+  const wrap = document.createElement("div");
+  wrap.style.cssText = "display: flex; flex-direction: column; gap: 16px;";
 
-@app.post("/api/teacher/login")
-def teacher_login(body: LoginBody):
-    if check_passcode(body.passcode):
-        return {"ok": True}
-    return JSONResponse({"ok": False, "error": "Wrong passcode"}, status_code=401)
+  // Header Banner
+  wrap.innerHTML = `
+    <div style="display: flex; justify-content: space-between; align-items: center; background: var(--panel); border: 1.5px solid var(--line); border-radius: 12px; padding: 12px 18px;">
+      <div style="display: flex; align-items: center; gap: 10px;">
+        <span class="q-num" style="font-size: 13.5px; font-weight: 800; padding: 4px 12px; border-radius: 20px;">${escapeHtml(data.exam_ref)}</span>
+        <span style="font-size: 13px; font-weight: 700; color: var(--text);">Exam Solution &amp; Examiner Guide</span>
+      </div>
+      <span class="meta" style="font-weight: 800; color: var(--brand-d); font-size: 12px;">${escapeHtml(data.syllabus)}</span>
+    </div>
+  `;
 
+  // CARD 1: Complete Model Answer (A* Student Paper View)
+  if (sec1Raw) {
+    const card1 = document.createElement("div");
+    card1.style.cssText = "background: linear-gradient(180deg, var(--panel), var(--panel2)); border: 2px solid var(--brand); border-radius: 14px; padding: 18px 20px; box-shadow: var(--shadow-sm);";
 
-def _norm(s):
-    return (s or "").strip().lower()
+    const paras = sec1Raw.split(/\n\s*\n/).filter(Boolean);
+    const bodyHtml = paras.map(p => `<p style="font-size: 14px; line-height: 1.7; color: var(--text); margin-bottom: 10px; font-style: normal;">${formatText(p.trim())}</p>`).join("");
 
+    card1.innerHTML = `
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; border-bottom: 1.5px solid var(--line); padding-bottom: 8px;">
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <span style="font-size: 18px;">🏆</span>
+          <h4 style="margin: 0; font-size: 15px; font-weight: 800; color: var(--brand-d);">1. Complete Model Answer (Full Marks)</h4>
+        </div>
+        <span style="font-size: 11px; font-weight: 800; background: var(--brand); color: white; padding: 3px 8px; border-radius: 12px;">A* EXAM SCRIPT</span>
+      </div>
+      <div style="background: var(--bg); padding: 14px 18px; border-radius: 10px; border-left: 4px solid var(--brand);">${bodyHtml}</div>
+    `;
+    wrap.appendChild(card1);
+  }
 
-def normalize_courses(value):
-    if value is None:
-        return []
-    if isinstance(value, str):
-        parts = re.split(r"[;,]", value)
-    elif isinstance(value, (list, tuple)):
-        parts = []
-        for v in value:
-            if isinstance(v, str):
-                parts.extend(re.split(r"[;,]", v))
-            elif v is not None:
-                parts.append(str(v))
-    else:
-        return []
-    seen, out = set(), []
-    for p in parts:
-        p = (p or "").strip()
-        if p and p.lower() not in seen:
-            out.append(p); seen.add(p.lower())
-    return out
+  // CARD 2: Mark Scheme Breakdown & Mandatory Keywords
+  if (sec2Raw) {
+    const card2 = document.createElement("div");
+    card2.style.cssText = "background: var(--panel); border: 1.5px solid var(--line); border-radius: 14px; padding: 18px 20px; box-shadow: var(--shadow-sm);";
 
+    const lines = sec2Raw.split("\n").map(l => l.trim()).filter(Boolean);
+    let rubricHtml = "";
 
-def _repair_roster_courses():
-    try:
-        roster = load_roster()
-        changed = False
-        for s in roster:
-            fixed = normalize_courses(s.get("courses"))
-            if fixed != s.get("courses"):
-                s["courses"] = fixed
-                changed = True
-        if changed:
-            save_roster(roster)
-            print("[roster] normalized course lists on startup")
-    except Exception as e:
-        print(f"[roster] repair warning: {e}")
+    lines.forEach(line => {
+      const numMatch = line.match(/^(\d+)\.\s*(.*)/);
+      if (numMatch) {
+        rubricHtml += `
+          <div style="display: flex; gap: 12px; align-items: flex-start; padding: 8px 0; border-bottom: 1px dashed var(--line);">
+            <span style="background: var(--brand-d); color: #fff; font-weight: 800; font-size: 11px; min-width: 24px; height: 24px; border-radius: 50%; display: flex; align-items: center; justify-content: center; margin-top: 1px;">${numMatch[1]}</span>
+            <div style="font-size: 13.5px; line-height: 1.5; color: var(--text); flex: 1;">${formatText(numMatch[2])}</div>
+          </div>
+        `;
+      } else {
+        rubricHtml += `<p style="font-size: 13px; color: var(--muted); margin-bottom: 8px;">${formatText(line)}</p>`;
+      }
+    });
 
+    card2.innerHTML = `
+      <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 12px; border-bottom: 1.5px solid var(--line); padding-bottom: 8px;">
+        <span style="font-size: 17px;">🎯</span>
+        <h4 style="margin: 0; font-size: 15px; font-weight: 800; color: var(--brand-d);">2. Mark Scheme Breakdown &amp; Mandatory Keywords</h4>
+      </div>
+      <div>${rubricHtml}</div>
+    `;
+    wrap.appendChild(card2);
+  }
 
-_repair_roster_courses()
+  // CARD 3: Mechanism & Conceptual Link
+  if (sec3Raw) {
+    const card3 = document.createElement("div");
+    card3.style.cssText = "background: var(--panel); border: 1.5px solid var(--line); border-radius: 14px; padding: 18px 20px; box-shadow: var(--shadow-sm);";
 
+    const paras = sec3Raw.split(/\n\s*\n/).filter(Boolean);
+    const bodyHtml = paras.map(p => `<p style="font-size: 13.5px; line-height: 1.65; color: var(--text); margin-bottom: 10px;">${formatText(p.trim())}</p>`).join("");
 
-class StudentLoginBody(BaseModel):
-    email: str
-    password: str
+    card3.innerHTML = `
+      <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 12px; border-bottom: 1.5px solid var(--line); padding-bottom: 8px;">
+        <span style="font-size: 17px;">🧬</span>
+        <h4 style="margin: 0; font-size: 15px; font-weight: 800; color: var(--text);">3. Conceptual Link &amp; Biological Mechanism</h4>
+      </div>
+      <div>${bodyHtml}</div>
+    `;
+    wrap.appendChild(card3);
+  }
 
+  // CARD 4: Examiner Traps & Common Mistakes
+  if (sec4Raw) {
+    const card4 = document.createElement("div");
+    card4.style.cssText = "background: rgba(245, 159, 0, 0.05); border: 1.5px solid rgba(245, 159, 0, 0.35); border-radius: 14px; padding: 18px 20px;";
 
-@app.post("/api/student/login")
-def student_login(body: StudentLoginBody):
-    roster = load_roster()
-    for st in roster:
-        if _norm(st.get("email")) == _norm(body.email) and verify_pw(body.password, st.get("password_hash")):
-            token = secrets.token_urlsafe(24)
-            SESSIONS[token] = {
-                "student_id": st["id"],
-                "name": st.get("name") or st.get("email"),
-                "courses": normalize_courses(st.get("courses")),
+    const trapLines = sec4Raw.split("\n").map(l => l.trim()).filter(Boolean);
+    let trapsHtml = "";
+
+    trapLines.forEach(line => {
+      const cleanLine = line.replace(/^[-*]\s*/, "");
+      trapsHtml += `
+        <div style="display: flex; gap: 10px; align-items: flex-start; margin-bottom: 8px;">
+          <span style="color: #f59f00; font-size: 14px; margin-top: 2px;">⚠️</span>
+          <div style="font-size: 13px; line-height: 1.5; color: var(--text);">${formatText(cleanLine)}</div>
+        </div>
+      `;
+    });
+
+    card4.innerHTML = `
+      <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 12px; border-bottom: 1px solid rgba(245, 159, 0, 0.25); padding-bottom: 8px;">
+        <h4 style="margin: 0; font-size: 15px; font-weight: 800; color: #f59f00;">4. Examiner Traps &amp; Common Mistakes</h4>
+      </div>
+      <div>${trapsHtml}</div>
+    `;
+    wrap.appendChild(card4);
+  }
+
+  // Fallback if headings were altered
+  if (!sec1Raw && !sec2Raw && !sec3Raw && !sec4Raw) {
+    const fallback = document.createElement("div");
+    fallback.className = "q-block";
+    fallback.style.padding = "20px";
+    fallback.innerHTML = `<div style="line-height: 1.65; font-size: 13.5px;">${formatText(raw).replace(/\n/g, '<br>')}</div>`;
+    wrap.appendChild(fallback);
+  }
+
+  resBox.appendChild(wrap);
+}
+
+// ==============================================================================
+// TEACHER PAST PAPER HUB (ISOLATED LIBRARY)
+// ==============================================================================
+async function loadTeacherPastPaperHub() {
+  return refreshPastPaperHub();
+}
+
+// 1. Save Syllabus Mapping with Direct UI Feedback
+let teacherSyllabiCache = {};
+
+if (el("saveSyllabusBtn")) {
+  el("saveSyllabusBtn").addEventListener("click", async () => {
+    const course = el("tppCourseSelect").value;
+    const syllabus = el("tppSyllabusCode").value;
+    const btn = el("saveSyllabusBtn");
+
+    if (!course) {
+      toast("Please select a course first.", "info");
+      return;
+    }
+
+    const passcode = state.passcode || localStorage.getItem("ng_teacherPasscode") || "";
+    if (!passcode) {
+      toast("Session expired: please sign in again.", "error");
+      return;
+    }
+
+    const origText = btn.textContent;
+    btn.textContent = "Saving…";
+    btn.disabled = true;
+
+    try {
+      const res = await fetch(`${API}/api/teacher/pastpaper/config/save`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ passcode, course, syllabus })
+      });
+      const data = await res.json();
+
+      if (res.ok) {
+        btn.textContent = "Saved ✓";
+        btn.style.background = "var(--ok, #0ca678)";
+        toast(`Mapped "${course}" to ${syllabus} ✓`, "success", 4000);
+        teacherSyllabiCache[course] = syllabus;
+        setTimeout(() => {
+          btn.textContent = origText;
+          btn.style.background = "";
+          btn.disabled = false;
+        }, 2000);
+      } else {
+        btn.textContent = origText;
+        btn.disabled = false;
+        toast(data.error || "Failed to save mapping.", "error");
+      }
+    } catch (e) {
+      btn.textContent = origText;
+      btn.disabled = false;
+      toast("Network error saving syllabus.", "error");
+    }
+  });
+}
+
+// Automatically display the existing saved syllabus when switching courses
+if (el("tppCourseSelect")) {
+  el("tppCourseSelect").addEventListener("change", () => {
+    const selectedCourse = el("tppCourseSelect").value;
+    if (selectedCourse && teacherSyllabiCache[selectedCourse]) {
+      el("tppSyllabusCode").value = teacherSyllabiCache[selectedCourse];
+      toast(`Loaded current mapping: ${teacherSyllabiCache[selectedCourse]}`, "info", 2500);
+    }
+  });
+}
+
+// ==========================================
+// FIX: PAST PAPER HUB COURSES & DOCUMENT LIBRARY
+// ==========================================
+
+function renderTeacherOverrides(list) {
+  const container = el("tppOverridesList");
+  if (!container) return;
+  container.innerHTML = "";
+
+  if (!list || !list.length) {
+    container.innerHTML = '<p class="meta">No questions added to the library yet.</p>';
+    return;
+  }
+
+  // Group by Course -> Exam Pack (Year Series Paper)
+  const tree = {};
+  list.forEach(item => {
+    const course = item.course || "Unassigned Course";
+    const examKey = `${item.year || ''} ${item.series || ''} Paper ${item.paper || ''}`.trim();
+    
+    if (!tree[course]) tree[course] = {};
+    if (!tree[course][examKey]) tree[course][examKey] = [];
+    tree[course][examKey].push(item);
+  });
+
+  // Render Course Groups
+  Object.keys(tree).sort().forEach(courseName => {
+    const courseCard = document.createElement("div");
+    courseCard.style.cssText = "background: var(--panel); border: 1.5px solid var(--line); border-radius: 12px; margin-bottom: 16px; overflow: hidden; box-shadow: var(--shadow-sm);";
+
+    let examBlocksHtml = "";
+    const examKeys = Object.keys(tree[courseName]).sort().reverse();
+
+    examKeys.forEach(examKey => {
+      const qItems = tree[courseName][examKey];
+      // Sort questions alphanumerically (Q1(a), Q1(b), Q2...)
+      qItems.sort((a,b) => String(a.question).localeCompare(String(b.question), undefined, {numeric: true}));
+
+      let qRows = "";
+      qItems.forEach(q => {
+        const hasEr = q.examiner_notes && q.examiner_notes.trim().length > 0;
+        qRows += `
+          <div style="display: flex; justify-content: space-between; align-items: center; padding: 8px 12px; background: var(--bg); border-radius: 8px; margin-top: 6px; font-size: 12.5px; border: 1px solid var(--line);">
+            <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+              <strong style="color: var(--brand-d); font-weight: 800;">Q${escapeHtml(q.question)}</strong>
+              ${hasEr ? '<span style="background: rgba(245,159,0,0.15); color: #d97706; font-size: 10.5px; font-weight: 700; padding: 1px 6px; border-radius: 4px;">📊 Examiner Report</span>' : ''}
+              ${q.video_url ? '<span style="font-size: 11px;">🎥 Video</span>' : ''}
+              ${q.answered_doc_name ? `<span style="font-size: 11px; color: var(--muted);">📄 ${escapeHtml(q.answered_doc_name)}</span>` : ''}
+            </div>
+            <button class="ghost-sm danger-btn" data-key="${escapeHtml(q.key)}" style="padding: 2px 8px; font-size: 11px;">🗑️ Delete</button>
+          </div>
+        `;
+      });
+
+      examBlocksHtml += `
+        <details style="margin-bottom: 10px; background: var(--panel2); border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px;" open>
+          <summary style="font-weight: 800; font-size: 13.5px; cursor: pointer; color: var(--text); display: flex; justify-content: space-between; align-items: center;">
+            <span>📄 Exam Pack: ${escapeHtml(examKey)}</span>
+            <span class="meta" style="font-weight: 700; font-size: 11.5px; background: var(--panel); padding: 2px 8px; border-radius: 12px;">${qItems.length} questions</span>
+          </summary>
+          <div style="margin-top: 8px; display: flex; flex-direction: column; gap: 4px;">
+            ${qRows}
+          </div>
+        </details>
+      `;
+    });
+
+    courseCard.innerHTML = `
+      <div style="background: var(--brand); color: white; padding: 10px 16px; font-weight: 800; font-size: 14px; display: flex; justify-content: space-between; align-items: center;">
+        <span>📚 Course: ${escapeHtml(courseName)}</span>
+        <span style="font-size: 12px; font-weight: 600; opacity: 0.9;">${examKeys.length} Exam Paper(s)</span>
+      </div>
+      <div style="padding: 14px;">
+        ${examBlocksHtml}
+      </div>
+    `;
+
+    // Attach individual delete handlers
+    courseCard.querySelectorAll("button.danger-btn").forEach(btn => {
+      btn.addEventListener("click", async (e) => {
+        e.stopPropagation();
+        const key = btn.dataset.key;
+        if (!confirm("Delete this question from the library?")) return;
+        await fetch(`${API}/api/teacher/pastpaper/solutions/delete`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ passcode: state.passcode, key })
+        });
+        loadTeacherPastPaperHub();
+      });
+    });
+
+    container.appendChild(courseCard);
+  });
+}
+
+async function refreshPastPaperHub() {
+  const passcode = (typeof state !== "undefined" && state.passcode)
+    || localStorage.getItem("ng_teacherPasscode")
+    || "";
+  if (!passcode) return;
+
+  let ppConfig = { courses: [], pp_library: [], syllabi: {}, solutions: [] };
+  try {
+    const res = await fetch(`${API}/api/teacher/pastpaper/config`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ passcode })
+    });
+    if (!res.ok) return;
+    ppConfig = await res.json();
+  } catch (err) {
+    console.error("Failed to load past-paper config:", err);
+    return;
+  }
+
+  const recordings = (typeof teacherRecordings !== "undefined" ? teacherRecordings : [])
+    || (typeof state !== "undefined" ? state.recordings : [])
+    || [];
+  const courseSet = new Set();
+
+  recordings.forEach(r => {
+    const course = (r.unit || r.course || "").trim();
+    if (course && course.toLowerCase() !== "unassigned") courseSet.add(course);
+  });
+  (ppConfig.courses || []).forEach(course => {
+    if (course && course.trim() && course.trim().toLowerCase() !== "unassigned") {
+      courseSet.add(course.trim());
+    }
+  });
+
+  const allCourses = Array.from(courseSet).sort((a,b) => a.localeCompare(b));
+  const ppDocs = Array.isArray(ppConfig.pp_library) ? ppConfig.pp_library : [];
+  if (ppConfig.syllabi && typeof ppConfig.syllabi === "object") teacherSyllabiCache = ppConfig.syllabi;
+
+  // Teacher course selectors only. Student course selection comes from the authenticated session.
+  ["tppCourseSelect","bulkCourseSelect","tqCourseSelect","docCourseSelect"].forEach(id => {
+    const select = document.getElementById(id);
+    if (!select) return;
+    const current = select.value;
+    select.innerHTML = '<option value="">-- Select Course --</option>';
+    allCourses.forEach(c => select.appendChild(new Option(c,c)));
+    if (current && allCourses.includes(current)) select.value = current;
+  });
+
+  // Render the shared document library and allow every existing document to be reassigned.
+  const container = document.getElementById("existingDocsContainer");
+  const badge = document.getElementById("docCountBadge");
+  if (badge) badge.textContent = String(ppDocs.length);
+
+  if (container) {
+    container.innerHTML = "";
+    if (!ppDocs.length) {
+      container.innerHTML = '<p class="meta" style="margin:0;font-size:12.5px;">No course reference/answered documents uploaded yet.</p>';
+    } else {
+      ppDocs.forEach(doc => {
+        const row = document.createElement("div");
+        row.style.cssText = "display:flex;align-items:center;justify-content:space-between;padding:9px 12px;background:var(--bg);border:1px solid var(--line);border-radius:8px;gap:12px;";
+        const options = [
+          '<option value="">-- Unassigned / Shared --</option>',
+          ...allCourses.map(c => {
+            const selected = (doc.course || "").trim().toLowerCase() === c.toLowerCase() ? " selected" : "";
+            return `<option value="${escapeHtml(c)}"${selected}>${escapeHtml(c)}</option>`;
+          })
+        ].join("");
+        row.innerHTML = `
+          <div style="min-width:0;display:flex;flex-direction:column;gap:2px;">
+            <span style="font-size:12.5px;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">📄 ${escapeHtml(doc.filename || "Untitled")}</span>
+            <span class="meta" style="font-size:10.5px;">${doc.uploaded_at ? `Uploaded ${escapeHtml(doc.uploaded_at)} · ` : ""}${Number(doc.text_chars || 0).toLocaleString()} characters indexed</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:8px;flex-shrink:0;">
+            <label style="display:flex;align-items:center;gap:6px;font-size:11px;font-weight:700;">Course
+              <select class="doc-course-assign" data-docid="${escapeHtml(doc.id)}" style="padding:5px 8px;font-size:11.5px;border-radius:6px;border:1px solid var(--line);">${options}</select>
+            </label>
+            <button class="ghost-sm danger-btn doc-delete-btn" type="button" title="Delete document">🗑️</button>
+          </div>`;
+
+        const assign = row.querySelector(".doc-course-assign");
+        assign.addEventListener("change", async e => {
+          const fd = new FormData();
+          fd.append("passcode", passcode);
+          fd.append("doc_id", doc.id);
+          fd.append("course", e.target.value);
+          e.target.disabled = true;
+          try {
+            const res = await fetch(`${API}/api/teacher/pastpaper/docs/update-course`, { method: "POST", body: fd });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) {
+              toast(data.error || "Failed to update document course.", "error");
+              e.target.value = doc.course || "";
+              return;
             }
-            return {"ok": True, "token": token, "name": SESSIONS[token]["name"]}
-    return JSONResponse(
-        {"ok": False, "error": "That email and password don't match our class roster. Check with your teacher."},
-        status_code=401,
-    )
-
-
-def valid_session(token: str):
-    return SESSIONS.get(token or "")
-
-
-# ---------- Cross-Device Sync Endpoints ----------
-class StudentSyncBody(BaseModel):
-    token: str
-    study_plan: list | None = None
-    student_stats: dict | None = None
-    chat_history: dict | None = None
-    flashcard_deck: list | None = None
-
-
-@app.post("/api/student/sync")
-def sync_student_data(body: StudentSyncBody):
-    sess = valid_session(body.token)
-    if not sess:
-        return JSONResponse({"error": "Unauthorized"}, status_code=401)
-    roster = load_roster()
-    student = next((s for s in roster if s["id"] == sess["student_id"]), None)
-    if student:
-        if body.study_plan is not None:
-            student["study_plan"] = body.study_plan
-        if body.student_stats is not None:
-            student["student_stats"] = body.student_stats
-        if body.chat_history is not None:
-            student["chat_history"] = body.chat_history
-        if body.flashcard_deck is not None:
-            student["flashcard_deck"] = body.flashcard_deck
-        save_roster(roster)
-    return {"ok": True}
-
-
-@app.post("/api/student/profile")
-def get_student_profile(body: RecListBody):
-    sess = valid_session(body.token)
-    if not sess:
-        return JSONResponse({"error": "Unauthorized"}, status_code=401)
-    roster = load_roster()
-    student = next((s for s in roster if s["id"] == sess["student_id"]), None)
-    if not student:
-        return JSONResponse({"error": "Student not found"}, status_code=404)
-    return {
-        "study_plan": student.get("study_plan"),
-        "student_stats": student.get("student_stats"),
-        "chat_history": student.get("chat_history", {}),
-        "flashcard_deck": student.get("flashcard_deck", [])
+            toast(`"${doc.filename}" assigned to ${e.target.value || "Shared / Unassigned"} ✓`, "success");
+            await refreshPastPaperHub();
+          } catch (err) {
+            console.error(err);
+            toast("Network error updating document course.", "error");
+            e.target.value = doc.course || "";
+          } finally {
+            e.target.disabled = false;
+          }
+        });
+        row.querySelector(".doc-delete-btn").addEventListener("click", () => deletePastPaperDoc(doc.id, doc.filename));
+        container.appendChild(row);
+      });
     }
-
-
-# ---------- Teacher Roster Management ----------
-class RosterAuth(BaseModel):
-    passcode: str
-
-
-@app.post("/api/teacher/students")
-def list_students(body: RosterAuth):
-    if not check_passcode(body.passcode):
-        return JSONResponse({"error": "unauthorized"}, status_code=401)
-    safe = [{
-        "id": s["id"],
-        "name": s.get("name", ""),
-        "email": s.get("email", ""),
-        "courses": normalize_courses(s.get("courses")),
-        "has_password": bool(s.get("password_hash")),
-    } for s in load_roster()]
-    return {"students": safe}
-
-
-class AddStudentBody(BaseModel):
-    passcode: str
-    name: str
-    email: str | None = ""
-    password: str | None = ""
-    courses: str | None = ""
-
-
-@app.post("/api/teacher/students/add")
-def add_student(body: AddStudentBody):
-    if not check_passcode(body.passcode):
-        return JSONResponse({"error": "unauthorized"}, status_code=401)
-    name = body.name.strip()
-    email = (body.email or "").strip()
-    if not email:
-        return JSONResponse({"error": "Email required"}, status_code=400)
-    roster = load_roster()
-    courses = [c.strip() for c in (body.courses or "").split(";") if c.strip()]
-    existing = next((s for s in roster if _norm(s.get("email")) == _norm(email)), None)
-    if existing:
-        prev = normalize_courses(existing.get("courses"))
-        seen = {_norm(c) for c in prev}
-        merged = list(prev)
-        added_courses = []
-        for c in courses:
-            if _norm(c) not in seen:
-                merged.append(c); seen.add(_norm(c)); added_courses.append(c)
-        existing["courses"] = merged
-        if name and name != email.split("@")[0]:
-            existing["name"] = name
-        if (body.password or "").strip():
-            existing["password_hash"] = hash_pw(body.password)
-        save_roster(roster)
-        if added_courses:
-            msg = f"Added course(s) {', '.join(added_courses)} to existing student {existing.get('email')}."
-        else:
-            msg = f"{existing.get('email')} already had those course(s); nothing to add."
-        return {"ok": True, "merged": True, "message": msg, "student": {
-            "id": existing["id"], "name": existing.get("name"), "email": existing.get("email"),
-            "courses": existing.get("courses", []), "has_password": bool(existing.get("password_hash")),
-        }}
-    student = {
-        "id": secrets.token_hex(6),
-        "name": name or email.split("@")[0],
-        "email": email,
-        "courses": courses,
-        "password_hash": hash_pw(body.password) if (body.password or "").strip() else "",
-    }
-    roster.append(student)
-    save_roster(roster)
-    return {"ok": True, "merged": False, "student": {
-        "id": student["id"], "name": student["name"], "email": student["email"],
-        "courses": student["courses"], "has_password": bool(student["password_hash"]),
-    }}
-
-
-class RemoveStudentBody(BaseModel):
-    passcode: str
-    id: str
-
-
-@app.post("/api/teacher/students/remove")
-def remove_student(body: RemoveStudentBody):
-    if not check_passcode(body.passcode):
-        return JSONResponse({"error": "unauthorized"}, status_code=401)
-    roster = [s for s in load_roster() if s["id"] != body.id]
-    save_roster(roster)
-    for tok in [t for t, v in SESSIONS.items() if v["student_id"] == body.id]:
-        SESSIONS.pop(tok, None)
-    return {"ok": True}
-
-
-class ResetPasswordBody(BaseModel):
-    passcode: str
-    id: str
-    new_password: str | None = None
-
-
-def _gen_password(n=8):
-    alphabet = "abcdefghijkmnpqrstuvwxyz23456789"
-    return "".join(secrets.choice(alphabet) for _ in range(n))
-
-
-@app.post("/api/teacher/students/reset-password")
-def reset_student_password(body: ResetPasswordBody):
-    if not check_passcode(body.passcode):
-        return JSONResponse({"error": "unauthorized"}, status_code=401)
-    roster = load_roster()
-    student = next((s for s in roster if s["id"] == body.id), None)
-    if not student:
-        return JSONResponse({"error": "Student not found"}, status_code=404)
-    new_pw = (body.new_password or "").strip() or _gen_password()
-    student["password_hash"] = hash_pw(new_pw)
-    save_roster(roster)
-    for tok in [t for t, v in SESSIONS.items() if v["student_id"] == body.id]:
-        SESSIONS.pop(tok, None)
-    return {"ok": True, "email": student.get("email"), "new_password": new_pw}
-
-
-class UpdateStudentBody(BaseModel):
-    passcode: str
-    id: str
-    name: str | None = None
-    email: str | None = None
-    courses: list[str] | None = None
-    new_password: str | None = None
-
-
-@app.post("/api/teacher/students/update")
-def update_student(body: UpdateStudentBody):
-    if not check_passcode(body.passcode):
-        return JSONResponse({"error": "unauthorized"}, status_code=401)
-    roster = load_roster()
-    student = next((s for s in roster if s["id"] == body.id), None)
-    if not student:
-        return JSONResponse({"error": "Student not found"}, status_code=404)
-
-    if body.email is not None:
-        new_email = body.email.strip()
-        if not new_email:
-            return JSONResponse({"error": "Email can't be empty."}, status_code=400)
-        clash = any(_norm(s.get("email")) == _norm(new_email) and s["id"] != body.id for s in roster)
-        if clash:
-            return JSONResponse({"error": "Another student already uses that email."}, status_code=400)
-        student["email"] = new_email
-
-    if body.name is not None:
-        student["name"] = body.name.strip() or (student.get("email") or "").split("@")[0]
-
-    if body.courses is not None:
-        seen, cleaned = set(), []
-        for c in body.courses:
-            c = (c or "").strip()
-            if c and _norm(c) not in seen:
-                cleaned.append(c); seen.add(_norm(c))
-        student["courses"] = cleaned
-
-    pw_changed = False
-    if body.new_password is not None and body.new_password.strip():
-        student["password_hash"] = hash_pw(body.new_password.strip())
-        pw_changed = True
-
-    save_roster(roster)
-    if pw_changed or body.email is not None:
-        for tok in [t for t, v in SESSIONS.items() if v.get("student_id") == body.id]:
-            SESSIONS.pop(tok, None)
-    return {"ok": True, "student": {
-        "id": student["id"], "name": student.get("name", ""), "email": student.get("email", ""),
-        "courses": student.get("courses", []), "has_password": bool(student.get("password_hash")),
-    }}
-
-
-# ---------- de-duplicate accounts by email ----------
-def _find_email_duplicates(roster):
-    groups = {}
-    for s in roster:
-        key = _norm(s.get("email"))
-        if not key:
-            continue
-        groups.setdefault(key, []).append(s)
-    return {k: v for k, v in groups.items() if len(v) > 1}
-
-
-def _merge_group_courses(entries):
-    seen, merged = set(), []
-    for e in entries:
-        for c in normalize_courses(e.get("courses")):
-            if _norm(c) not in seen:
-                merged.append(c); seen.add(_norm(c))
-    return merged
-
-
-class DedupeAuth(BaseModel):
-    passcode: str
-
-
-@app.post("/api/teacher/students/dedupe-preview")
-def dedupe_preview(body: DedupeAuth):
-    if not check_passcode(body.passcode):
-        return JSONResponse({"error": "unauthorized"}, status_code=401)
-    roster = load_roster()
-    dups = _find_email_duplicates(roster)
-    preview = []
-    for email, entries in dups.items():
-        keep = entries[0]
-        remove = entries[1:]
-        preview.append({
-            "email": keep.get("email"),
-            "duplicate_count": len(entries),
-            "keep": {"id": keep["id"], "name": keep.get("name"),
-                     "courses": keep.get("courses", []),
-                     "has_password": bool(keep.get("password_hash"))},
-            "will_delete": [{"id": e["id"], "name": e.get("name"),
-                             "courses": e.get("courses", [])} for e in remove],
-            "merged_courses": _merge_group_courses(entries),
-        })
-    return {
-        "duplicate_emails": len(dups),
-        "accounts_to_delete": sum(len(e) - 1 for e in dups.values()),
-        "groups": preview,
-    }
-
-
-@app.post("/api/teacher/students/dedupe-apply")
-def dedupe_apply(body: DedupeAuth):
-    if not check_passcode(body.passcode):
-        return JSONResponse({"error": "unauthorized"}, status_code=401)
-    roster = load_roster()
-    dups = _find_email_duplicates(roster)
-    if not dups:
-        return {"ok": True, "merged_emails": 0, "deleted_accounts": 0, "message": "No duplicates found."}
-    delete_ids = set()
-    merged_emails = 0
-    for email, entries in dups.items():
-        keep = entries[0]
-        keep["courses"] = _merge_group_courses(entries)
-        if not keep.get("password_hash"):
-            for e in entries[1:]:
-                if e.get("password_hash"):
-                    keep["password_hash"] = e["password_hash"]
-                    break
-        for e in entries[1:]:
-            delete_ids.add(e["id"])
-        merged_emails += 1
-    new_roster = [s for s in roster if s["id"] not in delete_ids]
-    save_roster(new_roster)
-    for tok in [t for t, v in SESSIONS.items() if v.get("student_id") in delete_ids]:
-        SESSIONS.pop(tok, None)
-    return {
-        "ok": True,
-        "merged_emails": merged_emails,
-        "deleted_accounts": len(delete_ids),
-        "total_now": len(new_roster),
-    }
-
-
-@app.post("/api/teacher/students/import")
-async def import_students(passcode: str = Form(...), file: UploadFile = File(...)):
-    if not check_passcode(passcode):
-        return JSONResponse({"error": "unauthorized"}, status_code=401)
-    try:
-        import openpyxl
-        content = await file.read()
-        wb = openpyxl.load_workbook(io.BytesIO(content))
-        ws = wb.active
-        rows = list(ws.iter_rows(values_only=True))
-    except Exception as e:
-        return JSONResponse({"error": f"Could not read the Excel file: {e}"}, status_code=400)
-    if not rows:
-        return JSONResponse({"error": "The sheet is empty."}, status_code=400)
-    header = [str(h).strip().lower() if h is not None else "" for h in rows[0]]
-    def col(name):
-        return header.index(name) if name in header else -1
-    ei, pi, ni, ci = col("email"), col("password"), col("name"), col("courses")
-    if ei < 0 or pi < 0:
-        return JSONResponse({"error": "The sheet must have 'email' and 'password' columns."}, status_code=400)
-    roster = load_roster()
-    by_email = {_norm(s.get("email")): s for s in roster if s.get("email")}
-    added = updated = 0
-    for row in rows[1:]:
-        if not row or ei >= len(row) or not row[ei]:
-            continue
-        email = str(row[ei]).strip()
-        pw = str(row[pi]).strip() if pi < len(row) and row[pi] else ""
-        name = str(row[ni]).strip() if ni >= 0 and ni < len(row) and row[ni] else email.split("@")[0]
-        courses = []
-        if ci >= 0 and ci < len(row) and row[ci]:
-            courses = [c.strip() for c in str(row[ci]).split(";") if c.strip()]
-        key = _norm(email)
-        if key in by_email:
-            s = by_email[key]
-            existing = normalize_courses(s.get("courses"))
-            seen = {_norm(c) for c in existing}
-            merged = list(existing)
-            for c in courses:
-                if _norm(c) not in seen:
-                    merged.append(c)
-                    seen.add(_norm(c))
-            s["courses"] = merged
-            if name and name != email.split("@")[0]:
-                s["name"] = name
-            if pw:
-                s["password_hash"] = hash_pw(pw)
-            updated += 1
-        else:
-            roster.append({
-                "id": secrets.token_hex(6),
-                "name": name,
-                "email": email,
-                "courses": courses,
-                "password_hash": hash_pw(pw) if pw else "",
-            })
-            added += 1
-    save_roster(roster)
-    return {"ok": True, "added": added, "updated": updated, "total": len(roster)}
-
-
-# ---------- teacher endpoints ----------
-class TeacherAuth(BaseModel):
-    passcode: str
-
-
-@app.post("/api/teacher/recordings")
-def teacher_recordings(body: TeacherAuth):
-    if not check_passcode(body.passcode):
-        return JSONResponse({"error": "unauthorized"}, status_code=401)
-    out = [_card(r, include_hidden=True) for r in RECORDINGS]
-    units = sorted({(r.get("unit") or "Unassigned") for r in RECORDINGS})
-    return {"recordings": out, "units": units}
-
-
-class UpdateRecBody(BaseModel):
-    passcode: str
-    id: str
-    display_title: str | None = None
-    visible: bool | None = None
-    unit: str | None = None
-
-
-@app.post("/api/teacher/update")
-def teacher_update(body: UpdateRecBody):
-    if not check_passcode(body.passcode):
-        return JSONResponse({"error": "unauthorized"}, status_code=401)
-    rec = REC_BY_ID.get(body.id)
-    if not rec:
-        return JSONResponse({"error": "not found"}, status_code=404)
-    if body.display_title is not None and body.display_title.strip():
-        rec["display_title"] = body.display_title.strip()
-    if body.visible is not None:
-        rec["visible"] = body.visible
-    if body.unit is not None and body.unit.strip():
-        rec["unit"] = body.unit.strip()
-    save_recordings(RECORDINGS)
-    return {"ok": True, "recording": _card(rec, include_hidden=True)}
-
-
-class PasscodeBody(BaseModel):
-    passcode: str
-    new_passcode: str
-
-
-ALLOWED_LOGO_EXT = {"png": "png", "jpg": "jpg", "jpeg": "jpg", "webp": "webp", "gif": "gif", "svg": "svg"}
-LOGO_MAX_BYTES = 2 * 1024 * 1024
-LOGO_MIME = {"png": "image/png", "jpg": "image/jpeg", "webp": "image/webp",
-             "gif": "image/gif", "svg": "image/svg+xml"}
-LOGO_PATH_BASE = os.path.join(DATA_DIR, "logo")
-
-
-def _current_logo_file():
-    for e in set(ALLOWED_LOGO_EXT.values()):
-        p = f"{LOGO_PATH_BASE}.{e}"
-        if os.path.exists(p):
-            return p, e
-    return None, None
-
-
-def _migrate_frontend_logo_to_disk():
-    try:
-        existing, _ = _current_logo_file()
-        if existing:
-            return
-        for e in set(ALLOWED_LOGO_EXT.values()):
-            fe = os.path.join(FRONTEND_DIR, f"logo.{e}")
-            if os.path.exists(fe):
-                import shutil
-                shutil.copy2(fe, f"{LOGO_PATH_BASE}.{e}")
-                break
-    except Exception as ex:
-        print(f"[logo] migrate warning: {ex}")
-
-
-_migrate_frontend_logo_to_disk()
-
-
-@app.post("/api/teacher/logo")
-async def upload_logo(passcode: str = Form(...), file: UploadFile = File(...)):
-    if not check_passcode(passcode):
-        return JSONResponse({"error": "unauthorized"}, status_code=401)
-    ext = (file.filename or "").rsplit(".", 1)[-1].lower() if "." in (file.filename or "") else ""
-    if ext not in ALLOWED_LOGO_EXT:
-        return JSONResponse({"error": "Please upload a PNG, JPG, WEBP, GIF or SVG image."}, status_code=400)
-    data = await file.read()
-    if len(data) > LOGO_MAX_BYTES:
-        return JSONResponse({"error": "Image is too large (max 2 MB)."}, status_code=400)
-    save_ext = ALLOWED_LOGO_EXT[ext]
-    os.makedirs(DATA_DIR, exist_ok=True)
-    for e in set(ALLOWED_LOGO_EXT.values()):
-        old = f"{LOGO_PATH_BASE}.{e}"
-        if os.path.exists(old):
-            try:
-                os.remove(old)
-            except OSError:
-                pass
-    with open(f"{LOGO_PATH_BASE}.{save_ext}", "wb") as f:
-        f.write(data)
-    cfg = load_config()
-    cfg["logo"] = "/logo"
-    cfg["logo_ext"] = save_ext
-    save_config(cfg)
-    return {"ok": True, "logo": "/logo"}
-
-
-@app.get("/logo")
-def get_logo():
-    path, e = _current_logo_file()
-    if not path:
-        return JSONResponse({"error": "no logo"}, status_code=404)
-    return FileResponse(path, media_type=LOGO_MIME.get(e, "application/octet-stream"))
-
-
-@app.get("/api/branding")
-def branding():
-    path, _ = _current_logo_file()
-    return {"logo": "/logo" if path else ""}
-
-
-@app.post("/api/teacher/passcode")
-def change_passcode(body: PasscodeBody):
-    if not check_passcode(body.passcode):
-        return JSONResponse({"error": "unauthorized"}, status_code=401)
-    if not body.new_passcode.strip():
-        return JSONResponse({"error": "empty passcode"}, status_code=400)
-    cfg = load_config()
-    cfg["passcode"] = body.new_passcode.strip()
-    save_config(cfg)
-    return {"ok": True}
-
-
-@app.post("/api/teacher/questions")
-def teacher_questions(body: TeacherAuth):
-    if not check_passcode(body.passcode):
-        return JSONResponse({"error": "unauthorized"}, status_code=401)
-    log = load_qlog()
-    return {"questions": list(reversed(log))[:500]}
-
-
-class AskBody(BaseModel):
-    recording_id: str
-    question: str
-    language: str | None = None
-    token: str | None = None
-
-
-@app.post("/api/ask")
-async def ask(body: AskBody):
-    sess = valid_session(body.token)
-    if not sess:
-        return JSONResponse({"error": "Your session has expired. Please log in again."}, status_code=401)
-    rec = REC_BY_ID.get(body.recording_id)
-    if not rec:
-        return JSONResponse({"error": "Recording not found"}, status_code=404)
-    
-    idx = await retrieve(rec, body.question)
-    ctx = context_from_indices(rec, idx, max_chars=18000)
-    notes_ctx = notes_context(rec, body.question)
-    
-    lang_line = "\nAlways respond in English, even if the student's question is written in another language."
-    notes_rules = ""
-    if notes_ctx:
-        notes_rules = (
-            "\n5. You also have TEACHER NOTES, shown as blocks prefixed with [NOTE: filename]. "
-            "These are extra study material for this class. You MAY use them to answer.\n"
-            "6. When you use information from the notes, quote the relevant part in \"quotation marks\" "
-            "and attribute it, e.g. According to the class notes: \"...\".\n"
-            "7. NEVER reproduce a note in full or dump large portions verbatim — quote only the parts "
-            "directly relevant to the question. The notes are not downloadable by students."
-        )
-
-    course_name = rec.get('unit') or "Unassigned Course"
-
-    system = (
-        f"You are an expert Biology tutor for Cambridge IGCSE, AS/A Level, and Pearson Edexcel. "
-        f"You are currently answering a question for a student in the course: '{course_name}'. "
-        "Your ONLY goal is to help students learn and review concepts taught in the provided class recording and teacher notes.\n\n"
-        "GUIDELINES & FLEXIBILITY:\n"
-        "1. INTENT RECOGNITION: Be flexible and conversational. If the student asks for a 'summary', 'overview', "
-        "'explain [topic]', or 'what was covered', use the provided transcript excerpts and teacher notes to give a "
-        "clear, helpful overview of the class contents, even if they didn't use specific keywords.\n"
-        "2. STRICT GROUNDING: Base your explanations *exclusively* on the provided class recording excerpts and teacher notes. "
-        "Do NOT invent outside biological facts or syllabus details. If a specific biological concept or question is "
-        "completely absent from both the transcript and notes, reply: 'This topic wasn't covered in this specific class or the attached notes.'\n"
-        "3. EXAM BOARD ACCURACY: Use the exact terminology, mark scheme phrasing, and conventions found in the provided text. "
-        "Never mix Cambridge and Edexcel terminology.\n"
-        "4. CITATIONS: When answering specific conceptual questions, cite your source by including the timestamp in parentheses, e.g. (at 12:34).\n"
-        "5. NO HALLUCINATION: Do not invent, infer, or guess unmentioned facts."
-        + notes_rules
-        + lang_line
-    )
-
-    notes_block = f"\n\nTeacher notes for this class:\n{notes_ctx}" if notes_ctx else ""
-    user = (
-        f"Course: {course_name}\n"
-        f"Class recording: {rec.get('display_title') or rec.get('topic')}\n\n"
-        f"Transcript excerpts:\n{ctx}"
-        f"{notes_block}\n\n"
-        f"Student question: {body.question}"
-    )
-    
-    try:
-        answer = await llm(
-            [{"role": "system", "content": system}, {"role": "user", "content": user}],
-            max_tokens=1000,
-        )
-    except (LLMConfigError, LLMUpstreamError) as e:
-        return JSONResponse({"error": str(e)}, status_code=503)
-    
-    try:
-        from datetime import datetime
-        from zoneinfo import ZoneInfo
-        log = load_qlog()
-        log.append({
-            "student": sess["name"],
-            "recording_id": rec["id"],
-            "recording_title": rec.get("display_title") or rec.get("topic"),
-            "unit": rec.get("unit") or "Unassigned",
-            "question": body.question,
-            "answer": answer,
-            "time": datetime.now(ZoneInfo("Africa/Cairo")).strftime("%Y-%m-%d %H:%M"),
-        })
-        save_qlog(log[-1000:])
-    except Exception:
-        pass
-    return {"answer": answer, "cited_segments": len(idx)}
-
-
-class QuizBody(BaseModel):
-    recording_id: str
-    num_questions: int = 5
-    language: str | None = None
-    difficulty: str | None = "mixed"
-    token: str | None = None
-
-
-@app.post("/api/quiz")
-async def quiz(body: QuizBody):
-    if not valid_session(body.token):
-        return JSONResponse({"error": "Your session has expired. Please log in again."}, status_code=401)
-    rec = REC_BY_ID.get(body.recording_id)
-    if not rec:
-        return JSONResponse({"error": "Recording not found"}, status_code=404)
-    segs = rec.get("segments", [])
-    step = max(1, len(segs) // 60)
-    idx = list(range(0, len(segs), step))
-    ctx = context_from_indices(rec, idx, max_chars=20000)
-    lang_line = "Write the quiz in English."
-    n = max(1, min(10, body.num_questions))
-    system = (
-        "You are ClassMate, creating a quiz to help students review a class recording. "
-        "Use ONLY the transcript content provided. Return STRICT JSON only, no markdown, no prose. "
-        "Schema: {\"questions\":[{\"question\":str,\"options\":[str,str,str,str],"
-        "\"answer_index\":int,\"explanation\":str,\"timestamp\":str}]}. "
-        "The 'timestamp' is the transcript timestamp (like '12:34') where the topic is discussed. "
-        "The 'explanation' must reference what was said in the recording. "
-        f"Create exactly {n} multiple-choice questions ({body.difficulty} difficulty). {lang_line}"
-    )
-    user = (
-        f"Class recording: {rec.get('display_title') or rec.get('topic')}\n\n"
-        f"Transcript excerpts:\n{ctx}"
-    )
-    try:
-        raw = await llm(
-            [{"role": "system", "content": system}, {"role": "user", "content": user}],
-            max_tokens=2500,
-        )
-    except (LLMConfigError, LLMUpstreamError) as e:
-        return JSONResponse({"error": str(e)}, status_code=503)
-    data = None
-    try:
-        data = json.loads(raw)
-    except Exception:
-        m = re.search(r"\{.*\}", raw, re.DOTALL)
-        if m:
-            try:
-                data = json.loads(m.group(0))
-            except Exception:
-                data = None
-    if not data or "questions" not in data:
-        return JSONResponse({"error": "Could not generate quiz", "raw": raw[:500]}, status_code=500)
-    return data
-
-
-# ---------- automated flashcards generation (Fresh & Unique Cards) ----------
-class FlashcardBody(BaseModel):
-    recording_id: str
-    existing_fronts: list[str] | None = []
-    token: str | None = None
-
-
-@app.post("/api/flashcards")
-async def generate_flashcards(body: FlashcardBody):
-    sess = valid_session(body.token)
-    if not sess:
-        return JSONResponse({"error": "Your session has expired. Please log in again."}, status_code=401)
-    
-    rec = REC_BY_ID.get(body.recording_id)
-    if not rec:
-        return JSONResponse({"error": "Recording not found"}, status_code=404)
-
-    transcript_text = "\n".join([f"[{s.get('timestamp','')}] {s.get('text','')}" for s in rec.get("segments", [])])
-    notes_text = notes_context(rec, "flashcards review summary", max_chars=8000)
-    
-    avoid_block = ""
-    if body.existing_fronts and len(body.existing_fronts) > 0:
-        avoid_block = "\nAVOID REPEATING these existing question concepts:\n" + "\n".join([f"- {f}" for f in body.existing_fronts[:15]])
-
-    system = (
-        "You are an expert Biology and science tutor. Based on the following class transcript and teacher notes, "
-        "generate 5 to 7 fresh, high-yield flashcards for active recall study. "
-        "Focus on varied definitions, processes, comparisons, and mechanisms. "
-        "Return STRICT JSON only, no markdown, no prose. "
-        "Schema: {\"flashcards\":[{\"front\":str,\"back\":str}]}."
-        + avoid_block
-    )
-    
-    user = (
-        f"Class recording: {rec.get('display_title') or rec.get('topic')}\n\n"
-        f"TRANSCRIPT:\n{transcript_text[:12000]}\n\n"
-        f"TEACHER NOTES:\n{notes_text[:4000]}"
-    )
-    
-    try:
-        raw = await llm(
-            [{"role": "system", "content": system}, {"role": "user", "content": user}],
-            max_tokens=1500,
-            temperature=0.7,
-        )
-    except (LLMConfigError, LLMUpstreamError) as e:
-        return JSONResponse({"error": str(e)}, status_code=503)
-
-    data = None
-    txt = (raw or "").strip()
-    if txt.startswith("```"):
-        txt = txt.strip("`")
-        if "\n" in txt:
-            txt = txt.split("\n", 1)[-1]
-            
-    try:
-        start = txt.find("{")
-        end = txt.rfind("}")
-        if start != -1 and end != -1:
-            data = json.loads(txt[start:end+1])
-    except Exception:
-        data = None
-                
-    if not data or "flashcards" not in data:
-        return JSONResponse({"error": "Could not generate flashcards.", "raw": raw[:500]}, status_code=500)
-        
-    return data
-
-
-# ---------- study plan generation (100% Mandatory Coverage & Dynamic Allocation) ----------
-class StudyPlanBody(BaseModel):
-    recording_ids: list[str]
-    days: int
-    hours_per_day: float
-    focus: str
-    token: str | None = None
-
-
-@app.post("/api/student/plan")
-async def generate_study_plan(body: StudyPlanBody):
-    if not valid_session(body.token):
-        return JSONResponse({"error": "Your session has expired. Please log in again."}, status_code=401)
-    
-    if not body.recording_ids:
-        return JSONResponse({"error": "Please select at least one class to study."}, status_code=400)
-
-    num_classes = len(body.recording_ids)
-    total_available_mins = int(body.days * body.hours_per_day * 60)
-    
-    target_review_mins = max(20, min(60, int((total_available_mins * 0.6) / num_classes)))
-
-    selected_recs = []
-    for rid in body.recording_ids:
-        rec = REC_BY_ID.get(rid)
-        if rec:
-            title = rec.get('display_title') or rec.get('topic') or "Class"
-            unit = rec.get('unit') or "General"
-            selected_recs.append(f"- [{unit}] {title} (Target review: ~{target_review_mins} mins)")
-
-    if not selected_recs:
-        return JSONResponse({"error": "Selected recordings not found."}, status_code=404)
-
-    recs_text = "\n".join(selected_recs)
-    
-    system = (
-        "You are an expert academic coach for Biology students. "
-        "Your task is to create a structured, day-by-day study schedule based on the student's constraints.\n\n"
-        "STRICT MANDATORY RULES:\n"
-        f"1. TOTAL COVERAGE (CRITICAL): You MUST schedule EVERY SINGLE ONE of the {num_classes} classes provided below across the {body.days} days. Do NOT skip or omit any class.\n"
-        f"2. TIME BUDGET: Each day has approximately {body.hours_per_day} hours ({int(body.hours_per_day * 60)} minutes). Distribute tasks evenly so daily task times sum to ~{int(body.hours_per_day * 60)} minutes.\n"
-        "3. FOCUS MODE SPECIALIZATION:\n"
-        "   - 'First-time learning': Dedicate more time to thorough topic review, process understanding, and notes consolidation.\n"
-        "   - 'Reviewing and memorizing definitions': Pair class reviews with active recall tasks, flashcards, and keyword drills.\n"
-        "   - 'Past paper and exam practice': Pair class reviews with exam question practice, command word checks, and mark scheme alignment.\n"
-        "4. Return STRICT JSON only.\n"
-        "Schema: {\"plan\":[{\"day\":int,\"quote\":str,\"tasks\":[{\"title\":str,\"description\":str,\"est_minutes\":int}]}]}"
-    )
-    
-    user = (
-        f"Generate a {body.days}-day plan for {body.hours_per_day} hours/day (Total budget: {total_available_mins} mins).\n"
-        f"Study Focus: {body.focus}\n"
-        f"Classes to cover ({num_classes} total - ALL MUST BE INCLUDED):\n{recs_text}"
-    )
-
-    try:
-        raw = await llm(
-            [{"role": "system", "content": system}, {"role": "user", "content": user}],
-            max_tokens=3000,
-            temperature=0.3,
-        )
-    except (LLMConfigError, LLMUpstreamError) as e:
-        return JSONResponse({"error": str(e)}, status_code=503)
-
-    data = None
-    txt = (raw or "").strip()
-    if txt.startswith("```"):
-        txt = txt.strip("`")
-        if "\n" in txt:
-            txt = txt.split("\n", 1)[-1]
-            
-    try:
-        start = txt.find("{")
-        end = txt.rfind("}")
-        if start != -1 and end != -1:
-            data = json.loads(txt[start:end+1])
-    except Exception as e:
-        print(f"[Study Plan Error] Could not parse JSON: {e}")
-                
-    if not data or "plan" not in data:
-        return JSONResponse({"error": "Could not generate the plan. Please try again.", "raw": raw[:500]}, status_code=500)
-        
-    return data
-
-
-# ---------- Zoom webhook ----------
-@app.post("/api/zoom/webhook")
-async def zoom_webhook(request: Request, background_tasks: BackgroundTasks):
-    body = await request.body()
-    payload = await request.json()
-    
-    if payload.get("event") == "endpoint.url_validation":
-        plain = payload["payload"]["plainToken"]
-        sig = hmac.new(ZOOM_WEBHOOK_SECRET.encode(), plain.encode(), hashlib.sha256).hexdigest()
-        return {"plainToken": plain, "encryptedToken": sig}
-        
-    ts = request.headers.get("x-zm-request-timestamp", "")
-    got = request.headers.get("x-zm-signature", "")
-    message = f"v0:{ts}:{body.decode('utf-8')}".encode()
-    expected = "v0=" + hmac.new(ZOOM_WEBHOOK_SECRET.encode(), message, hashlib.sha256).hexdigest()
-    
-    if not hmac.compare_digest(expected, got):
-        return JSONResponse({"error": "bad signature"}, status_code=401)
-        
-    event = payload.get("event", "")
-    print(f"[zoom webhook] received event: {event}")
-    
-    recording_events = {
-        "recording.completed",
-        "recording.transcript_completed",
-        "webinar.recording_completed",
-        "webinar.recording_transcript_completed",
-    }
-    
-    is_recording_event = (
-        event in recording_events
-        or ("recording" in event and ("completed" in event or "transcript" in event))
-    )
-    
-    if is_recording_event:
-        p_load = payload.get("payload", {})
-        obj = p_load.get("object", {}) or p_load.get("webinar", {})
-        
-        if not obj.get("id") and not obj.get("uuid"):
-            obj = p_load.get("object", {})
-            
-        if obj.get("id") or obj.get("uuid"):
-            background_tasks.add_task(ingest_zoom_meeting, obj)
-            print(f"[zoom webhook] queued background ingest for webinar/meeting: '{obj.get('topic')}'")
-        else:
-            print(f"[zoom webhook warning] could not extract meeting/webinar ID from payload: {payload}")
-        
-    return {"ok": True}
-
-
-class BackfillBody(BaseModel):
-    passcode: str
-    from_date: str | None = None
-    to_date: str | None = None
-
-
-async def _list_cloud_recordings(from_date: str, to_date: str):
-    import httpx
-    from datetime import datetime, timedelta
-
-    token = await zoom_token()
-    results = []
-    start = datetime.strptime(from_date, "%Y-%m-%d")
-    end = datetime.strptime(to_date, "%Y-%m-%d")
-    async with httpx.AsyncClient(timeout=60) as client:
-        window_start = start
-        while window_start <= end:
-            window_end = min(window_start + timedelta(days=29), end)
-            next_token = ""
-            while True:
-                params = {
-                    "from": window_start.strftime("%Y-%m-%d"),
-                    "to": window_end.strftime("%Y-%m-%d"),
-                    "page_size": 300,
-                }
-                if next_token:
-                    params["next_page_token"] = next_token
-                r = await client.get(
-                    "https://api.zoom.us/v2/users/me/recordings",
-                    headers={"Authorization": f"Bearer {token}"},
-                    params=params,
-                )
-                if r.status_code != 200:
-                    break
-                data = r.json()
-                results.extend(data.get("meetings", []))
-                next_token = data.get("next_page_token") or ""
-                if not next_token:
-                    break
-            window_start = window_end + timedelta(days=1)
-    return results
-
-
-@app.post("/api/teacher/backfill")
-async def teacher_backfill(body: BackfillBody):
-    if not check_passcode(body.passcode):
-        return JSONResponse({"error": "unauthorized"}, status_code=401)
-    from datetime import datetime, timedelta
-    to_date = body.to_date or datetime.utcnow().strftime("%Y-%m-%d")
-    from_date = body.from_date or (datetime.utcnow() - timedelta(days=180)).strftime("%Y-%m-%d")
-    try:
-        meetings = await _list_cloud_recordings(from_date, to_date)
-    except Exception as e:
-        return JSONResponse({"error": f"Could not list cloud recordings: {e}"}, status_code=502)
-    added = 0
-    skipped = 0
-    errors = 0
-    details = []
-    for m in meetings:
-        try:
-            was_added = await ingest_zoom_meeting(m, allow_whisper_fallback=False)
-            if was_added:
-                added += 1
-                details.append({
-                    "topic": m.get("topic"),
-                    "date": (m.get("start_time") or "")[:10],
-                    "source": _detect_source(m),
-                })
-            else:
-                skipped += 1
-        except Exception:
-            errors += 1
-    return {
-        "ok": True,
-        "range": {"from": from_date, "to": to_date},
-        "found": len(meetings),
-        "added": added,
-        "skipped_already_present": skipped,
-        "errors": errors,
-        "added_recordings": details,
-        "total_recordings_now": len(RECORDINGS),
-    }
-
-
-class ImportOneBody(BaseModel):
-    passcode: str
-    ref: str
-
-
-@app.post("/api/teacher/import-one")
-async def teacher_import_one(body: ImportOneBody):
-    if not check_passcode(body.passcode):
-        return JSONResponse({"error": "unauthorized"}, status_code=401)
-    meeting_id = _parse_meeting_id(body.ref)
-    if not meeting_id:
-        return JSONResponse(
-            {"error": "Couldn't read a meeting ID from that. Paste the Zoom Meeting ID/UUID, or a recording link."},
-            status_code=400,
-        )
-    try:
-        obj = await fetch_zoom_recording_object(meeting_id)
-    except LLMUpstreamError as e:
-        return JSONResponse({"error": str(e)}, status_code=502)
-    except Exception as e:
-        return JSONResponse({"error": f"Could not fetch that recording: {e}"}, status_code=502)
-    
-    existing_id = str(obj.get("id") or obj.get("uuid") or meeting_id)
-    if existing_id in REC_BY_ID:
-        return JSONResponse(
-            {"error": f"That recording is already imported: \"{REC_BY_ID[existing_id].get('display_title')}\"."},
-            status_code=409,
-        )
-    try:
-        added = await ingest_zoom_meeting(obj, allow_whisper_fallback=False)
-    except Exception as e:
-        return JSONResponse({"error": f"Import failed: {e}"}, status_code=500)
-    if not added:
-        return JSONResponse({"error": "That recording is already imported."}, status_code=409)
-    rec = REC_BY_ID.get(existing_id)
-    return {
-        "ok": True,
-        "recording": _card(rec, include_hidden=True) if rec else None,
-        "has_transcript": bool(rec and rec.get("segments")),
-        "total_recordings_now": len(RECORDINGS),
-    }
-
-
-NOTE_MAX_UPLOAD_BYTES = 60 * 1024 * 1024
-NOTE_MAX_TEXT_CHARS = 2 * 1024 * 1024
-
-
-@app.post("/api/teacher/notes/upload")
-async def upload_note(passcode: str = Form(...), id: str = Form(...), file: UploadFile = File(...)):
-    if not check_passcode(passcode):
-        return JSONResponse({"error": "unauthorized"}, status_code=401)
-    rec = REC_BY_ID.get(id)
-    if not rec:
-        return JSONResponse({"error": "not found"}, status_code=404)
-    data = await file.read()
-    if len(data) > NOTE_MAX_UPLOAD_BYTES:
-        return JSONResponse({"error": "File is unusually large."}, status_code=400)
-    try:
-        text = extract_text_from_upload(data, file.filename or "")
-    except ValueError as e:
-        return JSONResponse({"error": str(e)}, status_code=400)
-    except Exception as e:
-        return JSONResponse({"error": f"Could not read that file: {e}"}, status_code=422)
-    
-    original_len = len(text)
-    trimmed = False
-    if original_len > NOTE_MAX_TEXT_CHARS:
-        text = text[:NOTE_MAX_TEXT_CHARS]
-        trimmed = True
-    chunks = chunk_note_text(text)
-    if not chunks:
-        return JSONResponse({"error": "No readable text found in that file."}, status_code=422)
-    kept = sum(len(c) for c in chunks)
-    
-    lib = load_notes_library()
-    note = {"id": secrets.token_hex(6), "filename": (file.filename or "notes"),
-            "chunks": chunks, "chars": kept}
-    lib.append(note)
-    save_notes_library(lib)
-    ids = list(rec.get("note_ids") or [])
-    if note["id"] not in ids:
-        ids.append(note["id"])
-    rec["note_ids"] = ids
-    save_recordings(RECORDINGS)
-    return {"ok": True, "id": id,
-            "note": {"id": note["id"], "filename": note["filename"], "chars": kept, "chunks": len(chunks)},
-            "file_bytes": len(data), "text_chars": kept, "trimmed": trimmed,
-            "recording": _card(rec, include_hidden=True)}
-
-
-class ListLibraryBody(BaseModel):
-    passcode: str
-    for_recording: str | None = None
-
-
-@app.post("/api/teacher/notes/library")
-def notes_library(body: ListLibraryBody):
-    if not check_passcode(body.passcode):
-        return JSONResponse({"error": "unauthorized"}, status_code=401)
-    lib = load_notes_library()
-    usage = {}
-    for r in RECORDINGS:
-        for nid in (r.get("note_ids") or []):
-            usage[nid] = usage.get(nid, 0) + 1
-
-    allowed_ids = None
-    if body.for_recording:
-        target = REC_BY_ID.get(body.for_recording)
-        target_unit = (target.get("unit") or "Unassigned") if target else "Unassigned"
-        if target_unit != "Unassigned":
-            allowed_ids = set()
-            for r in RECORDINGS:
-                if (r.get("unit") or "Unassigned") == target_unit:
-                    for nid in (r.get("note_ids") or []):
-                        allowed_ids.add(nid)
-
-    out = []
-    for n in lib:
-        if allowed_ids is not None and n["id"] not in allowed_ids:
-            continue
-        out.append({"id": n["id"], "filename": n.get("filename"),
-                    "chars": n.get("chars", sum(len(c) for c in n.get("chunks", []))),
-                    "used_by": usage.get(n["id"], 0)})
-    return {"library": out}
-
-
-class AttachNoteBody(BaseModel):
-    passcode: str
-    id: str
-    note_id: str
-
-
-@app.post("/api/teacher/notes/attach")
-def attach_note(body: AttachNoteBody):
-    if not check_passcode(body.passcode):
-        return JSONResponse({"error": "unauthorized"}, status_code=401)
-    rec = REC_BY_ID.get(body.id)
-    if not rec:
-        return JSONResponse({"error": "recording not found"}, status_code=404)
-    if not note_by_id(body.note_id):
-        return JSONResponse({"error": "note not found in library"}, status_code=404)
-    ids = list(rec.get("note_ids") or [])
-    if body.note_id in ids:
-        return JSONResponse({"error": "That note is already attached to this recording."}, status_code=409)
-    ids.append(body.note_id)
-    rec["note_ids"] = ids
-    save_recordings(RECORDINGS)
-    return {"ok": True, "recording": _card(rec, include_hidden=True)}
-
-
-class DetachNoteBody(BaseModel):
-    passcode: str
-    id: str
-    note_id: str
-
-
-@app.post("/api/teacher/notes/detach")
-def detach_note(body: DetachNoteBody):
-    if not check_passcode(body.passcode):
-        return JSONResponse({"error": "unauthorized"}, status_code=401)
-    rec = REC_BY_ID.get(body.id)
-    if not rec:
-        return JSONResponse({"error": "not found"}, status_code=404)
-    ids = list(rec.get("note_ids") or [])
-    if body.note_id not in ids:
-        return JSONResponse({"error": "note not attached"}, status_code=404)
-    rec["note_ids"] = [x for x in ids if x != body.note_id]
-    save_recordings(RECORDINGS)
-    return {"ok": True, "recording": _card(rec, include_hidden=True)}
-
-
-class DeleteLibraryNoteBody(BaseModel):
-    passcode: str
-    note_id: str
-
-
-@app.post("/api/teacher/notes/library/delete")
-def delete_library_note(body: DeleteLibraryNoteBody):
-    if not check_passcode(body.passcode):
-        return JSONResponse({"error": "unauthorized"}, status_code=401)
-    lib = load_notes_library()
-    if not note_by_id(body.note_id, lib):
-        return JSONResponse({"error": "note not found"}, status_code=404)
-    lib = [n for n in lib if n["id"] != body.note_id]
-    save_notes_library(lib)
-    detached_from = 0
-    for r in RECORDINGS:
-        ids = r.get("note_ids") or []
-        if body.note_id in ids:
-            r["note_ids"] = [x for x in ids if x != body.note_id]
-            detached_from += 1
-    if detached_from:
-        save_recordings(RECORDINGS)
-    return {"ok": True, "detached_from": detached_from}
-
-
-class DeleteNoteBody(BaseModel):
-    passcode: str
-    id: str
-    note_id: str
-
-
-@app.post("/api/teacher/notes/delete")
-def delete_note(body: DeleteNoteBody):
-    if not check_passcode(body.passcode):
-        return JSONResponse({"error": "unauthorized"}, status_code=401)
-    rec = REC_BY_ID.get(body.id)
-    if not rec:
-        return JSONResponse({"error": "not found"}, status_code=404)
-    ids = list(rec.get("note_ids") or [])
-    if body.note_id not in ids:
-        return JSONResponse({"error": "note not found"}, status_code=404)
-    rec["note_ids"] = [x for x in ids if x != body.note_id]
-    save_recordings(RECORDINGS)
-    return {"ok": True, "recording": _card(rec, include_hidden=True)}
-
-
-class TranscribeBody(BaseModel):
-    passcode: str
-    id: str
-
-
-@app.post("/api/teacher/transcribe")
-async def teacher_transcribe(body: TranscribeBody):
-    if not check_passcode(body.passcode):
-        return JSONResponse({"error": "unauthorized"}, status_code=401)
-    rec = REC_BY_ID.get(body.id)
-    if not rec:
-        return JSONResponse({"error": "not found"}, status_code=404)
-    try:
-        count = await transcribe_recording_by_id(body.id)
-    except LLMConfigError as e:
-        return JSONResponse({"error": str(e)}, status_code=503)
-    except LLMUpstreamError as e:
-        return JSONResponse({"error": str(e)}, status_code=502)
-    except Exception as e:
-        return JSONResponse({"error": f"Transcription failed: {e}"}, status_code=500)
-    if count == 0:
-        return JSONResponse({"error": "Transcription produced no text."}, status_code=422)
-    return {"ok": True, "id": body.id, "segments": count, "recording": _card(rec, include_hidden=True)}
-
-
-def _remove_recording(rid: str) -> bool:
-    global RECORDINGS
-    rec = REC_BY_ID.get(rid)
-    if not rec:
-        return False
-    RECORDINGS = [r for r in RECORDINGS if r.get("id") != rid]
-    REC_BY_ID.pop(rid, None)
-    return True
-
-
-class DeleteRecBody(BaseModel):
-    passcode: str
-    id: str
-
-
-@app.post("/api/teacher/recordings/delete")
-def teacher_delete_recording(body: DeleteRecBody):
-    if not check_passcode(body.passcode):
-        return JSONResponse({"error": "unauthorized"}, status_code=401)
-    if not _remove_recording(body.id):
-        return JSONResponse({"error": "not found"}, status_code=404)
-    save_recordings(RECORDINGS)
-    return {"ok": True, "id": body.id, "total_recordings_now": len(RECORDINGS)}
-
-
-class DeleteUnassignedBody(BaseModel):
-    passcode: str
-
-
-@app.post("/api/teacher/recordings/delete-unassigned")
-def teacher_delete_unassigned(body: DeleteUnassignedBody):
-    if not check_passcode(body.passcode):
-        return JSONResponse({"error": "unauthorized"}, status_code=401)
-    targets = [r["id"] for r in RECORDINGS if (r.get("unit") or "Unassigned") == "Unassigned"]
-    for rid in targets:
-        _remove_recording(rid)
-    if targets:
-        save_recordings(RECORDINGS)
-    return {"ok": True, "deleted": len(targets), "total_recordings_now": len(RECORDINGS)}
-
-
-async def generate_summary_and_topics(rec):
-    segs = rec.get("segments") or []
-    if not segs:
-        return None
-    idx = await retrieve(rec, rec.get("display_title") or rec.get("topic") or "lecture", k=30, window=1)
-    context = context_from_indices(rec, idx, max_chars=20000)
-    system = (
-        "You summarize a class recording for students. Use ONLY the transcript. "
-        "Always write in English. "
-        "Return STRICT JSON: {\"summary\": string (2-4 sentences), "
-        "\"topics\": string[] (4-8 short topic tags, each 1-4 words)}. No markdown, no extra text."
-    )
-    raw = await llm(
-        [{"role": "system", "content": system},
-         {"role": "user", "content": f"Transcript excerpts:\n{context}"}],
-        max_tokens=500, temperature=0.2,
-    )
-    import json as _json
-    txt = (raw or "").strip()
-    if txt.startswith("```"):
-        txt = txt.strip("`")
-        txt = txt.split("\n", 1)[-1] if "\n" in txt else txt
-    try:
-        data = _json.loads(txt[txt.find("{"): txt.rfind("}") + 1])
-    except Exception:
-        data = {"summary": txt[:400], "topics": []}
-    rec["summary"] = (data.get("summary") or "").strip()
-    rec["topics"] = [t.strip() for t in (data.get("topics") or []) if t.strip()][:8]
-    return rec
-
-
-class SummaryBody(BaseModel):
-    passcode: str
-    id: str
-
-
-@app.post("/api/teacher/summary")
-async def teacher_summary(body: SummaryBody):
-    if not check_passcode(body.passcode):
-        return JSONResponse({"error": "unauthorized"}, status_code=401)
-    rec = REC_BY_ID.get(body.id)
-    if not rec:
-        return JSONResponse({"error": "not found"}, status_code=404)
-    if not rec.get("segments"):
-        return JSONResponse({"error": "This recording has no transcript yet."}, status_code=422)
-    try:
-        await generate_summary_and_topics(rec)
-    except LLMConfigError as e:
-        return JSONResponse({"error": str(e)}, status_code=503)
-    except Exception as e:
-        return JSONResponse({"error": f"Could not generate summary: {e}"}, status_code=500)
-    save_recordings(RECORDINGS)
-    return {"ok": True, "id": body.id, "summary": rec.get("summary", ""), "topics": rec.get("topics", [])}
-
-
-@app.post("/api/teacher/stats")
-def teacher_stats(body: TeacherAuth):
-    if not check_passcode(body.passcode):
-        return JSONResponse({"error": "unauthorized"}, status_code=401)
-    from datetime import datetime, timedelta
-    roster = load_roster()
-    log = load_qlog()
-    total = len(RECORDINGS)
-    transcribed = sum(1 for r in RECORDINGS if r.get("segments"))
-    visible = sum(1 for r in RECORDINGS if r.get("visible", True))
-    unassigned = sum(1 for r in RECORDINGS if (r.get("unit") or "Unassigned") == "Unassigned")
-    week_ago = datetime.utcnow() - timedelta(days=7)
-    q_week = 0
-    for q in log:
-        try:
-            if datetime.strptime((q.get("time") or "")[:10], "%Y-%m-%d") >= week_ago:
-                q_week += 1
-        except Exception:
-            pass
-    courses = len({(r.get("unit") or "Unassigned") for r in RECORDINGS})
-    return {
-        "recordings_total": total,
-        "recordings_transcribed": transcribed,
-        "recordings_missing": total - transcribed,
-        "recordings_visible": visible,
-        "recordings_unassigned": unassigned,
-        "courses": courses,
-        "students": len(roster),
-        "questions_total": len(log),
-        "questions_this_week": q_week,
-    }
-
-
-_STOPWORDS = set("the a an and or of to in is are was were be been what how why when where "
-                 "which who whom this that these those i you he she it we they for on at by "
-                 "with about from as do does did can could would should will shall may might "
-                 "not no yes please tell me my your our their his her its me can't cant explain "
-                 "give show list define describe difference between them then than".split())
-
-
-@app.post("/api/teacher/analytics")
-def teacher_analytics(body: TeacherAuth):
-    if not check_passcode(body.passcode):
-        return JSONResponse({"error": "unauthorized"}, status_code=401)
-    log = load_qlog()
-    kw = Counter()
-    per_student = Counter()
-    per_course = Counter()
-    per_day = Counter()
-    for q in log:
-        for w in tokenize(q.get("question", "")):
-            if len(w) > 2 and w not in _STOPWORDS:
-                kw[w] += 1
-        per_student[q.get("student") or "Unknown"] += 1
-        per_course[q.get("unit") or "Unassigned"] += 1
-        d = (q.get("time") or "")[:10]
-        if d:
-            per_day[d] += 1
-    return {
-        "total": len(log),
-        "top_keywords": kw.most_common(15),
-        "top_students": per_student.most_common(10),
-        "by_course": per_course.most_common(20),
-        "by_day": sorted(per_day.items()),
-    }
-
-
-@app.get("/api/teacher/export/questions.csv")
-def export_questions_csv(passcode: str = Query(...)):
-    if not check_passcode(passcode):
-        return JSONResponse({"error": "unauthorized"}, status_code=401)
-    import csv
-    log = load_qlog()
-    buf = io.StringIO()
-    w = csv.writer(buf)
-    w.writerow(["Time", "Student", "Recording", "Unit", "Question"])
-    for q in reversed(log):
-        w.writerow([q.get("time", ""), q.get("student", ""), q.get("recording_title", ""),
-                    q.get("unit", ""), q.get("question", "")])
-    data = buf.getvalue().encode("utf-8-sig")
-    from fastapi.responses import Response
-    return Response(content=data, media_type="text/csv",
-                    headers={"Content-Disposition": "attachment; filename=questions.csv"})
-
-
-@app.get("/api/teacher/export/roster.csv")
-def export_roster_csv(passcode: str = Query(...)):
-    if not check_passcode(passcode):
-        return JSONResponse({"error": "unauthorized"}, status_code=401)
-    import csv
-    roster = load_roster()
-    buf = io.StringIO()
-    w = csv.writer(buf)
-    w.writerow(["Name", "Email", "Courses"])
-    for s in roster:
-        w.writerow([s.get("name", ""), s.get("email", ""), ", ".join(s.get("courses", []) or [])])
-    data = buf.getvalue().encode("utf-8-sig")
-    from fastapi.responses import Response
-    return Response(content=data, media_type="text/csv",
-                    headers={"Content-Disposition": "attachment; filename=roster.csv"})
-
-
-@app.get("/api/teacher/export/questions.pdf")
-def export_questions_pdf(passcode: str = Query(...)):
-    if not check_passcode(passcode):
-        return JSONResponse({"error": "unauthorized"}, status_code=401)
-    from fastapi.responses import Response
-    from datetime import datetime
-    log = load_qlog()
-    lines = [f"NG-ClassMate — Student Questions Report",
-             f"Generated {datetime.utcnow().strftime('%Y-%m-%d %H:%M')} UTC",
-             f"Total questions: {len(log)}", ""]
-    for q in reversed(log):
-        lines.append(f"{q.get('time','')}  |  {q.get('student','')}  |  {q.get('unit','')}")
-        lines.append(f"  Q: {q.get('question','')}")
-        lines.append(f"  Recording: {q.get('recording_title','')}")
-        lines.append("")
-    pdf_bytes = _simple_text_pdf(lines)
-    return Response(content=pdf_bytes, media_type="application/pdf",
-                    headers={"Content-Disposition": "attachment; filename=questions.pdf"})
-
-
-def _simple_text_pdf(lines):
-    def esc(s):
-        return (s or "").replace("\\", r"\\").replace("(", r"\(").replace(")", r"\)")
-    per_page = 48
-    pages = [lines[i:i + per_page] for i in range(0, max(1, len(lines)), per_page)] or [[""]]
-    objs = []
-    n_pages = len(pages)
-    font_obj = 3 + n_pages * 2
-    kids = []
-    body_objs = {}
-    obj_num = 3
-    content_nums = []
-    page_nums = []
-    for pi, pg in enumerate(pages):
-        page_no = obj_num; obj_num += 1
-        content_no = obj_num; obj_num += 1
-        page_nums.append(page_no); content_nums.append(content_no)
-    font_no = obj_num
-    for pi, pg in enumerate(pages):
-        text_cmds = ["BT", "/F1 10 Tf", "12 TL", "40 800 Td"]
-        for ln in pg:
-            text_cmds.append(f"({esc(ln)[:180]}) Tj")
-            text_cmds.append("T*")
-        text_cmds.append("ET")
-        stream = "\n".join(text_cmds)
-        body_objs[content_nums[pi]] = f"<< /Length {len(stream)} >>\nstream\n{stream}\nendstream"
-        body_objs[page_nums[pi]] = (
-            f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
-            f"/Resources << /Font << /F1 {font_no} 0 R >> >> /Contents {content_nums[pi]} 0 R >>"
-        )
-    body_objs[font_no] = "<< /Type /Font /Subtype /Type1 /BaseFont /Courier >>"
-    kids_str = " ".join(f"{pn} 0 R" for pn in page_nums)
-    body_objs[1] = "<< /Type /Catalog /Pages 2 0 R >>"
-    body_objs[2] = f"<< /Type /Pages /Kids [{kids_str}] /Count {n_pages} >>"
-    out = "%PDF-1.4\n"
-    offsets = {}
-    for num in sorted(body_objs):
-        offsets[num] = len(out.encode("latin-1", "replace"))
-        out += f"{num} 0 obj\n{body_objs[num]}\nendobj\n"
-    xref_pos = len(out.encode("latin-1", "replace"))
-    max_num = max(body_objs)
-    out += f"xref\n0 {max_num + 1}\n0000000000 65535 f \n"
-    for num in range(1, max_num + 1):
-        out += f"{offsets.get(num, 0):010d} 00000 n \n"
-    out += f"trailer\n<< /Size {max_num + 1} /Root 1 0 R >>\nstartxref\n{xref_pos}\n%%EOF"
-    return out.encode("latin-1", "replace")
-
-
-@app.get("/api/health")
-def health():
-    return {"status": "ok", "recordings": len(RECORDINGS)}
-
-# ==============================================================================
-# PAST PAPER SOLVER MODULE (SEPARATE STORAGE & ENGINE)
-# ==============================================================================
-PAST_PAPER_CONFIG_PATH = os.path.join(DATA_DIR, "past_paper_config.json")
-PAST_PAPER_SOLUTIONS_PATH = os.path.join(DATA_DIR, "past_paper_solutions.json")
-PAST_PAPER_LIB_PATH = os.path.join(DATA_DIR, "pastpaper_library.json")
-
-# Legacy document-library filenames used by earlier builds.
-LEGACY_PAST_PAPER_DOC_PATHS = [
-    os.path.join(DATA_DIR, "past_paper_docs.json"),
-    os.path.join(DATA_DIR, "pastpaper_docs.json"),
-]
-
-# --- Past Paper Isolated Data Helpers ---
-def load_pp_json(path):
-    if os.path.exists(path):
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            pass
-    return {} if "config" in path or "solutions" in path else []
-
-def save_pp_json(path, data):
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-
-def load_pp_documents():
-    """Load the one canonical answered/reference-document library."""
-    docs = load_pp_json(PAST_PAPER_LIB_PATH)
-    if not isinstance(docs, list):
-        docs = []
-    clean_docs = [d for d in docs if isinstance(d, dict)]
-    if len(clean_docs) != len(docs):
-        docs = clean_docs
-        changed = True
-    else:
-        changed = False
-    existing_ids = {str(d.get("id")) for d in docs if isinstance(d, dict) and d.get("id")}
-
-    # Fold documents from older builds into the canonical library.
-    for legacy_path in LEGACY_PAST_PAPER_DOC_PATHS:
-        legacy_docs = load_pp_json(legacy_path)
-        if not isinstance(legacy_docs, list):
-            continue
-        for legacy_doc in legacy_docs:
-            if not isinstance(legacy_doc, dict):
-                continue
-            legacy_id = str(legacy_doc.get("id") or f"ppdoc_{secrets.token_hex(6)}")
-            if legacy_id in existing_ids:
-                continue
-            legacy_doc["id"] = legacy_id
-            legacy_doc["filename"] = legacy_doc.get("filename") or "Uploaded Document"
-            legacy_doc["course"] = (legacy_doc.get("course") or "").strip()
-            legacy_doc["chunks"] = legacy_doc.get("chunks") or []
-            legacy_doc["text_chars"] = int(legacy_doc.get("text_chars") or sum(len(c) for c in legacy_doc.get("chunks", []) if isinstance(c, str)))
-            legacy_doc["uploaded_at"] = legacy_doc.get("uploaded_at") or ""
-            docs.append(legacy_doc)
-            existing_ids.add(legacy_id)
-            changed = True
-
-    for doc in docs:
-        if not isinstance(doc, dict):
-            continue
-        before=(doc.get("filename"),doc.get("course"),doc.get("uploaded_at"),doc.get("chunks"),doc.get("text_chars"))
-        doc["filename"] = doc.get("filename") or "Uploaded Document"
-        doc["course"] = (doc.get("course") or "").strip()
-        doc["uploaded_at"] = doc.get("uploaded_at") or ""
-        doc["chunks"] = doc.get("chunks") or []
-        doc["text_chars"] = int(doc.get("text_chars") or sum(len(c) for c in doc.get("chunks", []) if isinstance(c, str)))
-        after=(doc.get("filename"),doc.get("course"),doc.get("uploaded_at"),doc.get("chunks"),doc.get("text_chars"))
-        if before != after:
-            changed=True
-    if changed:
-        save_pp_json(PAST_PAPER_LIB_PATH, docs)
-    return docs
-
-def save_pp_documents(docs):
-    save_pp_json(PAST_PAPER_LIB_PATH, docs)
-
-def pp_doc_by_id(doc_id):
-    return next((doc for doc in load_pp_documents() if doc.get("id") == doc_id), None)
-
-# --- Student Metadata Endpoint ---
-@app.post("/api/student/pastpaper/meta")
-def student_pp_meta(body: RecListBody):
-    sess = valid_session(body.token)
-    if not sess:
-        return JSONResponse({"error": "Unauthorized"}, status_code=401)
-    
-    courses = sess.get("courses", [])
-    if not courses:
-        courses = [r.get("unit") for r in RECORDINGS if r.get("unit") and r.get("unit").strip().lower() != "unassigned"]
-    
-    sols = load_pp_json(PAST_PAPER_SOLUTIONS_PATH)
-    library = [
-        {
-            "course": v["course"],
-            "year": str(v["year"]),
-            "series": v["series"],
-            "paper": str(v["paper"]),
-            "question": str(v["question"])
+  }
+
+  function populateLinkedDocSelect(id, selectedCourse) {
+    const select = document.getElementById(id);
+    if (!select) return;
+    const current = select.value;
+    const course = (selectedCourse || "").trim().toLowerCase();
+    const eligible = ppDocs.filter(doc => {
+      const dc = (doc.course || "").trim().toLowerCase();
+      return !course || !dc || dc === course;
+    });
+    select.innerHTML = '<option value="">-- Optional: Link Reference Document --</option>';
+    eligible.forEach(doc => {
+      select.appendChild(new Option(`${doc.filename || "Untitled"} — ${doc.course || "Shared / Unassigned"}`, doc.id));
+    });
+    if (current && eligible.some(d => d.id === current)) select.value = current;
+  }
+
+  populateLinkedDocSelect("bulkDocSelect", document.getElementById("bulkCourseSelect")?.value || "");
+  populateLinkedDocSelect("tqAnsweredDocSelect", document.getElementById("tqCourseSelect")?.value || "");
+
+  ["bulkCourseSelect","tqCourseSelect"].forEach(id => {
+    const select = document.getElementById(id);
+    if (!select || select.dataset.ppDocBinding === "1") return;
+    select.dataset.ppDocBinding = "1";
+    select.addEventListener("change", () => {
+      if (id === "bulkCourseSelect") populateLinkedDocSelect("bulkDocSelect", select.value);
+      else populateLinkedDocSelect("tqAnsweredDocSelect", select.value);
+    });
+  });
+
+  // Upload into the same canonical library used by the dropdown and manage-existing list.
+  const uploadBtn = document.getElementById("uploadPpDocBtn");
+  if (uploadBtn && uploadBtn.dataset.ppUploadBinding !== "1") {
+    uploadBtn.dataset.ppUploadBinding = "1";
+    uploadBtn.addEventListener("click", async () => {
+      const fileInput = document.getElementById("ppDocFile");
+      const course = document.getElementById("docCourseSelect")?.value || "";
+      const file = fileInput?.files?.[0] || null;
+      if (!course) return toast("Please select a course for this document.", "info");
+      if (!file) return toast("Please choose a PDF, Word document, or text file.", "info");
+
+      const fd = new FormData();
+      fd.append("passcode", passcode);
+      fd.append("course", course);
+      fd.append("file", file);
+      const oldText = uploadBtn.textContent;
+      uploadBtn.disabled = true;
+      uploadBtn.textContent = "Uploading…";
+      try {
+        const res = await fetch(`${API}/api/teacher/pastpaper/upload-doc`, { method: "POST", body: fd });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          toast(data.error || "Failed to upload document.", "error");
+          return;
         }
-        for v in sols.values()
-    ]
-    return {
-        "courses": sorted(list(set(courses))),
-        "syllabi": load_pp_json(PAST_PAPER_CONFIG_PATH),
-        "library": library
+        fileInput.value = "";
+        toast(`"${data.doc?.filename || file.name}" uploaded to ${course} ✓`, "success");
+        await refreshPastPaperHub();
+      } catch (err) {
+        console.error(err);
+        toast("Network error uploading document.", "error");
+      } finally {
+        uploadBtn.disabled = false;
+        uploadBtn.textContent = oldText;
+      }
+    });
+  }
+
+  renderTeacherOverrides(ppConfig.solutions || []);
+}
+
+
+// Bind the Bulk Upload & Auto-Extract action once.  The previous build had the
+// button in the HTML and the API endpoint in Python, but no frontend handler,
+// so clicking the button did nothing.
+function bindPastPaperBulkUpload() {
+  const btn = document.getElementById("processBulkBtn");
+  if (!btn || btn.dataset.ppBulkBinding === "1") return;
+  btn.dataset.ppBulkBinding = "1";
+
+  btn.addEventListener("click", async (event) => {
+    event.preventDefault();
+
+    const passcode = (typeof state !== "undefined" && state.passcode)
+      || localStorage.getItem("ng_teacherPasscode")
+      || "";
+    const course = document.getElementById("bulkCourseSelect")?.value?.trim() || "";
+    const year = document.getElementById("bulkYearInput")?.value?.trim() || "";
+    const series = document.getElementById("bulkSeriesSelect")?.value?.trim() || "";
+    const paper = document.getElementById("bulkPaperInput")?.value?.trim() || "";
+    const videoUrl = document.getElementById("bulkVideoUrl")?.value?.trim() || "";
+    const answeredDocId = document.getElementById("bulkDocSelect")?.value || "";
+    const qpFile = document.getElementById("bulkQpFile")?.files?.[0] || null;
+    const msFile = document.getElementById("bulkMsFile")?.files?.[0] || null;
+    const erFile = document.getElementById("bulkErFile")?.files?.[0] || null;
+
+    if (!passcode) return toast("Your teacher session has expired. Please sign in again.", "error");
+    if (!course) return toast("Please select a course.", "info");
+    if (!year) return toast("Please enter the exam year.", "info");
+    if (!series) return toast("Please select the exam series.", "info");
+    if (!paper) return toast("Please enter the paper number.", "info");
+    if (!qpFile) return toast("Please choose the Question Paper PDF.", "info");
+    if (!msFile) return toast("Please choose the Mark Scheme PDF.", "info");
+
+    const allowedPdf = /\.pdf$/i;
+    if (!allowedPdf.test(qpFile.name) || !allowedPdf.test(msFile.name) || (erFile && !allowedPdf.test(erFile.name))) {
+      return toast("Question Paper, Mark Scheme, and Examiner Report must be PDF files.", "error");
     }
 
-# --- Student Solver Endpoint ---
-@app.post("/api/student/pastpaper/solve")
-async def student_pp_solve(
-    token: str = Form(...),
-    course: str = Form(...),
-    year: str = Form(...),
-    series: str = Form(...),
-    paper: str = Form(...),
-    question: str = Form(...),
-    doubt: str = Form("")
-):
-    sess = valid_session(token)
-    if not sess:
-        return JSONResponse({"error": "Unauthorized"}, status_code=401)
+    const fd = new FormData();
+    fd.append("passcode", passcode);
+    fd.append("course", course);
+    fd.append("year", year);
+    fd.append("series", series);
+    fd.append("paper", paper);
+    fd.append("video_url", videoUrl);
+    fd.append("answered_doc_id", answeredDocId);
+    fd.append("qp_file", qpFile, qpFile.name);
+    fd.append("ms_file", msFile, msFile.name);
+    if (erFile) fd.append("er_file", erFile, erFile.name);
 
-    syllabi = load_pp_json(PAST_PAPER_CONFIG_PATH)
-    syllabus = syllabi.get(course, "Standard Exam Board Specification")
+    const oldText = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = "⏳ Extracting questions…";
 
-    sols = load_pp_json(PAST_PAPER_SOLUTIONS_PATH)
-    key = f"{course.strip().lower()}:{year.strip().lower()}:{series.strip().lower()}:{paper.strip().lower()}:{question.strip().lower()}"
-    custom_asset = sols.get(key)
+    try {
+      toast("Uploading the exam files and extracting questions…", "info", 5000);
+      const res = await fetch(`${API}/api/teacher/pastpaper/bulk-upload`, {
+        method: "POST",
+        body: fd
+      });
 
-    exam_ref = f"{year} {series} P{paper} Q{question}".strip()
+      const data = await res.json().catch(async () => ({
+        error: (await res.text().catch(() => "")) || `HTTP ${res.status}`
+      }));
 
-    system = (
-        f"You are an elite academic examiner and senior Biology tutor. Course: '{course}', Syllabus: '{syllabus}'.\n"
-        "STRICT STRUCTURED OUTPUT:\n"
-        "### 1. Complete Model Answer\n"
-        "- Write a full, flawless model answer as expected on the official exam lines, embedding all mandatory terms.\n"
-        "### 2. Mark Scheme Breakdown & Mandatory Keywords\n"
-        "- Detail the exact point criteria. Bold compulsory marking keywords.\n"
-        "### 3. Conceptual Link & Biological Mechanism\n"
-        "- Explain the underlying biological principles clearly.\n"
-        "### 4. Examiner Traps & Common Mistakes\n"
-        "- If official Examiner Report notes are provided below, base your traps directly on what real candidates did wrong, including penalised phrasing and common confusions."
-    )
+      if (!res.ok || !data.ok) {
+        const detail = data.error || data.detail || `Upload failed (HTTP ${res.status})`;
+        console.error("Past-paper bulk upload failed:", res.status, data);
+        toast(detail, "error", 7000);
+        return;
+      }
 
-    user_text = f"Exam Ref: {exam_ref}\nStudent Doubt: {doubt or 'Provide a full breakdown and solution.'}\n\n"
+      const count = Number(data.indexed || 0);
+      toast(`✅ Auto-extraction complete: ${count} question${count === 1 ? "" : "s"} indexed.`, "success", 6000);
 
-    if custom_asset:
-        if custom_asset.get("qp_text"):
-            user_text += f"OFFICIAL QUESTION PROMPT:\n{custom_asset['qp_text']}\n\n"
-        if custom_asset.get("ms_text"):
-            user_text += f"OFFICIAL MARK SCHEME:\n{custom_asset['ms_text']}\n\n"
-        if custom_asset.get("examiner_notes"):
-            user_text += f"OFFICIAL EXAMINER REPORT NOTES FOR THIS QUESTION:\n{custom_asset['examiner_notes']}\n\n"
+      // Clear only the file inputs; keep the metadata so another paper can be uploaded.
+      ["bulkQpFile", "bulkMsFile", "bulkErFile"].forEach(id => {
+        const input = document.getElementById(id);
+        if (input) input.value = "";
+      });
 
-        doc_id = custom_asset.get("answered_doc_id")
-        if doc_id:
-            pp_doc = pp_doc_by_id(doc_id)
-            if pp_doc:
-                user_text += f"[TEACHER MODEL ANSWER / EXAM DOC: {pp_doc.get('filename')}]:\n"
-                user_text += "\n".join(pp_doc.get("chunks", [])[:5]) + "\n\n"
-
-    try:
-        raw = await llm(
-            [{"role": "system", "content": system}, {"role": "user", "content": user_text}],
-            max_tokens=2500,
-            temperature=0.1
-        )
-    except Exception as e:
-        return JSONResponse({"error": f"AI Solver Error: {str(e)}"}, status_code=503)
-
-    return {
-        "ok": True,
-        "exam_ref": exam_ref,
-        "syllabus": syllabus,
-        "solution_markdown": raw,
-        "teacher_asset": custom_asset
+      // Refresh the hub so the new questions / linked-answer state are visible immediately.
+      await refreshPastPaperHub();
+    } catch (err) {
+      console.error("Network error during past-paper bulk upload:", err);
+      toast(`Network error during upload: ${err?.message || err}`, "error", 7000);
+    } finally {
+      btn.disabled = false;
+      btn.innerHTML = oldText;
     }
+  });
+}
 
-# --- Teacher Past Paper Management Endpoints ---
+async function deletePastPaperDoc(docId, filename = "this document") {
+  if (!confirm(`Delete "${filename}" from the Past Paper document library?`)) return;
+  const passcode = (typeof state !== "undefined" && state.passcode) || localStorage.getItem("ng_teacherPasscode") || "";
+  try {
+    const res = await fetch(`${API}/api/teacher/pastpaper/delete_doc`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ passcode, doc_id: docId })
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) return toast(data.error || "Failed to delete document.", "error");
+    toast(`"${filename}" deleted ✓`, "success");
+    await refreshPastPaperHub();
+  } catch (err) {
+    console.error(err);
+    toast("Network error deleting document.", "error");
+  }
+}
 
-@app.post("/api/teacher/pastpaper/config")
-def teacher_pp_config(body: TeacherAuth):
-    if not check_teacher(body.passcode):
-        return JSONResponse({"error": "unauthorized"}, status_code=401)
-        
-    courses = {r.get("unit").strip() for r in RECORDINGS if r.get("unit") and r.get("unit").strip().lower() != "unassigned"}
-    for s in load_roster():
-        for c in s.get("courses", []):
-            if c and c.strip():
-                courses.add(c.strip())
+// FIX: EDIT STUDENT SAVE HANDLER WITH DIAGNOSTICS
+// ==========================================
 
-    sols = load_pp_json(PAST_PAPER_SOLUTIONS_PATH)
-    pp_lib = load_pp_documents()
-    for d in pp_lib:
-        c = (d.get("course") or "").strip()
-        if c and c.lower() != "unassigned":
-            courses.add(c)
+async function executeStudentSave() {
+  // 1. Locate Student ID across possible modal implementations
+  const studentId = 
+    document.getElementById('editStudentId')?.value || 
+    document.getElementById('studentId')?.value ||
+    document.getElementById('editStudentModal')?.dataset?.studentId || 
+    window.editingStudentId;
+
+  if (!studentId) {
+    alert("⚠️ Save Failed: Could not find the Student ID on this modal. Check that your hidden input has id='editStudentId'.");
+    return;
+  }
+
+  // 2. Collect field values (with fallbacks for various field naming conventions)
+  const nameInput = document.getElementById('editStudentName') || document.getElementById('studentName');
+  const emailInput = document.getElementById('editStudentEmail') || document.getElementById('studentEmail');
+  const phoneInput = document.getElementById('editStudentPhone') || document.getElementById('studentPhone');
+  const courseInput = document.getElementById('editStudentCourse') || document.getElementById('studentCourse');
+
+  const passcode = window.state?.passcode || (typeof state !== "undefined" ? state.passcode : "");
+
+  const payload = {
+    passcode: passcode,
+    student_id: studentId,
+    id: studentId,
+    name: nameInput ? nameInput.value.trim() : "",
+    email: emailInput ? emailInput.value.trim() : "",
+    phone: phoneInput ? phoneInput.value.trim() : "",
+    course: courseInput ? courseInput.value : ""
+  };
+
+  // 3. UI Feedback - Loading State
+  const saveBtn = document.getElementById('saveStudentBtn') || 
+                  document.getElementById('saveEditStudentBtn') || 
+                  document.querySelector('#editStudentModal button[type="submit"]');
+
+  if (saveBtn) {
+    saveBtn.disabled = true;
+    saveBtn.innerText = "Saving...";
+  }
+
+  // 4. Try updating via primary teacher endpoint, then admin endpoint fallback
+  const endpoints = [
+    '/api/teacher/students/update',
+    '/api/admin/students/update',
+    '/api/students/update'
+  ];
+
+  let success = false;
+  let lastError = "Server network error";
+
+  for (const url of endpoints) {
+    try {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+
+      if (res.ok) {
+        success = true;
+        break;
+      } else {
+        const errData = await res.json().catch(() => ({}));
+        lastError = errData.error || errData.message || `HTTP ${res.status}`;
+      }
+    } catch (e) {
+      lastError = e.message;
+    }
+  }
+
+  // 5. Handle Outcome
+  if (saveBtn) {
+    saveBtn.disabled = false;
+    saveBtn.innerText = "Save Changes";
+  }
+
+  if (success) {
+    alert("✅ Student updated successfully!");
     
-    # --- Group solutions hierarchically: Course -> Exam -> Questions ---
-    library_tree = {}
-    for key, v in sols.items():
-        c = v.get("course", "Unassigned")
-        exam_id = f"{v.get('year', '')} {v.get('series', '')} Paper {v.get('paper', '')}".strip()
-        
-        if c not in library_tree:
-            library_tree[c] = {}
-        if exam_id not in library_tree[c]:
-            library_tree[c][exam_id] = []
-            
-        library_tree[c][exam_id].append({
-            "key": key,
-            "question": v.get("question", ""),
-            "qp_text": v.get("qp_text", ""),
-            "ms_text": v.get("ms_text", ""),
-            "examiner_notes": v.get("examiner_notes", ""),
-            "video_url": v.get("video_url", ""),
-            "answered_doc_id": v.get("answered_doc_id", "")
-        })
-
-    return {
-        "courses": sorted(list(courses)),
-        "syllabi": load_pp_json(PAST_PAPER_CONFIG_PATH),
-        "pp_library": [
-            {
-                "id": d.get("id", ""),
-                "filename": d.get("filename", "Uploaded Document"),
-                "course": d.get("course", ""),
-                "uploaded_at": d.get("uploaded_at", ""),
-                "text_chars": d.get("text_chars", 0),
-            }
-            for d in pp_lib if d.get("id")
-        ],
-        "solutions_tree": library_tree,  # Grouped hierarchy
-        "solutions": [{"key": k, **v} for k, v in sols.items()] # Backward compatibility
+    // Close modal
+    const modal = document.getElementById('editStudentModal') || document.getElementById('studentEditModal');
+    if (modal) {
+      modal.style.display = 'none';
+      modal.classList.remove('active', 'show');
     }
 
-@app.post("/api/teacher/pastpaper/upload-doc")
-async def teacher_pp_upload_doc(
-    passcode: str = Form(...),
-    course: str = Form(...),
-    file: UploadFile = File(...)
-):
-    if not check_passcode(passcode):
-        return JSONResponse({"error": "Unauthorized passcode."}, status_code=401)
+    // Refresh student list
+    if (typeof loadStudents === 'function') loadStudents();
+    if (typeof renderStudents === 'function') renderStudents();
+  } else {
+    alert(`❌ Could not save changes.\nError: ${lastError}`);
+  }
+}
 
-    selected_course = (course or "").strip()
-    filename = (file.filename or "Uploaded Document").strip()
-    if not selected_course:
-        return JSONResponse({"error": "Please select a course for this document."}, status_code=400)
+// Bind to click and submit events across the entire document
+document.addEventListener('click', (e) => {
+  const t = e.target;
+  if (t && (t.id === 'saveStudentBtn' || t.id === 'saveEditStudentBtn' || t.classList.contains('save-student-btn'))) {
+    e.preventDefault();
+    executeStudentSave();
+  }
+});
 
-    try:
-        content = await file.read()
-        extracted_text = extract_text_from_upload(content, filename).strip()
-        if not extracted_text:
-            return JSONResponse({"error": "No readable text could be extracted from this document."}, status_code=422)
+document.addEventListener('submit', (e) => {
+  if (e.target && (e.target.id === 'editStudentForm' || e.target.id === 'studentEditForm')) {
+    e.preventDefault();
+    executeStudentSave();
+  }
+});
 
-        doc_id = f"ppdoc_{uuid.uuid4().hex[:10]}"
-        doc_data = {
-            "id": doc_id,
-            "filename": filename,
-            "course": selected_course,
-            "uploaded_at": date.today().isoformat(),
-            "chunks": chunk_note_text(extracted_text),
-            "text_chars": len(extracted_text),
-        }
-        docs = load_pp_documents()
-        docs.append(doc_data)
-        save_pp_documents(docs)
-        return {"ok": True, "doc": {"id": doc_id, "filename": filename, "course": selected_course, "uploaded_at": doc_data["uploaded_at"], "text_chars": doc_data["text_chars"]}}
-    except ValueError as e:
-        return JSONResponse({"error": str(e)}, status_code=400)
-    except Exception as e:
-        return JSONResponse({"error": f"Failed to upload doc: {str(e)}"}, status_code=500)
-
-
-@app.get("/api/teacher/pastpaper/docs")
-async def teacher_pp_get_docs(passcode: str = "", course: str = ""):
-    if not check_passcode(passcode):
-        return JSONResponse({"error": "Unauthorized"}, status_code=401)
-    requested_course = (course or "").strip().lower()
-    result = []
-    for d in load_pp_documents():
-        doc_course = (d.get("course") or "").strip()
-        if requested_course and doc_course and doc_course.lower() != requested_course:
-            continue
-        result.append({"id": d.get("id"), "filename": d.get("filename"), "course": doc_course, "uploaded_at": d.get("uploaded_at", ""), "text_chars": d.get("text_chars", 0)})
-    result.sort(key=lambda d: ((d.get("course") or "").lower(), (d.get("filename") or "").lower()))
-    return {"docs": result}
-
-
-@app.post("/api/teacher/pastpaper/docs/update-course")
-async def update_doc_course(passcode: str = Form(...), doc_id: str = Form(...), course: str = Form(...)):
-    if not check_passcode(passcode):
-        return JSONResponse({"error": "Unauthorized passcode."}, status_code=401)
-    docs = load_pp_documents()
-    new_course = (course or "").strip()
-    updated_doc = None
-    for d in docs:
-        if d.get("id") == doc_id:
-            d["course"] = new_course
-            updated_doc = d
-            break
-    if updated_doc is None:
-        return JSONResponse({"error": "Document not found."}, status_code=404)
-    save_pp_documents(docs)
-    return {"ok": True, "doc": {"id": updated_doc.get("id"), "filename": updated_doc.get("filename"), "course": updated_doc.get("course", "")}}
-
-
-@app.post("/api/teacher/pastpaper/delete_doc")
-def teacher_pp_delete_doc(body: dict):
-    if not check_passcode(body.get("passcode", "")):
-        return JSONResponse({"error": "Unauthorized passcode."}, status_code=401)
-    doc_id = str(body.get("doc_id") or "").strip()
-    if not doc_id:
-        return JSONResponse({"error": "Missing document id."}, status_code=400)
-    docs = load_pp_documents()
-    remaining = [d for d in docs if d.get("id") != doc_id]
-    if len(remaining) == len(docs):
-        return JSONResponse({"error": "Document not found."}, status_code=404)
-    save_pp_documents(remaining)
-    sols = load_pp_json(PAST_PAPER_SOLUTIONS_PATH)
-    changed=False
-    for item in sols.values():
-        if item.get("answered_doc_id") == doc_id:
-            item["answered_doc_id"] = ""
-            item["answered_doc_name"] = ""
-            changed=True
-    if changed:
-        save_pp_json(PAST_PAPER_SOLUTIONS_PATH, sols)
-    return {"ok": True}
-
-
-@app.post("/api/teacher/pastpaper/config/save")
-def teacher_pp_save_syllabus(body: dict):
-    if not check_teacher(body.get("passcode", "")):
-        return JSONResponse({"error": "unauthorized"}, status_code=401)
-    cfg = load_pp_json(PAST_PAPER_CONFIG_PATH)
-    cfg[body["course"]] = body["syllabus"]
-    save_pp_json(PAST_PAPER_CONFIG_PATH, cfg)
-    return {"ok": True}
-
-@app.post("/api/teacher/pastpaper/solutions/delete")
-def teacher_pp_delete_solution(body: dict):
-    if not check_teacher(body.get("passcode", "")):
-        return JSONResponse({"error": "unauthorized"}, status_code=401)
-    sols = load_pp_json(PAST_PAPER_SOLUTIONS_PATH)
-    sols.pop(body.get("key", ""), None)
-    save_pp_json(PAST_PAPER_SOLUTIONS_PATH, sols)
-    return {"ok": True}
-class SavePPSolutionBody(BaseModel):
-    passcode: str
-    course: str
-    year: str
-    series: str
-    paper: str
-    question: str
-    qp_text: str | None = ""
-    ms_text: str | None = ""
-    video_url: str | None = ""
-    answered_doc_id: str | None = ""
-
-@app.post("/api/teacher/pastpaper/solutions/save")
-def teacher_pp_save_solution(body: SavePPSolutionBody):
-    if not check_teacher(body.passcode):
-        return JSONResponse({"error": "unauthorized"}, status_code=401)
-    sols = load_pp_json(PAST_PAPER_SOLUTIONS_PATH)
-    key = f"{body.course.strip().lower()}:{body.year.strip().lower()}:{body.series.strip().lower()}:{body.paper.strip().lower()}:{body.question.strip().lower()}"
-    doc = pp_doc_by_id(body.answered_doc_id) if body.answered_doc_id else None
-    sols[key] = {
-        "course": body.course,
-        "year": body.year,
-        "series": body.series,
-        "paper": body.paper,
-        "question": body.question,
-        "qp_text": body.qp_text or "",
-        "ms_text": body.ms_text or "",
-        "video_url": body.video_url or "",
-        "answered_doc_id": body.answered_doc_id or "",
-        "answered_doc_name": doc.get("filename", "") if doc else ""
-    }
-    save_pp_json(PAST_PAPER_SOLUTIONS_PATH, sols)
-    return {"ok": True}
-
-@app.post("/api/teacher/pastpaper/bulk-upload")
-async def teacher_pp_bulk_upload(
-    passcode: str = Form(...),
-    course: str = Form(...),
-    year: str = Form(...),
-    series: str = Form(...),
-    paper: str = Form(...),
-    video_url: str = Form(""),
-    answered_doc_id: str = Form(""),
-    qp_file: UploadFile = File(...),
-    ms_file: UploadFile = File(...),
-    er_file: UploadFile = File(None)
-):
-    if not check_passcode(passcode):
-        return JSONResponse({"error": "Unauthorized passcode."}, status_code=401)
-
-    try:
-        qp_bytes = await qp_file.read()
-        ms_bytes = await ms_file.read()
-        qp_text = extract_text_from_upload(qp_bytes, qp_file.filename or "qp.pdf")
-        ms_text = extract_text_from_upload(ms_bytes, ms_file.filename or "ms.pdf")
-        
-        er_text = ""
-        if er_file and er_file.filename:
-            er_bytes = await er_file.read()
-            er_text = extract_text_from_upload(er_bytes, er_file.filename or "er.pdf")
-    except Exception as e:
-        return JSONResponse({"error": f"PDF reading error: {str(e)}"}, status_code=400)
-
-    if len(qp_text.strip()) < 50 or len(ms_text.strip()) < 50:
-        return JSONResponse(
-            {"error": "Could not extract text from the Question Paper or Mark Scheme."},
-            status_code=422
-        )
-
-    system_prompt = (
-        "You are an exhaustive past-paper exam ingestion parser.\n"
-        "Segment the Question Paper, Mark Scheme, and (if provided) Examiner Report into individual question items.\n"
-        "For each question, extract:\n"
-        "1. question_number: e.g., '1(a)'\n"
-        "2. question_text: Prompt text\n"
-        "3. mark_scheme: Corresponding mark criteria and acceptable points\n"
-        "4. examiner_notes: Specific commentary, misconceptions, or candidate errors mentioned for this question in the Examiner Report (leave empty string if not found or not provided).\n\n"
-        "Return STRICT JSON only without prose or markdown fences:\n"
-        '{"questions": [{"question_number": "1(a)", "question_text": "...", "mark_scheme": "...", "examiner_notes": "..."}]}'
-    )
-
-    er_block = f"\n\n=== EXAMINER REPORT (FULL) ===\n{er_text[:60000]}" if er_text else ""
-    user_prompt = (
-        f"EXAM: {course} {year} {series} Paper {paper}\n\n"
-        f"=== QUESTION PAPER (FULL) ===\n{qp_text[:60000]}\n\n"
-        f"=== MARK SCHEME (FULL) ===\n{ms_text[:60000]}"
-        f"{er_block}"
-    )
-
-    try:
-        raw = await llm(
-            [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
-            max_tokens=8000,
-            temperature=0.0
-        )
-        clean_raw = (raw or "").strip()
-        if clean_raw.startswith("```"):
-            clean_raw = clean_raw.strip("`")
-            if "\n" in clean_raw:
-                clean_raw = clean_raw.split("\n", 1)[-1]
-
-        start_idx = clean_raw.find("{")
-        end_idx = clean_raw.rfind("}")
-        parsed = json.loads(clean_raw[start_idx:end_idx + 1])
-        parsed_questions = parsed.get("questions", [])
-    except Exception as e:
-        return JSONResponse({"error": f"AI Parsing error: {str(e)}"}, status_code=500)
-
-    sols = load_pp_json(PAST_PAPER_SOLUTIONS_PATH)
-    doc = pp_doc_by_id(answered_doc_id) if answered_doc_id else None
-    indexed_labels = []
-
-    for item in parsed_questions:
-        q_num = str(item.get("question_number", "")).strip()
-        if not q_num:
-            continue
-        key = f"{course.strip().lower()}:{year.strip().lower()}:{series.strip().lower()}:{paper.strip().lower()}:{q_num.lower()}"
-        sols[key] = {
-            "course": course.strip(),
-            "year": year.strip(),
-            "series": series.strip(),
-            "paper": paper.strip(),
-            "question": q_num,
-            "qp_text": str(item.get("question_text", "")).strip(),
-            "ms_text": str(item.get("mark_scheme", "")).strip(),
-            "examiner_notes": str(item.get("examiner_notes", "")).strip(),
-            "video_url": video_url.strip(),
-            "answered_doc_id": answered_doc_id or "",
-            "answered_doc_name": doc.get("filename", "") if doc else ""
-        }
-        indexed_labels.append(q_num)
-
-    save_pp_json(PAST_PAPER_SOLUTIONS_PATH, sols)
-    return {"ok": True, "indexed": len(indexed_labels), "questions": indexed_labels}
-    
-if os.path.isdir(FRONTEND_DIR):
-    @app.get("/")
-    def index():
-        return FileResponse(os.path.join(FRONTEND_DIR, "index.html"))
-    app.mount("/", StaticFiles(directory=FRONTEND_DIR), name="static")
+bindPastPaperBulkUpload();
+loadBranding();

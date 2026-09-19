@@ -3227,95 +3227,118 @@ document.addEventListener('click', (e) => {
 document.addEventListener('DOMContentLoaded', () => {
   setTimeout(refreshPastPaperHub, 500);
 });
-
 // ==========================================
-// FIX: EDIT STUDENT DATA & SAVE CHANGES
+// FIX: EDIT STUDENT SAVE HANDLER WITH DIAGNOSTICS
 // ==========================================
 
-async function handleSaveStudentChanges(e) {
-  if (e) e.preventDefault();
-
-  // 1. Locate active student ID from hidden input, modal attribute, or global variable
+async function executeStudentSave() {
+  // 1. Locate Student ID across possible modal implementations
   const studentId = 
     document.getElementById('editStudentId')?.value || 
+    document.getElementById('studentId')?.value ||
     document.getElementById('editStudentModal')?.dataset?.studentId || 
     window.editingStudentId;
 
   if (!studentId) {
-    console.error("Save failed: Could not identify Student ID.");
-    alert("Error: Student ID not found. Please re-open the edit window.");
+    alert("⚠️ Save Failed: Could not find the Student ID on this modal. Check that your hidden input has id='editStudentId'.");
     return;
   }
 
-  // 2. Gather values from edit modal fields
+  // 2. Collect field values (with fallbacks for various field naming conventions)
+  const nameInput = document.getElementById('editStudentName') || document.getElementById('studentName');
+  const emailInput = document.getElementById('editStudentEmail') || document.getElementById('studentEmail');
+  const phoneInput = document.getElementById('editStudentPhone') || document.getElementById('studentPhone');
+  const courseInput = document.getElementById('editStudentCourse') || document.getElementById('studentCourse');
+
+  const passcode = window.state?.passcode || (typeof state !== "undefined" ? state.passcode : "");
+
   const payload = {
-    passcode: window.state?.passcode || (typeof state !== "undefined" ? state.passcode : ""),
+    passcode: passcode,
     student_id: studentId,
     id: studentId,
-    name: document.getElementById('editStudentName')?.value || '',
-    email: document.getElementById('editStudentEmail')?.value || '',
-    phone: document.getElementById('editStudentPhone')?.value || '',
-    course: document.getElementById('editStudentCourse')?.value || '',
-    status: document.getElementById('editStudentStatus')?.value || ''
+    name: nameInput ? nameInput.value.trim() : "",
+    email: emailInput ? emailInput.value.trim() : "",
+    phone: phoneInput ? phoneInput.value.trim() : "",
+    course: courseInput ? courseInput.value : ""
   };
 
-  // 3. Set button loading state
+  // 3. UI Feedback - Loading State
   const saveBtn = document.getElementById('saveStudentBtn') || 
                   document.getElementById('saveEditStudentBtn') || 
                   document.querySelector('#editStudentModal button[type="submit"]');
 
   if (saveBtn) {
     saveBtn.disabled = true;
-    saveBtn.dataset.originalText = saveBtn.textContent;
-    saveBtn.textContent = 'Saving...';
+    saveBtn.innerText = "Saving...";
   }
 
-  try {
-    const res = await fetch('/api/admin/students/update', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
-    });
+  // 4. Try updating via primary teacher endpoint, then admin endpoint fallback
+  const endpoints = [
+    '/api/teacher/students/update',
+    '/api/admin/students/update',
+    '/api/students/update'
+  ];
 
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      throw new Error(err.message || 'Failed to save changes.');
+  let success = false;
+  let lastError = "Server network error";
+
+  for (const url of endpoints) {
+    try {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+
+      if (res.ok) {
+        success = true;
+        break;
+      } else {
+        const errData = await res.json().catch(() => ({}));
+        lastError = errData.error || errData.message || `HTTP ${res.status}`;
+      }
+    } catch (e) {
+      lastError = e.message;
     }
+  }
 
-    // 4. Close modal on success
+  // 5. Handle Outcome
+  if (saveBtn) {
+    saveBtn.disabled = false;
+    saveBtn.innerText = "Save Changes";
+  }
+
+  if (success) {
+    alert("✅ Student updated successfully!");
+    
+    // Close modal
     const modal = document.getElementById('editStudentModal') || document.getElementById('studentEditModal');
     if (modal) {
       modal.style.display = 'none';
       modal.classList.remove('active', 'show');
     }
 
-    // 5. Trigger student list refresh if functions exist
+    // Refresh student list
     if (typeof loadStudents === 'function') loadStudents();
     if (typeof renderStudents === 'function') renderStudents();
-    if (typeof refreshStudentTable === 'function') refreshStudentTable();
-
-  } catch (err) {
-    console.error('Error saving student:', err);
-    alert('Could not save changes: ' + err.message);
-  } finally {
-    if (saveBtn) {
-      saveBtn.disabled = false;
-      saveBtn.textContent = saveBtn.dataset.originalText || 'Save Changes';
-    }
+  } else {
+    alert(`❌ Could not save changes.\nError: ${lastError}`);
   }
 }
 
-// Global Event Listener Catch for Form Submit or Save Button Click
-document.addEventListener('submit', (e) => {
-  if (e.target && (e.target.id === 'editStudentForm' || e.target.id === 'studentEditForm')) {
-    handleSaveStudentChanges(e);
+// Bind to click and submit events across the entire document
+document.addEventListener('click', (e) => {
+  const t = e.target;
+  if (t && (t.id === 'saveStudentBtn' || t.id === 'saveEditStudentBtn' || t.classList.contains('save-student-btn'))) {
+    e.preventDefault();
+    executeStudentSave();
   }
 });
 
-document.addEventListener('click', (e) => {
-  const target = e.target;
-  if (target && (target.id === 'saveStudentBtn' || target.id === 'saveEditStudentBtn')) {
-    handleSaveStudentChanges(e);
+document.addEventListener('submit', (e) => {
+  if (e.target && (e.target.id === 'editStudentForm' || e.target.id === 'studentEditForm')) {
+    e.preventDefault();
+    executeStudentSave();
   }
 });
 

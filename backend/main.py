@@ -3097,7 +3097,7 @@ async def teacher_pp_get_docs(passcode: str = "", course: str = ""):
         if requested_course and doc_course and doc_course.lower() != requested_course:
             continue
         result.append({"id": d.get("id"), "filename": d.get("filename"), "course": doc_course, "uploaded_at": d.get("uploaded_at", ""), "text_chars": d.get("text_chars", 0)})
-    result.sort(key=lambda d: ((d.get("course") or "").lower(), (d.get("filename") or "").lower()))
+    result.sort(key=lambda d: (str(d.get("uploaded_at") or ""), (d.get("filename") or "").lower()), reverse=True)
     return {"docs": result}
 
 

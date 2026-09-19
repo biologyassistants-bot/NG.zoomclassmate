@@ -2758,7 +2758,8 @@ def student_pp_meta(body: RecListBody):
             "year": str(v["year"]),
             "series": v["series"],
             "paper": str(v["paper"]),
-            "question": str(v["question"])
+            "question": str(v["question"]),
+            "question_type": v.get("question_type", "written")
         }
         for v in sols.values()
     ]
@@ -2792,18 +2793,46 @@ async def student_pp_solve(
 
     exam_ref = f"{year} {series} P{paper} Q{question}".strip()
 
-    system = (
-        f"You are an elite academic examiner and senior Biology tutor. Course: '{course}', Syllabus: '{syllabus}'.\n"
-        "STRICT STRUCTURED OUTPUT:\n"
-        "### 1. Complete Model Answer\n"
-        "- Write a full, flawless model answer as expected on the official exam lines, embedding all mandatory terms.\n"
-        "### 2. Mark Scheme Breakdown & Mandatory Keywords\n"
-        "- Detail the exact point criteria. Bold compulsory marking keywords.\n"
-        "### 3. Conceptual Link & Biological Mechanism\n"
-        "- Explain the underlying biological principles clearly.\n"
-        "### 4. Examiner Traps & Common Mistakes\n"
-        "- If official Examiner Report notes are provided below, base your traps directly on what real candidates did wrong, including penalised phrasing and common confusions."
-    )
+    question_type = str((custom_asset or {}).get("question_type") or "written").strip().lower()
+    is_mcq = question_type in {"mcq", "multiple_choice", "multiple choice", "paper 1"}
+    options = (custom_asset or {}).get("options") or {}
+    if not isinstance(options, dict):
+        options = {}
+    correct_option = str((custom_asset or {}).get("correct_option") or "").strip().upper()
+
+    if is_mcq:
+        system = (
+            f"You are an elite Cambridge-style Biology examiner and senior Biology tutor. Course: '{course}', Syllabus: '{syllabus}'.\n"
+            "THIS IS A MULTIPLE-CHOICE QUESTION (MCQ). Do NOT answer it like a written-response question.\n"
+            "The official question paper options and extracted mark-scheme answer are authoritative. Do not invent, reorder, or silently replace options.\n"
+            "STRICT STRUCTURED OUTPUT:\n"
+            "### 1. Correct Choice\n"
+            "- State exactly one option letter: A, B, C, or D, followed by the full option text.\n"
+            "- State the answer letter clearly on its own line: **Answer: X**.\n"
+            "### 2. Option-by-Option Analysis\n"
+            "- Discuss A, B, C, and D separately. For EACH option, explicitly say **Correct** or **Incorrect**.\n"
+            "- Explain why that statement is correct or why it is wrong, using the official question wording and referring back to the official mark scheme.\n"
+            "- Do not merely say the distractor is wrong; identify the biological reason or the exact mismatch with the mark scheme.\n"
+            "### 3. Mark Scheme Link\n"
+            "- Quote/paraphrase only the relevant mark-scheme evidence needed to justify the selected option. Do not invent criteria that are not present.\n"
+            "### 4. Exam Tip\n"
+            "- Give one concise tip about the command, concept, or distractor pattern relevant to this MCQ.\n"
+            "If the mark scheme only gives the correct letter and does not explicitly explain every distractor, make that limitation clear and derive the option explanations only from the supplied question wording plus directly supported biology; never pretend the mark scheme said something it did not.\n"
+        )
+    else:
+        system = (
+            f"You are an elite academic examiner and senior Biology tutor. Course: '{course}', Syllabus: '{syllabus}'.\n"
+            "THIS IS A WRITTEN-RESPONSE QUESTION. Do NOT treat it as an MCQ.\n"
+            "STRICT STRUCTURED OUTPUT:\n"
+            "### 1. Complete Model Answer\n"
+            "- Write a full, flawless model answer as expected on the official exam lines, embedding all mandatory terms.\n"
+            "### 2. Mark Scheme Breakdown & Mandatory Keywords\n"
+            "- Detail the exact point criteria. Bold compulsory marking keywords.\n"
+            "### 3. Conceptual Link & Biological Mechanism\n"
+            "- Explain the underlying biological principles clearly.\n"
+            "### 4. Examiner Traps & Common Mistakes\n"
+            "- If official Examiner Report notes are provided below, base your traps directly on what real candidates did wrong, including penalised phrasing and common confusions."
+        )
 
     user_text = f"Exam Ref: {exam_ref}\nStudent Doubt: {doubt or 'Provide a full breakdown and solution.'}\n\n"
 
@@ -2814,6 +2843,20 @@ async def student_pp_solve(
             user_text += f"OFFICIAL MARK SCHEME:\n{custom_asset['ms_text']}\n\n"
         if custom_asset.get("examiner_notes"):
             user_text += f"OFFICIAL EXAMINER REPORT NOTES FOR THIS QUESTION:\n{custom_asset['examiner_notes']}\n\n"
+        if is_mcq:
+            user_text += f"QUESTION TYPE: MCQ\n"
+            user_text += f"EXTRACTED CORRECT OPTION LETTER FROM MARK SCHEME: {correct_option or '[not extracted]'}\n"
+            if options:
+                user_text += "OFFICIAL MCQ OPTIONS (from the question paper):\n"
+                for letter in ("A", "B", "C", "D"):
+                    if options.get(letter):
+                        user_text += f"{letter}. {options.get(letter)}\n"
+                user_text += "\n"
+            user_text += (
+                "MCQ RULE: The final answer must identify exactly one of A/B/C/D. "
+                "Then evaluate all four options individually as Correct/Incorrect and explain each using the supplied mark scheme and question wording. "
+                "If the mark scheme only gives a letter, explicitly say that the option-by-option rationale is an explanatory inference from the official question/mark-scheme pairing, not a quotation from the mark scheme.\n\n"
+            )
 
         doc_id = custom_asset.get("answered_doc_id")
         if doc_id:
@@ -3082,13 +3125,22 @@ async def teacher_pp_bulk_upload(
     system_prompt = (
         "You are an exhaustive past-paper exam ingestion parser.\n"
         "Segment the Question Paper, Mark Scheme, and (if provided) Examiner Report into individual question items.\n"
+        "For EVERY question, first classify it as either 'mcq' or 'written'. Use the actual question-paper structure, not guesses based on the topic.\n"
+        "A Cambridge Paper 1 style question with four answer choices must be classified as 'mcq'.\n"
+        "For MCQs, preserve the option text exactly enough to distinguish A/B/C/D, and map the official mark-scheme answer letter to correct_option.\n"
+        "For written questions, set options to {} and correct_option to ''.\n"
         "For each question, extract:\n"
         "1. question_number: e.g., '1(a)'\n"
-        "2. question_text: Prompt text\n"
-        "3. mark_scheme: Corresponding mark criteria and acceptable points\n"
-        "4. examiner_notes: Specific commentary, misconceptions, or candidate errors mentioned for this question in the Examiner Report (leave empty string if not found or not provided).\n\n"
+        "2. question_type: exactly 'mcq' or 'written'\n"
+        "3. question_text: Prompt text, including any statement/set-up needed to understand the question\n"
+        "4. options: for MCQ only, an object with A, B, C, D option text; otherwise {}\n"
+        "5. correct_option: for MCQ only, the official correct letter from the mark scheme (A/B/C/D); otherwise ''\n"
+        "6. correct_answer_text: for MCQ only, the exact option text corresponding to correct_option if available; otherwise ''\n"
+        "7. mark_scheme: Corresponding mark criteria and acceptable points exactly as supplied\n"
+        "8. examiner_notes: Specific commentary, misconceptions, or candidate errors mentioned for this question in the Examiner Report (leave empty string if not found or not provided).\n"
+        "IMPORTANT: Do not invent a correct option. If the mark scheme answer cannot be confidently mapped, leave correct_option blank and retain the raw mark_scheme text.\n\n"
         "Return STRICT JSON only without prose or markdown fences:\n"
-        '{"questions": [{"question_number": "1(a)", "question_text": "...", "mark_scheme": "...", "examiner_notes": "..."}]}'
+        '{"questions": [{"question_number": "1", "question_type": "mcq", "question_text": "...", "options": {"A": "...", "B": "...", "C": "...", "D": "..."}, "correct_option": "A", "correct_answer_text": "...", "mark_scheme": "...", "examiner_notes": "..."}]}'
     )
 
     er_block = f"\n\n=== EXAMINER REPORT (FULL) ===\n{er_text[:60000]}" if er_text else ""
@@ -3127,12 +3179,28 @@ async def teacher_pp_bulk_upload(
         if not q_num:
             continue
         key = f"{course.strip().lower()}:{year.strip().lower()}:{series.strip().lower()}:{paper.strip().lower()}:{q_num.lower()}"
+        raw_type = str(item.get("question_type", "")).strip().lower()
+        options = item.get("options") or {}
+        if not isinstance(options, dict):
+            options = {}
+        normalized_options = {}
+        for letter in ("A", "B", "C", "D"):
+            val = options.get(letter) if isinstance(options, dict) else None
+            if val:
+                normalized_options[letter] = str(val).strip()
+        is_mcq_item = raw_type in {"mcq", "multiple_choice", "multiple choice", "paper 1"} or len(normalized_options) >= 3
+        extracted_correct_option = str(item.get("correct_option", "")).strip().upper() if is_mcq_item else ""
+        extracted_correct_text = normalized_options.get(extracted_correct_option, "") if extracted_correct_option else ""
         sols[key] = {
             "course": course.strip(),
             "year": year.strip(),
             "series": series.strip(),
             "paper": paper.strip(),
             "question": q_num,
+            "question_type": "mcq" if is_mcq_item else "written",
+            "options": normalized_options if is_mcq_item else {},
+            "correct_option": extracted_correct_option,
+            "correct_answer_text": extracted_correct_text or (str(item.get("correct_answer_text", "")).strip() if is_mcq_item else ""),
             "qp_text": str(item.get("question_text", "")).strip(),
             "ms_text": str(item.get("mark_scheme", "")).strip(),
             "examiner_notes": str(item.get("examiner_notes", "")).strip(),

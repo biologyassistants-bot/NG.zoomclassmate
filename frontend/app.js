@@ -3342,4 +3342,123 @@ document.addEventListener('submit', (e) => {
   }
 });
 
+// ==========================================
+// FIX: UPLOAD ANSWERED DOC & SYNC LIBRARY DROPDOWNS
+// ==========================================
+
+async function uploadAnsweredDoc(e) {
+  if (e) e.preventDefault();
+
+  // 1. Locate Course, File, and Passcode
+  const courseSelect = document.getElementById('docCourseSelect') || 
+                       document.getElementById('tppCourseSelect') || 
+                       document.querySelector('#teacherPastPapers select');
+                       
+  const fileInput = document.getElementById('docFileInput') || 
+                    document.querySelector('#teacherPastPapers input[type="file"]');
+
+  const course = courseSelect ? courseSelect.value : '';
+  const files = fileInput ? fileInput.files : null;
+  const passcode = window.state?.passcode || (typeof state !== "undefined" ? state.passcode : "");
+
+  if (!course) {
+    alert('⚠️ Please select a course before uploading the document.');
+    return;
+  }
+
+  if (!files || files.length === 0) {
+    alert('⚠️ Please select a PDF or Word document to upload.');
+    return;
+  }
+
+  // 2. Build Multi-part Form Data Payload
+  const formData = new FormData();
+  formData.append('file', files[0]);
+  formData.append('course', course);
+  formData.append('passcode', passcode);
+
+  // 3. UI Button Feedback
+  const uploadBtn = document.getElementById('uploadDocBtn') || 
+                    document.querySelector('#teacherPastPapers button[type="submit"]') ||
+                    document.querySelector('button:has-text("Upload Doc")');
+
+  if (uploadBtn) {
+    uploadBtn.disabled = true;
+    uploadBtn.innerText = 'Uploading...';
+  }
+
+  try {
+    const res = await fetch('/api/teacher/pastpaper/upload_doc', {
+      method: 'POST',
+      body: formData
+    });
+
+    if (res.ok) {
+      alert('✅ Answered document uploaded and added to Course Library!');
+      if (fileInput) fileInput.value = '';
+
+      // 4. Force reload Past Paper Hub data and populate all library dropdowns
+      if (typeof refreshPastPaperHub === 'function') {
+        await refreshPastPaperHub();
+      }
+    } else {
+      const err = await res.json().catch(() => ({}));
+      alert('❌ Upload failed: ' + (err.error || err.message || 'Server returned an error.'));
+    }
+  } catch (err) {
+    console.error('Document Upload Error:', err);
+    alert('❌ Network error while uploading: ' + err.message);
+  } finally {
+    if (uploadBtn) {
+      uploadBtn.disabled = false;
+      uploadBtn.innerText = 'Upload Doc';
+    }
+  }
+}
+
+// 5. Global Binding for Upload Form and Button
+document.addEventListener('submit', (e) => {
+  const form = e.target;
+  if (form && (form.id === 'uploadDocForm' || form.id === 'pastPaperDocForm' || form.action?.includes('upload_doc'))) {
+    uploadAnsweredDoc(e);
+  }
+});
+
+document.addEventListener('click', (e) => {
+  const t = e.target;
+  if (t && (t.id === 'uploadDocBtn' || t.classList.contains('upload-doc-btn') || t.innerText === 'Upload Doc')) {
+    e.preventDefault();
+    uploadAnsweredDoc(e);
+  }
+});
+
+// 6. Universal Library Dropdown Refresh Function
+async function populateAllLibraryDropdowns(documents = []) {
+  const targetSelectIds = [
+    'tqAnsweredDocSelect',
+    'bulkDocSelect',
+    'ansDocSelect',
+    'linkNotesSelect',
+    'docLibrarySelect',
+    'questionDocSelect'
+  ];
+
+  targetSelectIds.forEach(id => {
+    const select = document.getElementById(id);
+    if (!select) return;
+
+    const currentVal = select.value;
+    let html = '<option value="">-- Optional: Link Reference / Answered Document --</option>';
+
+    documents.forEach(doc => {
+      const docName = doc.filename || doc.name || 'Untitled Document';
+      const docCourse = doc.course ? ` (${doc.course})` : '';
+      html += `<option value="${doc.id || doc.url || docName}">${docName}${docCourse}</option>`;
+    });
+
+    select.innerHTML = html;
+    if (currentVal) select.value = currentVal;
+  });
+}
+
 loadBranding();

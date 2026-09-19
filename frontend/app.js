@@ -2815,16 +2815,44 @@ async function refreshPastPaperHub() {
     const eligible = ppDocs.filter(doc => {
       const dc = (doc.course || "").trim().toLowerCase();
       return !course || !dc || dc === course;
+    }).sort((a,b) => {
+      const ad = String(a.uploaded_at || "");
+      const bd = String(b.uploaded_at || "");
+      if (ad !== bd) return bd.localeCompare(ad);
+      return String(a.filename || "").localeCompare(String(b.filename || ""));
     });
+
+    const search = id === "bulkDocSelect" ? (document.getElementById("bulkDocSearch")?.value || "").trim().toLowerCase() : "";
+    const visible = search
+      ? eligible.filter(doc => String(doc.filename || "").toLowerCase().includes(search))
+      : eligible;
+
     select.innerHTML = '<option value="">-- Optional: Link Reference Document --</option>';
-    eligible.forEach(doc => {
+    visible.forEach(doc => {
       select.appendChild(new Option(`${doc.filename || "Untitled"} — ${doc.course || "Shared / Unassigned"}`, doc.id));
     });
-    if (current && eligible.some(d => d.id === current)) select.value = current;
+
+    if (id === "bulkDocSelect") {
+      const label = document.getElementById("bulkDocLabel");
+      if (label) label.textContent = `Link Model Answer Doc (Optional) — ${eligible.length} available`;
+      if (visible.length === 0 && search) {
+        select.appendChild(new Option("No documents match the search", ""));
+      }
+    }
+
+    if (current && visible.some(d => d.id === current)) select.value = current;
   }
 
   populateLinkedDocSelect("bulkDocSelect", document.getElementById("bulkCourseSelect")?.value || "");
   populateLinkedDocSelect("tqAnsweredDocSelect", document.getElementById("tqCourseSelect")?.value || "");
+
+  const bulkDocSearch = document.getElementById("bulkDocSearch");
+  if (bulkDocSearch && bulkDocSearch.dataset.ppSearchBinding !== "1") {
+    bulkDocSearch.dataset.ppSearchBinding = "1";
+    bulkDocSearch.addEventListener("input", () => {
+      populateLinkedDocSelect("bulkDocSelect", document.getElementById("bulkCourseSelect")?.value || "");
+    });
+  }
 
   ["bulkCourseSelect","tqCourseSelect"].forEach(id => {
     const select = document.getElementById(id);

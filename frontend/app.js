@@ -2515,80 +2515,7 @@ function renderStudentPastPaperSolution(data) {
 // TEACHER PAST PAPER HUB (ISOLATED LIBRARY)
 // ==============================================================================
 async function loadTeacherPastPaperHub() {
-  const courseSel = el("tppCourseSelect");
-  const tqCourseSel = el("tqCourseSelect");
-  const bulkCourseSel = el("bulkCourseSelect");
-  const ansDocSel = el("tqAnsweredDocSelect");
-  const bulkDocSel = el("bulkDocSelect");
-
-  // Ensure recordings are loaded into memory first
-  if (!teacherRecordings || teacherRecordings.length === 0) {
-    try {
-      await loadTeacherRecordings();
-    } catch (err) {
-      console.warn("Could not preload recordings:", err);
-    }
-  }
-
-  // Read courses directly from recordings
-  const courseSet = new Set();
-  (teacherRecordings || []).forEach(r => {
-    const u = (r.unit || "").trim();
-    if (u && u.toLowerCase() !== "unassigned") {
-      courseSet.add(u);
-    }
-  });
-
-  let data = {};
-  try {
-    const res = await fetch(`${API}/api/teacher/pastpaper/config`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ passcode: state.passcode })
-    });
-    if (res.ok) {
-      data = await res.json();
-      (data.courses || []).forEach(c => {
-        if (c && c.trim() && c.trim().toLowerCase() !== "unassigned") {
-          courseSet.add(c.trim());
-        }
-      });
-    }
-  } catch (e) {
-    console.error("Error loading Past Paper config:", e);
-  }
-
-  const courses = Array.from(courseSet).sort();
-
-  function populateSelect(selectEl, placeholder) {
-    if (!selectEl) return;
-    const current = selectEl.value;
-    selectEl.innerHTML = `<option value="">${placeholder}</option>`;
-    if (courses.length === 0) {
-      selectEl.innerHTML += `<option value="" disabled>(No courses found — assign units to recordings first)</option>`;
-    } else {
-      courses.forEach(c => selectEl.appendChild(new Option(c, c)));
-    }
-    if (current && courses.includes(current)) selectEl.value = current;
-  }
-
-  populateSelect(courseSel, "Select course...");
-  populateSelect(tqCourseSel, "Select course...");
-  populateSelect(bulkCourseSel, "Select course...");
-
-  const docs = data.pp_library || [];
-  function populateDocSelect(selectEl) {
-    if (!selectEl) return;
-    const current = selectEl.value;
-    selectEl.innerHTML = '<option value="">None</option>';
-    docs.forEach(d => selectEl.appendChild(new Option(d.filename, d.id)));
-    if (current) selectEl.value = current;
-  }
-
-  populateDocSelect(ansDocSel);
-  populateDocSelect(bulkDocSel);
-
-  renderTeacherOverrides(data.solutions || []);
+  return refreshPastPaperHub();
 }
 
 // 1. Save Syllabus Mapping with Direct UI Feedback
@@ -2657,577 +2584,211 @@ if (el("tppCourseSelect")) {
   });
 }
 
-// 2. Upload Document into Isolated Past Paper Library
-if (el("tppUploadDocBtn")) {
-  el("tppUploadDocBtn").addEventListener("click", async () => {
-    const fileInput = el("tppDocFile");
-    const status = el("tppUploadStatus");
-    if (!fileInput || !fileInput.files.length) {
-      toast("Please choose a file to upload.", "info");
-      return;
-    }
-
-    const passcode = state.passcode || localStorage.getItem("ng_teacherPasscode") || "";
-    if (!passcode) {
-      toast("Session error: Please sign in again.", "error");
-      return;
-    }
-
-    const btn = el("tppUploadDocBtn");
-    btn.disabled = true;
-    status.textContent = "Uploading to Past Paper Library...";
-
-    const fd = new FormData();
-    fd.append("passcode", passcode);
-    fd.append("file", fileInput.files[0]);
-
-    try {
-      const res = await fetch(`${API}/api/teacher/pastpaper/doc/upload`, { method: "POST", body: fd });
-      let data = {};
-      try { data = await res.json(); } catch (err) {}
-
-      if (res.ok) {
-        status.textContent = "Uploaded ✓";
-        toast("Document added to Past Paper Library!", "success");
-        fileInput.value = "";
-        loadTeacherPastPaperHub();
-        setTimeout(() => { status.textContent = ""; }, 3000);
-      } else {
-        const msg = data.error || data.detail || `Server returned HTTP ${res.status}`;
-        toast(`Upload failed: ${msg}`, "error", 5000);
-        status.textContent = "";
-      }
-    } catch (e) {
-      console.error("Upload error details:", e);
-      toast("Upload connection error. Check server logs.", "error");
-      status.textContent = "";
-    } finally {
-      btn.disabled = false;
-    }
-  });
-}
-
-// ==============================================================================
-// BULK EXAM UPLOAD (QP + MS + ER AUTO-EXTRACT)
-// ==============================================================================
-if (el("processBulkBtn")) {
-  el("processBulkBtn").addEventListener("click", async () => {
-    const course = el("bulkCourseSelect").value;
-    const year = el("bulkYearInput").value.trim();
-    const series = el("bulkSeriesSelect").value;
-    const paper = el("bulkPaperInput").value.trim();
-    const qpFile = el("bulkQpFile") ? el("bulkQpFile").files[0] : null;
-    const msFile = el("bulkMsFile") ? el("bulkMsFile").files[0] : null;
-    const erFile = el("bulkErFile") ? el("bulkErFile").files[0] : null;
-
-    if (!course || !paper) {
-      toast("Course and Paper variant are required.", "info");
-      return;
-    }
-    if (!qpFile || !msFile) {
-      toast("Please attach both the Question Paper and Mark Scheme PDFs.", "info");
-      return;
-    }
-
-    const passcode = state.passcode || localStorage.getItem("ng_teacherPasscode") || "";
-    if (!passcode) {
-      toast("Session expired: please sign in again.", "error");
-      return;
-    }
-
-    const btn = el("processBulkBtn");
-    const origText = btn.innerText;
-    btn.innerText = "⏳ Reading PDFs & Segmenting Questions…";
-    btn.disabled = true;
-
-    const fd = new FormData();
-    fd.append("passcode", passcode);
-    fd.append("course", course);
-    fd.append("year", year);
-    fd.append("series", series);
-    fd.append("paper", paper);
-    fd.append("video_url", el("bulkVideoUrl") ? el("bulkVideoUrl").value.trim() : "");
-    fd.append("answered_doc_id", el("bulkDocSelect") ? el("bulkDocSelect").value : "");
-    fd.append("qp_file", qpFile);
-    fd.append("ms_file", msFile);
-    if (erFile) {
-      fd.append("er_file", erFile);
-    }
-
-    try {
-      const res = await fetch(`${API}/api/teacher/pastpaper/bulk-upload`, {
-        method: "POST",
-        body: fd
-      });
-      const data = await res.json();
-
-      if (res.ok) {
-        const qList = (data.questions || []).join(", ");
-        toast(`Indexed ${data.indexed} questions with Examiner notes: [${qList}] ✓`, "success", 6000);
-
-        if (el("bulkQpFile")) el("bulkQpFile").value = "";
-        if (el("bulkMsFile")) el("bulkMsFile").value = "";
-        if (el("bulkErFile")) el("bulkErFile").value = "";
-        if (el("bulkVideoUrl")) el("bulkVideoUrl").value = "";
-
-        await loadTeacherPastPaperHub();
-        const target = el("tppOverridesList");
-        if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
-      } else {
-        toast(data.error || "Bulk upload failed.", "error", 6000);
-      }
-    } catch (e) {
-      toast("Network connection error.", "error");
-    } finally {
-      btn.innerText = origText;
-      btn.disabled = false;
-    }
-  });
-}
-// 3. Save Question Asset
-if (el("saveQuestionAssetBtn")) {
-  el("saveQuestionAssetBtn").addEventListener("click", async () => {
-    const course = el("tqCourseSelect").value;
-    const year = el("tqYearInput").value.trim();
-    const series = el("tqSeriesSelect").value;
-    const paper = el("tqPaperInput").value.trim();
-    const question = el("tqQuestionInput").value.trim();
-
-    if (!course || !paper || !question) {
-      toast("Course, Paper, and Question are required.", "info");
-      return;
-    }
-
-    const payload = {
-      passcode: state.passcode,
-      course, year, series, paper, question,
-      qp_text: el("tqQpText").value.trim(),
-      ms_text: el("tqMsText").value.trim(),
-      video_url: el("tqVideoUrl").value.trim(),
-      answered_doc_id: el("tqAnsweredDocSelect").value
-    };
-
-    try {
-      const res = await fetch(`${API}/api/teacher/pastpaper/solutions/save`, {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload)
-      });
-      if (res.ok) {
-        toast("Question added to library ✓", "success");
-        el("tqQpText").value = "";
-        el("tqMsText").value = "";
-        el("tqQuestionInput").value = "";
-        el("tqVideoUrl").value = "";
-        loadTeacherPastPaperHub();
-      } else {
-        toast("Failed to save question.", "error");
-      }
-    } catch (e) { toast("Network error.", "error"); }
-  });
-}
-
-function renderTeacherOverrides(list) {
-  const container = el("tppOverridesList");
-  if (!container) return;
-  container.innerHTML = "";
-
-  if (!list || !list.length) {
-    container.innerHTML = '<p class="meta">No questions added to the library yet.</p>';
-    return;
-  }
-
-  // Group by Course -> Exam Pack (Year Series Paper)
-  const tree = {};
-  list.forEach(item => {
-    const course = item.course || "Unassigned Course";
-    const examKey = `${item.year || ''} ${item.series || ''} Paper ${item.paper || ''}`.trim();
-    
-    if (!tree[course]) tree[course] = {};
-    if (!tree[course][examKey]) tree[course][examKey] = [];
-    tree[course][examKey].push(item);
-  });
-
-  // Render Course Groups
-  Object.keys(tree).sort().forEach(courseName => {
-    const courseCard = document.createElement("div");
-    courseCard.style.cssText = "background: var(--panel); border: 1.5px solid var(--line); border-radius: 12px; margin-bottom: 16px; overflow: hidden; box-shadow: var(--shadow-sm);";
-
-    let examBlocksHtml = "";
-    const examKeys = Object.keys(tree[courseName]).sort().reverse();
-
-    examKeys.forEach(examKey => {
-      const qItems = tree[courseName][examKey];
-      // Sort questions alphanumerically (Q1(a), Q1(b), Q2...)
-      qItems.sort((a,b) => String(a.question).localeCompare(String(b.question), undefined, {numeric: true}));
-
-      let qRows = "";
-      qItems.forEach(q => {
-        const hasEr = q.examiner_notes && q.examiner_notes.trim().length > 0;
-        qRows += `
-          <div style="display: flex; justify-content: space-between; align-items: center; padding: 8px 12px; background: var(--bg); border-radius: 8px; margin-top: 6px; font-size: 12.5px; border: 1px solid var(--line);">
-            <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
-              <strong style="color: var(--brand-d); font-weight: 800;">Q${escapeHtml(q.question)}</strong>
-              ${hasEr ? '<span style="background: rgba(245,159,0,0.15); color: #d97706; font-size: 10.5px; font-weight: 700; padding: 1px 6px; border-radius: 4px;">📊 Examiner Report</span>' : ''}
-              ${q.video_url ? '<span style="font-size: 11px;">🎥 Video</span>' : ''}
-              ${q.answered_doc_name ? `<span style="font-size: 11px; color: var(--muted);">📄 ${escapeHtml(q.answered_doc_name)}</span>` : ''}
-            </div>
-            <button class="ghost-sm danger-btn" data-key="${escapeHtml(q.key)}" style="padding: 2px 8px; font-size: 11px;">🗑️ Delete</button>
-          </div>
-        `;
-      });
-
-      examBlocksHtml += `
-        <details style="margin-bottom: 10px; background: var(--panel2); border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px;" open>
-          <summary style="font-weight: 800; font-size: 13.5px; cursor: pointer; color: var(--text); display: flex; justify-content: space-between; align-items: center;">
-            <span>📄 Exam Pack: ${escapeHtml(examKey)}</span>
-            <span class="meta" style="font-weight: 700; font-size: 11.5px; background: var(--panel); padding: 2px 8px; border-radius: 12px;">${qItems.length} questions</span>
-          </summary>
-          <div style="margin-top: 8px; display: flex; flex-direction: column; gap: 4px;">
-            ${qRows}
-          </div>
-        </details>
-      `;
-    });
-
-    courseCard.innerHTML = `
-      <div style="background: var(--brand); color: white; padding: 10px 16px; font-weight: 800; font-size: 14px; display: flex; justify-content: space-between; align-items: center;">
-        <span>📚 Course: ${escapeHtml(courseName)}</span>
-        <span style="font-size: 12px; font-weight: 600; opacity: 0.9;">${examKeys.length} Exam Paper(s)</span>
-      </div>
-      <div style="padding: 14px;">
-        ${examBlocksHtml}
-      </div>
-    `;
-
-    // Attach individual delete handlers
-    courseCard.querySelectorAll("button.danger-btn").forEach(btn => {
-      btn.addEventListener("click", async (e) => {
-        e.stopPropagation();
-        const key = btn.dataset.key;
-        if (!confirm("Delete this question from the library?")) return;
-        await fetch(`${API}/api/teacher/pastpaper/solutions/delete`, {
-          method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ passcode: state.passcode, key })
-        });
-        loadTeacherPastPaperHub();
-      });
-    });
-
-    container.appendChild(courseCard);
-  });
-}
-
-
-// Store loaded teacher reference docs in state
-let teacherDocsCache = [];
-
-async function loadTeacherDocs(selectedCourse = "") {
-  const passcode = state.passcode || localStorage.getItem("ng_teacherPasscode") || "";
-  if (!passcode) return;
-
-  try {
-    const res = await fetch(`${API}/api/teacher/pastpaper/docs?passcode=${encodeURIComponent(passcode)}`);
-    if (!res.ok) return;
-    const data = await res.json();
-    teacherDocsCache = data.docs || [];
-
-    renderExistingDocsList();
-    populateBulkDocDropdown(selectedCourse);
-  } catch (e) {
-    console.error("Error loading docs:", e);
-  }
-}
-
-// Render existing uploaded documents with course assignment dropdowns
-function renderExistingDocsList() {
-  const container = el("existingDocsContainer");
-  const badge = el("docCountBadge");
-  if (badge) badge.innerText = teacherDocsCache.length;
-  if (!container) return;
-
-  if (teacherDocsCache.length === 0) {
-    container.innerHTML = '<p class="meta" style="margin: 0;">No documents uploaded yet.</p>';
-    return;
-  }
-
-  // Get available course list from course select dropdown options
-  const courseOptions = Array.from(el("bulkCourseSelect") ? el("bulkCourseSelect").options : [])
-    .map(opt => opt.value)
-    .filter(val => val !== "");
-
-  container.innerHTML = "";
-  teacherDocsCache.forEach(doc => {
-    const row = document.createElement("div");
-    row.style.cssText = "display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; gap: 10px;";
-
-    let optionsHtml = '<option value="">-- Unassigned (Visible to All) --</option>';
-    courseOptions.forEach(c => {
-      const isSelected = doc.course && doc.course.toLowerCase() === c.toLowerCase();
-      optionsHtml += `<option value="${escapeHtml(c)}" ${isSelected ? 'selected' : ''}>${escapeHtml(c)}</option>`;
-    });
-
-    row.innerHTML = `
-      <div style="font-size: 12.5px; font-weight: 600; display: flex; align-items: center; gap: 6px; overflow: hidden;">
-        <span>📄</span>
-        <span style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 250px;">${escapeHtml(doc.filename)}</span>
-      </div>
-      <div style="display: flex; align-items: center; gap: 8px;">
-        <span style="font-size: 11px; color: var(--muted); font-weight: 600;">Course:</span>
-        <select class="doc-course-assign" data-docid="${doc.id}" style="padding: 4px 8px; font-size: 11.5px; border-radius: 6px; border: 1px solid var(--line);">
-          ${optionsHtml}
-        </select>
-      </div>
-    `;
-
-    // Handle course updating
-    const select = row.querySelector(".doc-course-assign");
-    select.addEventListener("change", async (e) => {
-      const newCourse = e.target.value;
-      const docId = doc.id;
-      const passcode = state.passcode || localStorage.getItem("ng_teacherPasscode") || "";
-
-      const fd = new FormData();
-      fd.append("passcode", passcode);
-      fd.append("doc_id", docId);
-      fd.append("course", newCourse);
-
-      try {
-        const res = await fetch(`${API}/api/teacher/pastpaper/docs/update-course`, { method: "POST", body: fd });
-        if (res.ok) {
-          toast(`Updated course for "${doc.filename}" ✓`, "success");
-          await loadTeacherDocs(el("bulkCourseSelect") ? el("bulkCourseSelect").value : "");
-        } else {
-          toast("Failed to update course.", "error");
-        }
-      } catch (err) {
-        toast("Network error.", "error");
-      }
-    });
-
-    container.appendChild(row);
-  });
-}
-
-// Populate the #bulkDocSelect based on the selected course
-function populateBulkDocDropdown(selectedCourse) {
-  const docSelect = el("bulkDocSelect");
-  if (!docSelect) return;
-
-  if (!selectedCourse) {
-    selectedCourse = el("bulkCourseSelect") ? el("bulkCourseSelect").value : "";
-  }
-
-  // Filter docs matching selected course OR unassigned legacy docs
-  const filteredDocs = teacherDocsCache.filter(doc => {
-    if (!selectedCourse) return true;
-    return !doc.course || doc.course.toLowerCase() === selectedCourse.toLowerCase();
-  });
-
-  docSelect.innerHTML = '<option value="">-- Optional: Link Model Answer Doc --</option>';
-  
-  filteredDocs.forEach(doc => {
-    const opt = document.createElement("option");
-    opt.value = doc.id;
-    const courseTag = doc.course ? `[${doc.course}]` : '[Unassigned / General]';
-    opt.textContent = `${doc.filename} ${courseTag}`;
-    docSelect.appendChild(opt);
-  });
-}
-
-// Event listener: Filter docs when course changes
-if (el("bulkCourseSelect")) {
-  el("bulkCourseSelect").addEventListener("change", (e) => {
-    populateBulkDocDropdown(e.target.value);
-  });
-}
-
-// Handler for uploading a new model answer document tagged to a course
-if (el("uploadPpDocBtn")) {
-  el("uploadPpDocBtn").addEventListener("click", async () => {
-    const fileInput = el("ppDocFile");
-    const course = el("docCourseSelect") ? el("docCourseSelect").value : "";
-    const file = fileInput ? fileInput.files[0] : null;
-
-    if (!course) {
-      toast("Please select a course for this document.", "info");
-      return;
-    }
-    if (!file) {
-      toast("Please select a file to upload.", "info");
-      return;
-    }
-
-    const passcode = state.passcode || localStorage.getItem("ng_teacherPasscode") || "";
-    const fd = new FormData();
-    fd.append("passcode", passcode);
-    fd.append("course", course);
-    fd.append("file", file);
-
-    const btn = el("uploadPpDocBtn");
-    btn.disabled = true;
-    btn.innerText = "Uploading…";
-
-    try {
-      const res = await fetch(`${API}/api/teacher/pastpaper/upload-doc`, { method: "POST", body: fd });
-      const data = await res.json();
-      if (res.ok) {
-        toast(`Document uploaded and assigned to "${course}" ✓`, "success");
-        fileInput.value = "";
-        await loadTeacherDocs(el("bulkCourseSelect") ? el("bulkCourseSelect").value : "");
-      } else {
-        toast(data.error || "Failed to upload document.", "error");
-      }
-    } catch (e) {
-      toast("Network error.", "error");
-    } finally {
-      btn.disabled = false;
-      btn.innerText = "Upload Doc";
-    }
-  });
-}
-
 // ==========================================
 // FIX: PAST PAPER HUB COURSES & DOCUMENT LIBRARY
 // ==========================================
 
-function escapeHtml(str) {
-  if (!str) return '';
-  return String(str)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
-}
-
 async function refreshPastPaperHub() {
-  const passcode = window.state?.passcode || (typeof state !== "undefined" ? state.passcode : "");
-  
-  // 1. Fetch Past Paper Config from Server
-  let ppConfig = { courses: [], pp_library: [] };
+  const passcode = (typeof state !== "undefined" && state.passcode)
+    || localStorage.getItem("ng_teacherPasscode")
+    || "";
+  if (!passcode) return;
+
+  let ppConfig = { courses: [], pp_library: [], syllabi: {}, solutions: [] };
   try {
-    const res = await fetch('/api/teacher/pastpaper/config', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+    const res = await fetch(`${API}/api/teacher/pastpaper/config`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ passcode })
     });
-    if (res.ok) {
-      ppConfig = await res.json();
-    }
+    if (!res.ok) return;
+    ppConfig = await res.json();
   } catch (err) {
-    console.error('Failed to load pastpaper config:', err);
+    console.error("Failed to load past-paper config:", err);
+    return;
   }
 
-  // 2. Extract unique courses from Recordings (unit/course) AND Past Paper Config
-  const recordings = window.state?.recordings || (typeof state !== "undefined" ? state.recordings : []) || [];
+  const recordings = (typeof teacherRecordings !== "undefined" ? teacherRecordings : [])
+    || (typeof state !== "undefined" ? state.recordings : [])
+    || [];
   const courseSet = new Set();
-  
+
   recordings.forEach(r => {
-    const c = r.course || r.unit;
-    if (c && c.trim() && c.toLowerCase() !== 'unassigned') courseSet.add(c.trim());
+    const course = (r.unit || r.course || "").trim();
+    if (course && course.toLowerCase() !== "unassigned") courseSet.add(course);
   });
-  
-  (ppConfig.courses || []).forEach(c => {
-    if (c && c.trim() && c.toLowerCase() !== 'unassigned') courseSet.add(c.trim());
-  });
-
-  const allCourses = Array.from(courseSet).sort();
-
-  // 3. Populate ALL Course Dropdowns (including Upload Course Reference)
-  const courseSelectIds = [
-    'docCourseSelect',
-    'tppCourseSelect',
-    'bulkCourseSelect',
-    'tqCourseSelect',
-    'ppCourseSelect',
-    'recCourseFilter'
-  ];
-
-  courseSelectIds.forEach(id => {
-    const select = document.getElementById(id);
-    if (!select) return;
-
-    const currentVal = select.value;
-    const isFilter = id.includes('Filter');
-    
-    let html = isFilter ? '<option value="">All courses</option>' : '<option value="">-- Select Course --</option>';
-    allCourses.forEach(course => {
-      html += `<option value="${escapeHtml(course)}">${escapeHtml(course)}</option>`;
-    });
-
-    select.innerHTML = html;
-    if (currentVal && allCourses.includes(currentVal)) {
-      select.value = currentVal;
+  (ppConfig.courses || []).forEach(course => {
+    if (course && course.trim() && course.trim().toLowerCase() !== "unassigned") {
+      courseSet.add(course.trim());
     }
   });
 
-  // 4. Render Answered / Reference Docs (pp_library) - NOT Recording Notes
-  const docsContainer = document.getElementById('existingDocsContainer');
-  const badge = document.getElementById('docCountBadge');
-  const ppDocs = ppConfig.pp_library || [];
+  const allCourses = Array.from(courseSet).sort((a,b) => a.localeCompare(b));
+  const ppDocs = Array.isArray(ppConfig.pp_library) ? ppConfig.pp_library : [];
+  if (ppConfig.syllabi && typeof ppConfig.syllabi === "object") teacherSyllabiCache = ppConfig.syllabi;
 
-  if (badge) badge.textContent = ppDocs.length;
+  // Teacher course selectors only. Student course selection comes from the authenticated session.
+  ["tppCourseSelect","bulkCourseSelect","tqCourseSelect","docCourseSelect"].forEach(id => {
+    const select = document.getElementById(id);
+    if (!select) return;
+    const current = select.value;
+    select.innerHTML = '<option value="">-- Select Course --</option>';
+    allCourses.forEach(c => select.appendChild(new Option(c,c)));
+    if (current && allCourses.includes(current)) select.value = current;
+  });
 
-  if (docsContainer) {
-    if (ppDocs.length === 0) {
-      docsContainer.innerHTML = `<p class="meta" style="margin: 0; font-size: 12.5px;">No course reference/answered documents uploaded yet.</p>`;
+  // Render the shared document library and allow every existing document to be reassigned.
+  const container = document.getElementById("existingDocsContainer");
+  const badge = document.getElementById("docCountBadge");
+  if (badge) badge.textContent = String(ppDocs.length);
+
+  if (container) {
+    container.innerHTML = "";
+    if (!ppDocs.length) {
+      container.innerHTML = '<p class="meta" style="margin:0;font-size:12.5px;">No course reference/answered documents uploaded yet.</p>';
     } else {
-      docsContainer.innerHTML = ppDocs.map(doc => `
-        <div class="doc-item" style="display: flex; justify-content: space-between; align-items: center; background: var(--bg); padding: 8px 12px; border-radius: 8px; border: 1px solid var(--line); margin-bottom: 6px;">
-          <div style="display: flex; flex-direction: column; gap: 2px;">
-            <span style="font-weight: 700; font-size: 13px;">📄 ${escapeHtml(doc.filename || doc.name || 'Untitled')}</span>
-            <span class="meta" style="font-size: 11px;">Course: ${escapeHtml(doc.course || 'General')}</span>
+      ppDocs.forEach(doc => {
+        const row = document.createElement("div");
+        row.style.cssText = "display:flex;align-items:center;justify-content:space-between;padding:9px 12px;background:var(--bg);border:1px solid var(--line);border-radius:8px;gap:12px;";
+        const options = [
+          '<option value="">-- Unassigned / Shared --</option>',
+          ...allCourses.map(c => {
+            const selected = (doc.course || "").trim().toLowerCase() === c.toLowerCase() ? " selected" : "";
+            return `<option value="${escapeHtml(c)}"${selected}>${escapeHtml(c)}</option>`;
+          })
+        ].join("");
+        row.innerHTML = `
+          <div style="min-width:0;display:flex;flex-direction:column;gap:2px;">
+            <span style="font-size:12.5px;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">📄 ${escapeHtml(doc.filename || "Untitled")}</span>
+            <span class="meta" style="font-size:10.5px;">${doc.uploaded_at ? `Uploaded ${escapeHtml(doc.uploaded_at)} · ` : ""}${Number(doc.text_chars || 0).toLocaleString()} characters indexed</span>
           </div>
-          <button class="ghost-sm danger-btn" type="button" onclick="deletePastPaperDoc('${doc.id}')" title="Delete document">🗑️</button>
-        </div>
-      `).join('');
+          <div style="display:flex;align-items:center;gap:8px;flex-shrink:0;">
+            <label style="display:flex;align-items:center;gap:6px;font-size:11px;font-weight:700;">Course
+              <select class="doc-course-assign" data-docid="${escapeHtml(doc.id)}" style="padding:5px 8px;font-size:11.5px;border-radius:6px;border:1px solid var(--line);">${options}</select>
+            </label>
+            <button class="ghost-sm danger-btn doc-delete-btn" type="button" title="Delete document">🗑️</button>
+          </div>`;
+
+        const assign = row.querySelector(".doc-course-assign");
+        assign.addEventListener("change", async e => {
+          const fd = new FormData();
+          fd.append("passcode", passcode);
+          fd.append("doc_id", doc.id);
+          fd.append("course", e.target.value);
+          e.target.disabled = true;
+          try {
+            const res = await fetch(`${API}/api/teacher/pastpaper/docs/update-course`, { method: "POST", body: fd });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) {
+              toast(data.error || "Failed to update document course.", "error");
+              e.target.value = doc.course || "";
+              return;
+            }
+            toast(`"${doc.filename}" assigned to ${e.target.value || "Shared / Unassigned"} ✓`, "success");
+            await refreshPastPaperHub();
+          } catch (err) {
+            console.error(err);
+            toast("Network error updating document course.", "error");
+            e.target.value = doc.course || "";
+          } finally {
+            e.target.disabled = false;
+          }
+        });
+        row.querySelector(".doc-delete-btn").addEventListener("click", () => deletePastPaperDoc(doc.id, doc.filename));
+        container.appendChild(row);
+      });
     }
   }
 
-  // 5. Populate "Link Reference Document" Dropdowns
-  ['tqAnsweredDocSelect', 'bulkDocSelect', 'ansDocSelect'].forEach(id => {
+  function populateLinkedDocSelect(id, selectedCourse) {
     const select = document.getElementById(id);
     if (!select) return;
-
-    const currentVal = select.value;
-    let html = '<option value="">-- Optional: Link Reference Document --</option>';
-    ppDocs.forEach(doc => {
-      html += `<option value="${doc.id}">${escapeHtml(doc.filename || doc.name)} (${escapeHtml(doc.course || 'General')})</option>`;
+    const current = select.value;
+    const course = (selectedCourse || "").trim().toLowerCase();
+    const eligible = ppDocs.filter(doc => {
+      const dc = (doc.course || "").trim().toLowerCase();
+      return !course || !dc || dc === course;
     });
+    select.innerHTML = '<option value="">-- Optional: Link Reference Document --</option>';
+    eligible.forEach(doc => {
+      select.appendChild(new Option(`${doc.filename || "Untitled"} — ${doc.course || "Shared / Unassigned"}`, doc.id));
+    });
+    if (current && eligible.some(d => d.id === current)) select.value = current;
+  }
 
-    select.innerHTML = html;
-    if (currentVal) select.value = currentVal;
+  populateLinkedDocSelect("bulkDocSelect", document.getElementById("bulkCourseSelect")?.value || "");
+  populateLinkedDocSelect("tqAnsweredDocSelect", document.getElementById("tqCourseSelect")?.value || "");
+
+  ["bulkCourseSelect","tqCourseSelect"].forEach(id => {
+    const select = document.getElementById(id);
+    if (!select || select.dataset.ppDocBinding === "1") return;
+    select.dataset.ppDocBinding = "1";
+    select.addEventListener("change", () => {
+      if (id === "bulkCourseSelect") populateLinkedDocSelect("bulkDocSelect", select.value);
+      else populateLinkedDocSelect("tqAnsweredDocSelect", select.value);
+    });
   });
+
+  // Upload into the same canonical library used by the dropdown and manage-existing list.
+  const uploadBtn = document.getElementById("uploadPpDocBtn");
+  if (uploadBtn && uploadBtn.dataset.ppUploadBinding !== "1") {
+    uploadBtn.dataset.ppUploadBinding = "1";
+    uploadBtn.addEventListener("click", async () => {
+      const fileInput = document.getElementById("ppDocFile");
+      const course = document.getElementById("docCourseSelect")?.value || "";
+      const file = fileInput?.files?.[0] || null;
+      if (!course) return toast("Please select a course for this document.", "info");
+      if (!file) return toast("Please choose a PDF, Word document, or text file.", "info");
+
+      const fd = new FormData();
+      fd.append("passcode", passcode);
+      fd.append("course", course);
+      fd.append("file", file);
+      const oldText = uploadBtn.textContent;
+      uploadBtn.disabled = true;
+      uploadBtn.textContent = "Uploading…";
+      try {
+        const res = await fetch(`${API}/api/teacher/pastpaper/upload-doc`, { method: "POST", body: fd });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          toast(data.error || "Failed to upload document.", "error");
+          return;
+        }
+        fileInput.value = "";
+        toast(`"${data.doc?.filename || file.name}" uploaded to ${course} ✓`, "success");
+        await refreshPastPaperHub();
+      } catch (err) {
+        console.error(err);
+        toast("Network error uploading document.", "error");
+      } finally {
+        uploadBtn.disabled = false;
+        uploadBtn.textContent = oldText;
+      }
+    });
+  }
+
+  renderTeacherOverrides(ppConfig.solutions || []);
 }
 
-async function deletePastPaperDoc(docId) {
-  if (!confirm('Are you sure you want to delete this document?')) return;
-  const passcode = window.state?.passcode || (typeof state !== "undefined" ? state.passcode : "");
+async function deletePastPaperDoc(docId, filename = "this document") {
+  if (!confirm(`Delete "${filename}" from the Past Paper document library?`)) return;
+  const passcode = (typeof state !== "undefined" && state.passcode) || localStorage.getItem("ng_teacherPasscode") || "";
   try {
-    const res = await fetch('/api/teacher/pastpaper/delete_doc', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+    const res = await fetch(`${API}/api/teacher/pastpaper/delete_doc`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ passcode, doc_id: docId })
     });
-    if (res.ok) {
-      refreshPastPaperHub();
-    }
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) return toast(data.error || "Failed to delete document.", "error");
+    toast(`"${filename}" deleted ✓`, "success");
+    await refreshPastPaperHub();
   } catch (err) {
-    alert('Failed to delete document');
+    console.error(err);
+    toast("Network error deleting document.", "error");
   }
 }
 
-// Automatically trigger when switching to the Past Papers tab or on page load
-document.addEventListener('click', (e) => {
-  if (e.target && (e.target.id === 'tabPastPapers' || e.target.closest('#tabPastPapers'))) {
-    setTimeout(refreshPastPaperHub, 100);
-  }
-});
-
-// Run initial load after DOM is ready
-document.addEventListener('DOMContentLoaded', () => {
-  setTimeout(refreshPastPaperHub, 500);
-});
-// ==========================================
 // FIX: EDIT STUDENT SAVE HANDLER WITH DIAGNOSTICS
 // ==========================================
 
@@ -3342,113 +2903,4 @@ document.addEventListener('submit', (e) => {
   }
 });
 
-// ==========================================
-// UNIVERSAL LIBRARY & DROPDOWN AUTO-SYNC
-// ==========================================
-
-async function forceSyncLibraryDropdowns() {
-  const passcode = window.state?.passcode || (typeof state !== "undefined" ? state.passcode : "");
-
-  try {
-    // 1. Fetch full document library state from backend
-    const res = await fetch(`/api/teacher/pastpaper/hub?passcode=${encodeURIComponent(passcode)}`);
-    if (!res.ok) {
-      console.warn(`[Library Sync] Endpoint returned HTTP status ${res.status}`);
-      return;
-    }
-
-    const data = await res.json();
-    console.log("🔍 [Library Sync] Backend raw response:", data);
-
-    // 2. Safely extract documents array from any backend response property
-    const docs = 
-      data.library || 
-      data.documents || 
-      data.docs || 
-      data.solutions || 
-      data.files || 
-      (data.data && (data.data.library || data.data.documents)) || 
-      [];
-
-    console.log(`✅ [Library Sync] Found ${docs.length} documents:`, docs);
-
-    // 3. Find all select elements intended for document/library picking
-    const allSelects = Array.from(document.querySelectorAll('select'));
-    const targetSelects = allSelects.filter(select => {
-      const id = (select.id || '').toLowerCase();
-      const name = (select.name || '').toLowerCase();
-      return (id.includes('doc') || id.includes('ans') || id.includes('library') || 
-              name.includes('doc') || name.includes('library')) &&
-             id !== 'doccourseselect' && id !== 'tppcourseselect' && id !== 'courseselect';
-    });
-
-    // 4. Populate each matching dropdown
-    targetSelects.forEach(select => {
-      const currentVal = select.value;
-      let html = '<option value="">-- Select Answered Document / Reference --</option>';
-
-      if (docs.length === 0) {
-        html += '<option value="" disabled>(No uploaded documents found)</option>';
-      } else {
-        docs.forEach((doc, idx) => {
-          const fileName = doc.filename || doc.name || doc.title || doc.original_name || `Document #${idx + 1}`;
-          const courseTag = doc.course ? ` [${doc.course}]` : '';
-          const docVal = doc.id || doc.url || doc.filename || fileName;
-          html += `<option value="${docVal}">${fileName}${courseTag}</option>`;
-        });
-      }
-
-      select.innerHTML = html;
-      if (currentVal) select.value = currentVal;
-    });
-
-    // 5. Render list in container/table if present in DOM
-    const containers = [
-      document.getElementById('uploadedDocsList'),
-      document.getElementById('existingDocsContainer'),
-      document.getElementById('teacherDocsList'),
-      document.getElementById('libraryDocsTable'),
-      document.getElementById('uploadedDocsTable')
-    ].filter(Boolean);
-
-    containers.forEach(container => {
-      if (docs.length === 0) {
-        container.innerHTML = '<div style="padding:10px; color:#666;">No documents uploaded yet.</div>';
-        return;
-      }
-
-      let html = '<ul style="list-style:none; padding:0; margin:0;">';
-      docs.forEach((doc, idx) => {
-        const fileName = doc.filename || doc.name || doc.title || `Document #${idx + 1}`;
-        const courseTag = doc.course ? `<span style="background:#eee; padding:2px 6px; border-radius:4px; margin-left:8px; font-size:12px;">${doc.course}</span>` : '';
-        const url = doc.url || '#';
-        html += `
-          <li style="padding:10px; border-bottom:1px solid #ddd; display:flex; justify-content:space-between; align-items:center;">
-            <div><strong>${fileName}</strong> ${courseTag}</div>
-            ${url !== '#' ? `<a href="${url}" target="_blank" style="padding:4px 8px; background:#007bff; color:#fff; text-decoration:none; border-radius:4px; font-size:12px;">View Document</a>` : ''}
-          </li>`;
-      });
-      html += '</ul>';
-      container.innerHTML = html;
-    });
-
-  } catch (err) {
-    console.error('❌ [Library Sync] Error populating documents:', err);
-  }
-}
-
-// Automatically trigger sync when switching to relevant tabs
-document.addEventListener('click', (e) => {
-  const t = e.target;
-  if (t && (t.id === 'tabPastPapers' || t.id === 'tabQuestions' || t.innerText?.includes('Past Papers') || t.innerText?.includes('Questions'))) {
-    setTimeout(forceSyncLibraryDropdowns, 200);
-  }
-});
-
-// Run immediately on page load
-if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', forceSyncLibraryDropdowns);
-} else {
-  forceSyncLibraryDropdowns();
-}
 loadBranding();

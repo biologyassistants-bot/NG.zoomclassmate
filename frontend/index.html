@@ -22,7 +22,7 @@
           <span class="role-d">Ask questions & take quizzes</span>
         </button>
         <button id="roleTeacher" class="role-btn">
-          <span class="role-emoji">👩🏫</span>
+          <span class="role-emoji">👩‍🏫</span>
           <span class="role-t">I'm the teacher</span>
           <span class="role-d">Manage recordings & see questions</span>
         </button>
@@ -48,7 +48,7 @@
   <section id="teacherGate" class="gate hidden">
     <div class="gate-card">
       <button class="back" data-back="landing">← Back</button>
-      <div class="logo">👩🏫</div>
+      <div class="logo">👩‍🏫</div>
       <h1>Teacher access</h1>
       <p class="tagline">Enter your passcode.</p>
       <input id="passInput" type="password" placeholder="Passcode" autocomplete="off" />
@@ -180,11 +180,11 @@
       </div>
     </div>
 
-  <!-- ================= PAST PAPERS PANE ================= -->
+    <!-- Pane 4: Past Papers -->
     <div id="studentPastPapersPane" class="student-pane hidden" style="padding: 16px 24px; max-width: 1600px; margin: 0 auto; height: calc(100vh - 80px); overflow-y: auto;">
       <div style="display: grid; grid-template-columns: 360px 1fr; gap: 24px; align-items: start;">
         
-        <!-- LEFT COLUMN: Selector Controls (Sticky) -->
+        <!-- LEFT COLUMN: Selector Controls -->
         <div class="setting-card" style="position: sticky; top: 0; background: var(--panel); border: 1.5px solid var(--line); border-radius: 14px; padding: 18px; box-shadow: var(--shadow-sm);">
           <div style="display: flex; flex-direction: column; gap: 4px; margin-bottom: 14px;">
             <h3 style="margin: 0; font-size: 16px;">Select Past Paper Question</h3>
@@ -228,22 +228,19 @@
 
         <!-- RIGHT COLUMN: Answer Cards & Solution Area -->
         <div style="min-width: 0;">
-          <!-- Empty State (Visible before solving) -->
           <div id="ppEmptyState" class="empty" style="padding: 70px 20px; text-align: center; background: var(--panel); border: 1.5px dashed var(--line); border-radius: 14px;">
             <div style="font-size: 38px; margin-bottom: 12px;">📝</div>
             <h3 style="margin: 0 0 6px 0; font-size: 16px;">No question selected</h3>
             <p class="meta" style="margin: 0; font-size: 13px;">Choose a past paper question on the left to load the complete model answer, mark scheme points, and examiner tips.</p>
           </div>
 
-          <!-- Active Solution Result (Populated by app.js) -->
           <div id="ppSolutionResult" class="hidden" style="display: flex; flex-direction: column; gap: 16px;"></div>
         </div>
 
       </div>
     </div>
-   
     
-    <!-- Pane 4: Alerts & Reminders -->
+    <!-- Pane 5: Alerts & Reminders -->
     <div id="studentAlertsPane" class="student-pane hidden" style="padding: 26px 30px; overflow-y: auto;">
       <div class="pane-head" style="margin-bottom: 20px;">
         <h2>🔔 Alerts & Study Reminders</h2>
@@ -254,9 +251,7 @@
     </div>
   </section>
 
-  <!-- ==========================================
-       TEACHER WORKSPACE
-       ========================================== -->
+  <!-- Teacher Workspace -->
   <section id="teacher" class="main hidden">
     <header class="topbar">
       <div class="brand"><span class="logo-sm">👩‍🏫</span> NG-ClassMate · Teacher</div>
@@ -338,11 +333,11 @@
       <div id="studentList" class="student-list"></div>
     </div>
 
-    <!-- 3. Past Paper Hub Pane (Enclosing ALL Past Paper Cards) -->
+    <!-- 3. Past Paper Hub Pane -->
     <div id="teacherPastPapers" class="teacher-pane hidden">
       <div class="pane-head">
-        <h2>Past Paper Hub: Syllabus & Dedicated Exam Bank</h2>
-        <p class="meta">Manage official syllabus specifications, upload complete exam files, and maintain curated past papers.</p>
+        <h2>Past Paper Hub: Syllabus &amp; Dedicated Exam Bank</h2>
+        <p class="meta">Manage official syllabus specifications, upload model answer documents, auto-extract whole exam packs, and organize past paper questions.</p>
       </div>
 
       <!-- Card A: Syllabus Mapping -->
@@ -369,9 +364,36 @@
         </div>
       </div>
 
-      <!-- 2. Bulk Upload Complete Exam (QP + MS + ER) -->
+      <!-- Card B: Upload Model Answer / Reference Document -->
       <div class="setting-card" style="margin-bottom: 20px;">
-        <h3>2. Bulk Upload &amp; Auto-Extract Exam Questions</h3>
+        <h3>2. Upload Course Reference / Answer Document</h3>
+        <p class="meta" style="margin-bottom: 12px;">Upload full solved exam documents or notes and tag them to a course so they link during bulk extraction.</p>
+        
+        <div style="display: grid; grid-template-columns: 1fr 2fr auto; gap: 10px; align-items: end; margin-bottom: 16px;">
+          <label class="fld">
+            <span style="font-weight: 700; font-size: 12px; margin-bottom: 4px; display: block;">Select Course *</span>
+            <select id="docCourseSelect" style="width: 100%; padding: 8px; border-radius: 8px; border: 1.5px solid var(--line); background: var(--bg); color: var(--text);"></select>
+          </label>
+          
+          <label class="fld">
+            <span style="font-weight: 700; font-size: 12px; margin-bottom: 4px; display: block;">PDF / Word Document *</span>
+            <input type="file" id="ppDocFile" accept=".pdf,.docx,.txt" style="width: 100%; font-size: 12px; padding: 6px;" />
+          </label>
+          
+          <button id="uploadPpDocBtn" class="primary" style="padding: 9px 18px; font-weight: 700; border-radius: 8px;">Upload Doc</button>
+        </div>
+
+        <details style="background: var(--panel2); padding: 10px 14px; border-radius: 8px; border: 1px solid var(--line);">
+          <summary style="font-weight: 700; font-size: 13px; cursor: pointer; color: var(--text);">📂 Manage Existing Uploaded Documents (<span id="docCountBadge">0</span>)</summary>
+          <div id="existingDocsContainer" style="margin-top: 10px; display: flex; flex-direction: column; gap: 8px;">
+            <p class="meta" style="margin: 0;">Loading documents…</p>
+          </div>
+        </details>
+      </div>
+
+      <!-- Card C: Bulk Upload Complete Exam (QP + MS + ER) -->
+      <div class="setting-card" style="margin-bottom: 20px;">
+        <h3>3. Bulk Upload &amp; Auto-Extract Exam Questions</h3>
         <p class="meta" style="margin-bottom: 14px;">Upload Question Paper, Mark Scheme, and optional Examiner Report. AI will segment all questions automatically.</p>
 
         <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 10px; margin-bottom: 12px;">
@@ -388,7 +410,6 @@
           <label class="fld"><span>Paper *</span><input id="bulkPaperInput" type="text" placeholder="e.g. 21" style="width: 100%; padding: 8px; border-radius: 8px; border: 1.5px solid var(--line);" /></label>
         </div>
 
-        <!-- Single Clean 3-Column Upload Grid -->
         <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 12px; background: var(--panel2); padding: 12px; border-radius: 8px; border: 1.5px dashed var(--line);">
           <label class="fld">
             <span style="font-weight: 700; margin-bottom: 4px; display: block;">Question Paper (PDF) *</span>
@@ -410,17 +431,6 @@
         </div>
 
         <button id="processBulkBtn" class="primary" style="width: 100%; padding: 12px; font-weight: 800; font-size: 14px;">🚀 Upload &amp; Auto-Extract Exam Questions</button>
-      </div>
-
-      <!-- Card C: Dedicated Document Upload -->
-      <div class="setting-card" style="margin-bottom: 20px; background: rgba(11,191,191,0.03); border: 1.5px dashed var(--brand);">
-        <h3>3. Upload Document to Past Paper Library</h3>
-        <p class="meta" style="margin-bottom: 12px;">Store model answer packs and examiner reports strictly separate from class lecture slides.</p>
-        <div style="display: flex; gap: 12px; align-items: center;">
-          <input type="file" id="tppDocFile" accept=".pdf,.docx,.txt" style="flex: 1; font-size: 13px;" />
-          <button id="tppUploadDocBtn" type="button" class="ghost-sm" style="padding: 9px 16px;">Upload Exam Doc</button>
-        </div>
-        <span id="tppUploadStatus" class="meta" style="font-size: 12px; margin-top: 6px; display: block;"></span>
       </div>
 
       <!-- Card D: Individual Question Entry -->
@@ -493,7 +503,11 @@
     </div>
   </section>
 
-  <!-- Edit student modal -->
+  <!-- ==========================================
+        MODALS & OVERLAYS
+        ========================================== -->
+
+  <!-- Modal 1: Edit Student Modal -->
   <div id="studentModal" class="modal hidden">
     <div class="modal-card">
       <div class="modal-head">
@@ -522,74 +536,100 @@
         <p id="edStatus" class="ed-status"></p>
       </div>
       <div class="modal-foot student-edit-foot">
-        <button id="edDelete" class="ghost danger-btn">🗑️ Delete student</button>
-        <div style="flex:1"></div>
-        <button id="edCancel" class="ghost">Cancel</button>
-        <button id="edSave" class="primary">Save changes</button>
+        <button id="edDelete" class="ghost danger-btn">Delete student</button>
+        <button id="saveStudentEd" class="primary">Save changes</button>
       </div>
     </div>
   </div>
 
-  <!-- Dedupe modal -->
-  <div id="dedupeModal" class="modal hidden">
-    <div class="modal-card">
+  <!-- Modal 2: Edit Recording Modal -->
+  <div id="recModal" class="modal hidden">
+    <div class="modal-card" style="max-width: 650px;">
       <div class="modal-head">
-        <h2>Merge duplicate accounts</h2>
-        <button id="closeDedupe" class="close">✕</button>
+        <h2>Edit Recording Details</h2>
+        <button id="closeRecModal" class="close">✕</button>
       </div>
-      <div id="dedupeBody" class="modal-body dedupe-body"></div>
-      <div class="modal-foot">
-        <div style="flex:1"></div>
-        <button id="dedupeCancel" class="ghost">Cancel</button>
-        <button id="dedupeApply" class="primary hidden">Merge & delete duplicates</button>
+      <div class="modal-body" style="display: flex; flex-direction: column; gap: 14px;">
+        <label class="fld">
+          <span>Recording Title</span>
+          <input id="edRecTitle" type="text" style="width: 100%; padding: 8px; border-radius: 8px; border: 1.5px solid var(--line);" />
+        </label>
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+          <label class="fld">
+            <span>Course Name</span>
+            <input id="edRecCourse" type="text" placeholder="e.g. Unit 1 Biology" style="width: 100%; padding: 8px; border-radius: 8px; border: 1.5px solid var(--line);" />
+          </label>
+          <label class="fld" style="display: flex; align-items: center; gap: 8px; margin-top: 22px;">
+            <input id="edRecVisible" type="checkbox" style="width: 18px; height: 18px;" />
+            <span style="font-weight: 700;">Visible to Students</span>
+          </label>
+        </div>
+        <label class="fld">
+          <span>Class Summary / Key Points</span>
+          <textarea id="edRecSummary" rows="3" style="width: 100%; padding: 8px; border-radius: 8px; border: 1.5px solid var(--line); font-size: 13px;"></textarea>
+        </label>
+        <label class="fld">
+          <span>Class Transcript</span>
+          <textarea id="edRecTranscript" rows="6" style="width: 100%; padding: 8px; border-radius: 8px; border: 1.5px solid var(--line); font-size: 12.5px; font-family: monospace;"></textarea>
+        </label>
+      </div>
+      <div class="modal-foot" style="display: flex; justify-content: space-between; align-items: center;">
+        <button id="deleteRecBtn" class="ghost danger-btn">Delete Recording</button>
+        <button id="saveRecBtn" class="primary">Save Changes</button>
       </div>
     </div>
   </div>
 
-  <!-- Quiz modal -->
-  <div id="quizModal" class="modal hidden">
-    <div class="modal-card">
-      <div class="modal-head">
-        <h2>📝 Quiz</h2>
-        <button id="closeQuiz" class="close">✕</button>
-      </div>
-      <div id="quizBody" class="quiz-body"></div>
-      <div class="modal-foot">
-        <button id="submitQuiz" class="primary hidden">Check my answers</button>
-        <button id="retryQuiz" class="ghost hidden">Try another quiz</button>
-      </div>
-    </div>
-  </div>
-
-  <!-- Flashcard (Spaced Repetition SRS) modal -->
+  <!-- Modal 3: SRS Flashcards Modal -->
   <div id="flashcardModal" class="modal hidden">
-    <div class="modal-card" style="max-width: 550px; text-align: center;">
+    <div class="modal-card" style="max-width: 550px;">
       <div class="modal-head">
-        <h2>🃏 Spaced Repetition Flashcards</h2>
-        <button id="closeFlashcards" class="close">✕</button>
+        <h2 id="fcHeader">🃏 Flashcard Review</h2>
+        <button id="closeFcModal" class="close">✕</button>
       </div>
-      <div style="display: flex; justify-content: space-between; align-items: center; padding: 4px 16px; margin-top: 6px;">
-        <span id="srsStatusText" class="meta" style="font-weight: 700; color: var(--brand-d);">Due Cards: 0</span>
-        <button id="genFreshCardsBtn" class="ghost-sm" style="font-size: 11.5px; padding: 4px 10px;">✨ Generate New Cards</button>
+      <div class="modal-body" style="text-align: center; padding: 20px 10px;">
+        <div id="fcCard" style="min-height: 180px; background: var(--panel2); border: 2px solid var(--line); border-radius: 14px; padding: 24px; display: flex; flex-direction: column; justify-content: center; align-items: center; cursor: pointer; transition: transform 0.2s;">
+          <div id="fcFrontText" style="font-size: 17px; font-weight: 700; color: var(--text);"></div>
+          <div id="fcBackText" class="hidden" style="font-size: 16px; color: var(--brand-d); margin-top: 16px; border-top: 1px dashed var(--line); padding-top: 16px; width: 100%;"></div>
+        </div>
+        <p class="meta" style="margin-top: 10px; font-size: 12px;">Click card to reveal answer</p>
+        
+        <div id="fcRatingBtns" class="hidden" style="display: flex; gap: 10px; justify-content: center; margin-top: 18px;">
+          <button id="fcHardBtn" class="ghost" style="border-color: #f03e3e; color: #f03e3e;">🔴 Hard (1 day)</button>
+          <button id="fcGoodBtn" class="ghost" style="border-color: #f59f00; color: #f59f00;">🟡 Good (3 days)</button>
+          <button id="fcEasyBtn" class="ghost" style="border-color: #37b24d; color: #37b24d;">🟢 Easy (7 days)</button>
+        </div>
       </div>
-      <div id="flashcardBody" style="padding: 18px 20px; min-height: 190px; display: flex; align-items: center; justify-content: center;"></div>
-      <!-- Rating options for Spaced Repetition -->
-      <div id="srsRatingControls" class="modal-foot hidden" style="justify-content: center; gap: 8px; flex-wrap: wrap;">
-        <button id="srsAgainBtn" class="ghost-sm danger-btn" style="flex: 1; padding: 8px 4px; font-weight: 800;">🔴 Again (1d)</button>
-        <button id="srsHardBtn" class="ghost-sm" style="flex: 1; padding: 8px 4px; font-weight: 800; border-color: #f59f00; color: #f59f00;">🟡 Hard (2d)</button>
-        <button id="srsGoodBtn" class="ghost-sm" style="flex: 1; padding: 8px 4px; font-weight: 800; border-color: var(--brand); color: var(--brand-d);">🟢 Good (4d)</button>
-        <button id="srsEasyBtn" class="ghost-sm" style="flex: 1; padding: 8px 4px; font-weight: 800; border-color: var(--ok); color: var(--ok);">🔵 Easy (7d)</button>
-      </div>
-      <div id="srsNavControls" class="modal-foot" style="justify-content: center; gap: 12px; margin-top: 4px;">
-        <button id="prevCardBtn" class="ghost">← Prev</button>
-        <span id="cardCountIndicator" class="meta" style="font-weight: 800;">1 / 1</span>
-        <button id="nextCardBtn" class="ghost">Next →</button>
+      <div class="modal-foot" style="text-align: center; color: var(--meta); font-size: 13px;">
+        <span id="fcProgress">Card 1 of 5</span>
       </div>
     </div>
+  </div>
+
+  <!-- Modal 4: Interactive Quiz Modal -->
+  <div id="quizModal" class="modal hidden">
+    <div class="modal-card" style="max-width: 650px;">
+      <div class="modal-head">
+        <h2 id="quizHeader">📝 Class Quiz</h2>
+        <button id="closeQuizModal" class="close">✕</button>
+      </div>
+      <div id="quizBody" class="modal-body" style="max-height: 60vh; overflow-y: auto; display: flex; flex-direction: column; gap: 18px;">
+        <!-- Dynamically populated by JS -->
+      </div>
+      <div class="modal-foot" style="display: flex; justify-content: space-between; align-items: center;">
+        <span id="quizScoreBadge" class="meta" style="font-weight: 700;"></span>
+        <button id="quizSubmitBtn" class="primary">Submit Quiz</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast Notification Container -->
+  <div id="toast" class="toast hidden" style="position: fixed; bottom: 20px; right: 20px; background: var(--panel); border: 1.5px solid var(--brand); color: var(--text); padding: 12px 18px; border-radius: 10px; box-shadow: var(--shadow-md); z-index: 9999; font-weight: 600; display: flex; align-items: center; gap: 8px;">
+    <span id="toastMsg">Notification message</span>
   </div>
 
 </div>
-<div id="toastHost" class="toast-host"></div>
-<script src="/app.js?v=260"></script>
+
+<script src="/app.js?v=280"></script>
 </body>
 </html>

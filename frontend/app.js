@@ -3086,4 +3086,135 @@ if (el("uploadPpDocBtn")) {
   });
 }
 
+// ==========================================
+// FIX: DROPDOWNS & DOCUMENT LINKING
+// ==========================================
+
+function escapeHtml(str) {
+  if (!str) return '';
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function populateCourseDropdowns(coursesList = []) {
+  const recordings = window.state?.recordings || state?.recordings || [];
+  const courses = coursesList.length 
+    ? coursesList 
+    : Array.from(new Set(recordings.map(r => r.course || r.unit).filter(Boolean)));
+
+  const selectIds = [
+    'docCourseSelect',
+    'tppCourseSelect',
+    'bulkCourseSelect',
+    'tqCourseSelect',
+    'ppCourseSelect',
+    'recCourseFilter'
+  ];
+
+  selectIds.forEach(id => {
+    const selectEl = document.getElementById(id);
+    if (!selectEl) return;
+
+    const currentValue = selectEl.value;
+    const isFilter = id.includes('Filter');
+
+    let html = isFilter 
+      ? '<option value="">All courses</option>' 
+      : '<option value="">-- Select Course --</option>';
+
+    courses.forEach(c => {
+      html += `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`;
+    });
+
+    selectEl.innerHTML = html;
+    if (currentValue && Array.from(selectEl.options).some(o => o.value === currentValue)) {
+      selectEl.value = currentValue;
+    }
+  });
+}
+
+function populateDocSelectDropdowns(docs = []) {
+  ['bulkDocSelect', 'tqAnsweredDocSelect'].forEach(id => {
+    const select = document.getElementById(id);
+    if (!select) return;
+
+    const currentValue = select.value;
+    let html = '<option value="">-- Optional: Link Reference Document --</option>';
+    docs.forEach(doc => {
+      html += `<option value="${doc.id}">${escapeHtml(doc.filename || doc.name)}</option>`;
+    });
+    select.innerHTML = html;
+    if (currentValue && Array.from(select.options).some(o => o.value === currentValue)) {
+      select.value = currentValue;
+    }
+  });
+}
+
+async function loadUploadedDocuments() {
+  const container = document.getElementById('existingDocsContainer');
+  const badge = document.getElementById('docCountBadge');
+
+  try {
+    const activePasscode = window.state?.passcode || state?.passcode;
+    const res = await fetch('/api/teacher/notes/library', {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ passcode: activePasscode })
+    }); 
+
+    const data = res.ok ? await res.json() : {};
+    const docs = data.library || data.documents || [];
+
+    if (badge) badge.textContent = docs.length;
+
+    if (container) {
+      if (docs.length === 0) {
+        container.innerHTML = `<p class="meta" style="margin: 0; font-size: 12.5px;">No uploaded documents found for reference.</p>`;
+      } else {
+        container.innerHTML = docs.map(doc => `
+          <div class="doc-item" style="display: flex; justify-content: space-between; align-items: center; background: var(--bg); padding: 8px 12px; border-radius: 8px; border: 1px solid var(--line); margin-bottom: 6px;">
+            <div style="display: flex; flex-direction: column; gap: 2px;">
+              <span style="font-weight: 700; font-size: 13px;">📄 ${escapeHtml(doc.filename || doc.name)}</span>
+            </div>
+            <button class="ghost-sm danger-btn" type="button" onclick="deleteDocument('${doc.id}')" title="Delete document">🗑️</button>
+          </div>
+        `).join('');
+      }
+    }
+
+    populateDocSelectDropdowns(docs);
+
+  } catch (err) {
+    console.error('Failed to load documents:', err);
+  }
+}
+
+async function deleteDocument(docId) {
+  if (!confirm('Are you sure you want to delete this document?')) return;
+  try {
+    const activePasscode = window.state?.passcode || state?.passcode;
+    const res = await fetch('/api/teacher/notes/library/delete', {
+      method: 'POST',
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ passcode: activePasscode, note_id: docId })
+    });
+    if (res.ok) {
+      loadUploadedDocuments();
+    }
+  } catch (err) {
+    alert('Failed to delete document');
+  }
+}
+
+// Auto-run whenever the Past Papers tab button is clicked
+document.addEventListener('click', (e) => {
+  if (e.target && e.target.id === 'tabPastPapers') {
+    populateCourseDropdowns();
+    loadUploadedDocuments();
+  }
+});
+
 loadBranding();

@@ -3343,122 +3343,112 @@ document.addEventListener('submit', (e) => {
 });
 
 // ==========================================
-// FIX: UPLOAD ANSWERED DOC & SYNC LIBRARY DROPDOWNS
+// UNIVERSAL LIBRARY & DROPDOWN AUTO-SYNC
 // ==========================================
 
-async function uploadAnsweredDoc(e) {
-  if (e) e.preventDefault();
-
-  // 1. Locate Course, File, and Passcode
-  const courseSelect = document.getElementById('docCourseSelect') || 
-                       document.getElementById('tppCourseSelect') || 
-                       document.querySelector('#teacherPastPapers select');
-                       
-  const fileInput = document.getElementById('docFileInput') || 
-                    document.querySelector('#teacherPastPapers input[type="file"]');
-
-  const course = courseSelect ? courseSelect.value : '';
-  const files = fileInput ? fileInput.files : null;
+async function forceSyncLibraryDropdowns() {
   const passcode = window.state?.passcode || (typeof state !== "undefined" ? state.passcode : "");
 
-  if (!course) {
-    alert('⚠️ Please select a course before uploading the document.');
-    return;
-  }
-
-  if (!files || files.length === 0) {
-    alert('⚠️ Please select a PDF or Word document to upload.');
-    return;
-  }
-
-  // 2. Build Multi-part Form Data Payload
-  const formData = new FormData();
-  formData.append('file', files[0]);
-  formData.append('course', course);
-  formData.append('passcode', passcode);
-
-  // 3. UI Button Feedback
-  const uploadBtn = document.getElementById('uploadDocBtn') || 
-                    document.querySelector('#teacherPastPapers button[type="submit"]') ||
-                    document.querySelector('button:has-text("Upload Doc")');
-
-  if (uploadBtn) {
-    uploadBtn.disabled = true;
-    uploadBtn.innerText = 'Uploading...';
-  }
-
   try {
-    const res = await fetch('/api/teacher/pastpaper/upload_doc', {
-      method: 'POST',
-      body: formData
+    // 1. Fetch full document library state from backend
+    const res = await fetch(`/api/teacher/pastpaper/hub?passcode=${encodeURIComponent(passcode)}`);
+    if (!res.ok) {
+      console.warn(`[Library Sync] Endpoint returned HTTP status ${res.status}`);
+      return;
+    }
+
+    const data = await res.json();
+    console.log("🔍 [Library Sync] Backend raw response:", data);
+
+    // 2. Safely extract documents array from any backend response property
+    const docs = 
+      data.library || 
+      data.documents || 
+      data.docs || 
+      data.solutions || 
+      data.files || 
+      (data.data && (data.data.library || data.data.documents)) || 
+      [];
+
+    console.log(`✅ [Library Sync] Found ${docs.length} documents:`, docs);
+
+    // 3. Find all select elements intended for document/library picking
+    const allSelects = Array.from(document.querySelectorAll('select'));
+    const targetSelects = allSelects.filter(select => {
+      const id = (select.id || '').toLowerCase();
+      const name = (select.name || '').toLowerCase();
+      return (id.includes('doc') || id.includes('ans') || id.includes('library') || 
+              name.includes('doc') || name.includes('library')) &&
+             id !== 'doccourseselect' && id !== 'tppcourseselect' && id !== 'courseselect';
     });
 
-    if (res.ok) {
-      alert('✅ Answered document uploaded and added to Course Library!');
-      if (fileInput) fileInput.value = '';
+    // 4. Populate each matching dropdown
+    targetSelects.forEach(select => {
+      const currentVal = select.value;
+      let html = '<option value="">-- Select Answered Document / Reference --</option>';
 
-      // 4. Force reload Past Paper Hub data and populate all library dropdowns
-      if (typeof refreshPastPaperHub === 'function') {
-        await refreshPastPaperHub();
+      if (docs.length === 0) {
+        html += '<option value="" disabled>(No uploaded documents found)</option>';
+      } else {
+        docs.forEach((doc, idx) => {
+          const fileName = doc.filename || doc.name || doc.title || doc.original_name || `Document #${idx + 1}`;
+          const courseTag = doc.course ? ` [${doc.course}]` : '';
+          const docVal = doc.id || doc.url || doc.filename || fileName;
+          html += `<option value="${docVal}">${fileName}${courseTag}</option>`;
+        });
       }
-    } else {
-      const err = await res.json().catch(() => ({}));
-      alert('❌ Upload failed: ' + (err.error || err.message || 'Server returned an error.'));
-    }
+
+      select.innerHTML = html;
+      if (currentVal) select.value = currentVal;
+    });
+
+    // 5. Render list in container/table if present in DOM
+    const containers = [
+      document.getElementById('uploadedDocsList'),
+      document.getElementById('existingDocsContainer'),
+      document.getElementById('teacherDocsList'),
+      document.getElementById('libraryDocsTable'),
+      document.getElementById('uploadedDocsTable')
+    ].filter(Boolean);
+
+    containers.forEach(container => {
+      if (docs.length === 0) {
+        container.innerHTML = '<div style="padding:10px; color:#666;">No documents uploaded yet.</div>';
+        return;
+      }
+
+      let html = '<ul style="list-style:none; padding:0; margin:0;">';
+      docs.forEach((doc, idx) => {
+        const fileName = doc.filename || doc.name || doc.title || `Document #${idx + 1}`;
+        const courseTag = doc.course ? `<span style="background:#eee; padding:2px 6px; border-radius:4px; margin-left:8px; font-size:12px;">${doc.course}</span>` : '';
+        const url = doc.url || '#';
+        html += `
+          <li style="padding:10px; border-bottom:1px solid #ddd; display:flex; justify-content:space-between; align-items:center;">
+            <div><strong>${fileName}</strong> ${courseTag}</div>
+            ${url !== '#' ? `<a href="${url}" target="_blank" style="padding:4px 8px; background:#007bff; color:#fff; text-decoration:none; border-radius:4px; font-size:12px;">View Document</a>` : ''}
+          </li>`;
+      });
+      html += '</ul>';
+      container.innerHTML = html;
+    });
+
   } catch (err) {
-    console.error('Document Upload Error:', err);
-    alert('❌ Network error while uploading: ' + err.message);
-  } finally {
-    if (uploadBtn) {
-      uploadBtn.disabled = false;
-      uploadBtn.innerText = 'Upload Doc';
-    }
+    console.error('❌ [Library Sync] Error populating documents:', err);
   }
 }
 
-// 5. Global Binding for Upload Form and Button
-document.addEventListener('submit', (e) => {
-  const form = e.target;
-  if (form && (form.id === 'uploadDocForm' || form.id === 'pastPaperDocForm' || form.action?.includes('upload_doc'))) {
-    uploadAnsweredDoc(e);
-  }
-});
-
+// Automatically trigger sync when switching to relevant tabs
 document.addEventListener('click', (e) => {
   const t = e.target;
-  if (t && (t.id === 'uploadDocBtn' || t.classList.contains('upload-doc-btn') || t.innerText === 'Upload Doc')) {
-    e.preventDefault();
-    uploadAnsweredDoc(e);
+  if (t && (t.id === 'tabPastPapers' || t.id === 'tabQuestions' || t.innerText?.includes('Past Papers') || t.innerText?.includes('Questions'))) {
+    setTimeout(forceSyncLibraryDropdowns, 200);
   }
 });
 
-// 6. Universal Library Dropdown Refresh Function
-async function populateAllLibraryDropdowns(documents = []) {
-  const targetSelectIds = [
-    'tqAnsweredDocSelect',
-    'bulkDocSelect',
-    'ansDocSelect',
-    'linkNotesSelect',
-    'docLibrarySelect',
-    'questionDocSelect'
-  ];
-
-  targetSelectIds.forEach(id => {
-    const select = document.getElementById(id);
-    if (!select) return;
-
-    const currentVal = select.value;
-    let html = '<option value="">-- Optional: Link Reference / Answered Document --</option>';
-
-    documents.forEach(doc => {
-      const docName = doc.filename || doc.name || 'Untitled Document';
-      const docCourse = doc.course ? ` (${doc.course})` : '';
-      html += `<option value="${doc.id || doc.url || docName}">${docName}${docCourse}</option>`;
-    });
-
-    select.innerHTML = html;
-    if (currentVal) select.value = currentVal;
-  });
+// Run immediately on page load
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', forceSyncLibraryDropdowns);
+} else {
+  forceSyncLibraryDropdowns();
 }
-
 loadBranding();

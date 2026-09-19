@@ -3227,4 +3227,96 @@ document.addEventListener('click', (e) => {
 document.addEventListener('DOMContentLoaded', () => {
   setTimeout(refreshPastPaperHub, 500);
 });
+
+// ==========================================
+// FIX: EDIT STUDENT DATA & SAVE CHANGES
+// ==========================================
+
+async function handleSaveStudentChanges(e) {
+  if (e) e.preventDefault();
+
+  // 1. Locate active student ID from hidden input, modal attribute, or global variable
+  const studentId = 
+    document.getElementById('editStudentId')?.value || 
+    document.getElementById('editStudentModal')?.dataset?.studentId || 
+    window.editingStudentId;
+
+  if (!studentId) {
+    console.error("Save failed: Could not identify Student ID.");
+    alert("Error: Student ID not found. Please re-open the edit window.");
+    return;
+  }
+
+  // 2. Gather values from edit modal fields
+  const payload = {
+    passcode: window.state?.passcode || (typeof state !== "undefined" ? state.passcode : ""),
+    student_id: studentId,
+    id: studentId,
+    name: document.getElementById('editStudentName')?.value || '',
+    email: document.getElementById('editStudentEmail')?.value || '',
+    phone: document.getElementById('editStudentPhone')?.value || '',
+    course: document.getElementById('editStudentCourse')?.value || '',
+    status: document.getElementById('editStudentStatus')?.value || ''
+  };
+
+  // 3. Set button loading state
+  const saveBtn = document.getElementById('saveStudentBtn') || 
+                  document.getElementById('saveEditStudentBtn') || 
+                  document.querySelector('#editStudentModal button[type="submit"]');
+
+  if (saveBtn) {
+    saveBtn.disabled = true;
+    saveBtn.dataset.originalText = saveBtn.textContent;
+    saveBtn.textContent = 'Saving...';
+  }
+
+  try {
+    const res = await fetch('/api/admin/students/update', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.message || 'Failed to save changes.');
+    }
+
+    // 4. Close modal on success
+    const modal = document.getElementById('editStudentModal') || document.getElementById('studentEditModal');
+    if (modal) {
+      modal.style.display = 'none';
+      modal.classList.remove('active', 'show');
+    }
+
+    // 5. Trigger student list refresh if functions exist
+    if (typeof loadStudents === 'function') loadStudents();
+    if (typeof renderStudents === 'function') renderStudents();
+    if (typeof refreshStudentTable === 'function') refreshStudentTable();
+
+  } catch (err) {
+    console.error('Error saving student:', err);
+    alert('Could not save changes: ' + err.message);
+  } finally {
+    if (saveBtn) {
+      saveBtn.disabled = false;
+      saveBtn.textContent = saveBtn.dataset.originalText || 'Save Changes';
+    }
+  }
+}
+
+// Global Event Listener Catch for Form Submit or Save Button Click
+document.addEventListener('submit', (e) => {
+  if (e.target && (e.target.id === 'editStudentForm' || e.target.id === 'studentEditForm')) {
+    handleSaveStudentChanges(e);
+  }
+});
+
+document.addEventListener('click', (e) => {
+  const target = e.target;
+  if (target && (target.id === 'saveStudentBtn' || target.id === 'saveEditStudentBtn')) {
+    handleSaveStudentChanges(e);
+  }
+});
+
 loadBranding();

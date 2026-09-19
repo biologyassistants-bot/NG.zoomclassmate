@@ -17,6 +17,8 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 import secrets
 import bcrypt
+import uuid
+from datetime import date
 
 # Data location.
 #   * Default: the repo's bundled ./data folder.
@@ -2650,6 +2652,12 @@ PAST_PAPER_CONFIG_PATH = os.path.join(DATA_DIR, "past_paper_config.json")
 PAST_PAPER_SOLUTIONS_PATH = os.path.join(DATA_DIR, "past_paper_solutions.json")
 PAST_PAPER_LIB_PATH = os.path.join(DATA_DIR, "pastpaper_library.json")
 
+# Legacy document-library filenames used by earlier builds.
+LEGACY_PAST_PAPER_DOC_PATHS = [
+    os.path.join(DATA_DIR, "past_paper_docs.json"),
+    os.path.join(DATA_DIR, "pastpaper_docs.json"),
+]
+
 # --- Past Paper Isolated Data Helpers ---
 def load_pp_json(path):
     if os.path.exists(path):
@@ -2664,12 +2672,61 @@ def save_pp_json(path, data):
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
+def load_pp_documents():
+    """Load the one canonical answered/reference-document library."""
+    docs = load_pp_json(PAST_PAPER_LIB_PATH)
+    if not isinstance(docs, list):
+        docs = []
+    clean_docs = [d for d in docs if isinstance(d, dict)]
+    if len(clean_docs) != len(docs):
+        docs = clean_docs
+        changed = True
+    else:
+        changed = False
+    existing_ids = {str(d.get("id")) for d in docs if isinstance(d, dict) and d.get("id")}
+
+    # Fold documents from older builds into the canonical library.
+    for legacy_path in LEGACY_PAST_PAPER_DOC_PATHS:
+        legacy_docs = load_pp_json(legacy_path)
+        if not isinstance(legacy_docs, list):
+            continue
+        for legacy_doc in legacy_docs:
+            if not isinstance(legacy_doc, dict):
+                continue
+            legacy_id = str(legacy_doc.get("id") or f"ppdoc_{secrets.token_hex(6)}")
+            if legacy_id in existing_ids:
+                continue
+            legacy_doc["id"] = legacy_id
+            legacy_doc["filename"] = legacy_doc.get("filename") or "Uploaded Document"
+            legacy_doc["course"] = (legacy_doc.get("course") or "").strip()
+            legacy_doc["chunks"] = legacy_doc.get("chunks") or []
+            legacy_doc["text_chars"] = int(legacy_doc.get("text_chars") or sum(len(c) for c in legacy_doc.get("chunks", []) if isinstance(c, str)))
+            legacy_doc["uploaded_at"] = legacy_doc.get("uploaded_at") or ""
+            docs.append(legacy_doc)
+            existing_ids.add(legacy_id)
+            changed = True
+
+    for doc in docs:
+        if not isinstance(doc, dict):
+            continue
+        before=(doc.get("filename"),doc.get("course"),doc.get("uploaded_at"),doc.get("chunks"),doc.get("text_chars"))
+        doc["filename"] = doc.get("filename") or "Uploaded Document"
+        doc["course"] = (doc.get("course") or "").strip()
+        doc["uploaded_at"] = doc.get("uploaded_at") or ""
+        doc["chunks"] = doc.get("chunks") or []
+        doc["text_chars"] = int(doc.get("text_chars") or sum(len(c) for c in doc.get("chunks", []) if isinstance(c, str)))
+        after=(doc.get("filename"),doc.get("course"),doc.get("uploaded_at"),doc.get("chunks"),doc.get("text_chars"))
+        if before != after:
+            changed=True
+    if changed:
+        save_pp_json(PAST_PAPER_LIB_PATH, docs)
+    return docs
+
+def save_pp_documents(docs):
+    save_pp_json(PAST_PAPER_LIB_PATH, docs)
+
 def pp_doc_by_id(doc_id):
-    lib = load_pp_json(PAST_PAPER_LIB_PATH)
-    for doc in lib:
-        if doc.get("id") == doc_id:
-            return doc
-    return None
+    return next((doc for doc in load_pp_documents() if doc.get("id") == doc_id), None)
 
 # --- Student Metadata Endpoint ---
 @app.post("/api/student/pastpaper/meta")
@@ -2772,46 +2829,6 @@ async def student_pp_solve(
 
 # --- Teacher Past Paper Management Endpoints ---
 
-    if not check_teacher(passcode):
-        return JSONResponse({"error": "Unauthorized passcode."}, status_code=401)
-
-    try:
-        content = await file.read()
-        filename = file.filename or "exam_doc.pdf"
-
-        PAST_PAPER_FILES_DIR.mkdir(parents=True, exist_ok=True)
-        doc_id = f"ppdoc_{uuid.uuid4().hex[:8]}"
-        file_path = PAST_PAPER_FILES_DIR / f"{doc_id}_{filename}"
-
-        with open(file_path, "wb") as f_out:
-            f_out.write(content)
-
-        # Safely extract text if your extractor exists; otherwise fallback gracefully
-        extracted_text = ""
-        try:
-            if "extract_text_from_upload" in globals():
-                extracted_text = extract_text_from_upload(content, filename)
-            else:
-                extracted_text = content.decode("utf-8", errors="ignore")
-        except Exception:
-            extracted_text = ""
-
-        doc_entry = {
-            "id": doc_id,
-            "filename": filename,
-            "file_path": str(file_path),
-            "text_chars": len(extracted_text),
-            "text": extracted_text[:25000]
-        }
-
-        docs = load_pp_docs()
-        docs.append(doc_entry)
-        save_pp_docs(docs)
-
-        return {"ok": True, "doc": doc_entry}
-    except Exception as e:
-        return JSONResponse({"error": f"Server failed to save document: {str(e)}"}, status_code=500)
-        
 @app.post("/api/teacher/pastpaper/config")
 def teacher_pp_config(body: TeacherAuth):
     if not check_teacher(body.passcode):
@@ -2824,7 +2841,11 @@ def teacher_pp_config(body: TeacherAuth):
                 courses.add(c.strip())
 
     sols = load_pp_json(PAST_PAPER_SOLUTIONS_PATH)
-    pp_lib = load_pp_json(PAST_PAPER_LIB_PATH)
+    pp_lib = load_pp_documents()
+    for d in pp_lib:
+        c = (d.get("course") or "").strip()
+        if c and c.lower() != "unassigned":
+            courses.add(c)
     
     # --- Group solutions hierarchically: Course -> Exam -> Questions ---
     library_tree = {}
@@ -2850,7 +2871,16 @@ def teacher_pp_config(body: TeacherAuth):
     return {
         "courses": sorted(list(courses)),
         "syllabi": load_pp_json(PAST_PAPER_CONFIG_PATH),
-        "pp_library": [{"id": d["id"], "filename": d["filename"]} for d in pp_lib],
+        "pp_library": [
+            {
+                "id": d.get("id", ""),
+                "filename": d.get("filename", "Uploaded Document"),
+                "course": d.get("course", ""),
+                "uploaded_at": d.get("uploaded_at", ""),
+                "text_chars": d.get("text_chars", 0),
+            }
+            for d in pp_lib if d.get("id")
+        ],
         "solutions_tree": library_tree,  # Grouped hierarchy
         "solutions": [{"key": k, **v} for k, v in sols.items()] # Backward compatibility
     }
@@ -2864,28 +2894,32 @@ async def teacher_pp_upload_doc(
     if not check_passcode(passcode):
         return JSONResponse({"error": "Unauthorized passcode."}, status_code=401)
 
+    selected_course = (course or "").strip()
+    filename = (file.filename or "Uploaded Document").strip()
+    if not selected_course:
+        return JSONResponse({"error": "Please select a course for this document."}, status_code=400)
+
     try:
         content = await file.read()
-        extracted_text = extract_text_from_upload(content, file.filename or "doc.pdf")
-        
-        doc_id = str(uuid.uuid4())[:8]
-        chunks = chunk_text(extracted_text)
-        
+        extracted_text = extract_text_from_upload(content, filename).strip()
+        if not extracted_text:
+            return JSONResponse({"error": "No readable text could be extracted from this document."}, status_code=422)
+
+        doc_id = f"ppdoc_{uuid.uuid4().hex[:10]}"
         doc_data = {
             "id": doc_id,
-            "filename": file.filename or "Uploaded Document",
-            "course": course.strip(),
-            "uploaded_at": str(datetime.date.today()),
-            "chunks": chunks
+            "filename": filename,
+            "course": selected_course,
+            "uploaded_at": date.today().isoformat(),
+            "chunks": chunk_note_text(extracted_text),
+            "text_chars": len(extracted_text),
         }
-        
-        docs = load_pp_json(PAST_PAPER_DOCS_PATH)
-        if not isinstance(docs, list):
-            docs = []
+        docs = load_pp_documents()
         docs.append(doc_data)
-        save_pp_json(PAST_PAPER_DOCS_PATH, docs)
-        
-        return {"ok": True, "doc": {"id": doc_id, "filename": file.filename, "course": course.strip()}}
+        save_pp_documents(docs)
+        return {"ok": True, "doc": {"id": doc_id, "filename": filename, "course": selected_course, "uploaded_at": doc_data["uploaded_at"], "text_chars": doc_data["text_chars"]}}
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
     except Exception as e:
         return JSONResponse({"error": f"Failed to upload doc: {str(e)}"}, status_code=500)
 
@@ -2894,50 +2928,58 @@ async def teacher_pp_upload_doc(
 async def teacher_pp_get_docs(passcode: str = "", course: str = ""):
     if not check_passcode(passcode):
         return JSONResponse({"error": "Unauthorized"}, status_code=401)
-    
-    docs = load_pp_json(PAST_PAPER_DOCS_PATH)
-    if not isinstance(docs, list):
-        docs = []
-
-    # Format list with id, filename, course
+    requested_course = (course or "").strip().lower()
     result = []
-    for d in docs:
-        doc_course = d.get("course", "")
-        # Filter if a specific course query param is requested
-        if course and doc_course and doc_course.lower() != course.lower():
+    for d in load_pp_documents():
+        doc_course = (d.get("course") or "").strip()
+        if requested_course and doc_course and doc_course.lower() != requested_course:
             continue
-        result.append({
-            "id": d.get("id"),
-            "filename": d.get("filename"),
-            "course": doc_course
-        })
-        
+        result.append({"id": d.get("id"), "filename": d.get("filename"), "course": doc_course, "uploaded_at": d.get("uploaded_at", ""), "text_chars": d.get("text_chars", 0)})
+    result.sort(key=lambda d: ((d.get("course") or "").lower(), (d.get("filename") or "").lower()))
     return {"docs": result}
 
+
 @app.post("/api/teacher/pastpaper/docs/update-course")
-async def update_doc_course(
-    passcode: str = Form(...),
-    doc_id: str = Form(...),
-    course: str = Form(...)
-):
+async def update_doc_course(passcode: str = Form(...), doc_id: str = Form(...), course: str = Form(...)):
     if not check_passcode(passcode):
         return JSONResponse({"error": "Unauthorized passcode."}, status_code=401)
-
-    docs = load_pp_json(PAST_PAPER_DOCS_PATH)
-    if not isinstance(docs, list):
-        docs = []
-
-    updated = False
+    docs = load_pp_documents()
+    new_course = (course or "").strip()
+    updated_doc = None
     for d in docs:
         if d.get("id") == doc_id:
-            d["course"] = course.strip()
-            updated = True
+            d["course"] = new_course
+            updated_doc = d
             break
+    if updated_doc is None:
+        return JSONResponse({"error": "Document not found."}, status_code=404)
+    save_pp_documents(docs)
+    return {"ok": True, "doc": {"id": updated_doc.get("id"), "filename": updated_doc.get("filename"), "course": updated_doc.get("course", "")}}
 
-    if updated:
-        save_pp_json(PAST_PAPER_DOCS_PATH, docs)
-        return {"ok": True}
-    return JSONResponse({"error": "Document not found."}, status_code=404)
+
+@app.post("/api/teacher/pastpaper/delete_doc")
+def teacher_pp_delete_doc(body: dict):
+    if not check_passcode(body.get("passcode", "")):
+        return JSONResponse({"error": "Unauthorized passcode."}, status_code=401)
+    doc_id = str(body.get("doc_id") or "").strip()
+    if not doc_id:
+        return JSONResponse({"error": "Missing document id."}, status_code=400)
+    docs = load_pp_documents()
+    remaining = [d for d in docs if d.get("id") != doc_id]
+    if len(remaining) == len(docs):
+        return JSONResponse({"error": "Document not found."}, status_code=404)
+    save_pp_documents(remaining)
+    sols = load_pp_json(PAST_PAPER_SOLUTIONS_PATH)
+    changed=False
+    for item in sols.values():
+        if item.get("answered_doc_id") == doc_id:
+            item["answered_doc_id"] = ""
+            item["answered_doc_name"] = ""
+            changed=True
+    if changed:
+        save_pp_json(PAST_PAPER_SOLUTIONS_PATH, sols)
+    return {"ok": True}
+
 
 @app.post("/api/teacher/pastpaper/config/save")
 def teacher_pp_save_syllabus(body: dict):

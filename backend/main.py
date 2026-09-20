@@ -3228,6 +3228,66 @@ def teacher_pp_delete_solution(body: dict):
     sols.pop(body.get("key", ""), None)
     save_pp_json(PAST_PAPER_SOLUTIONS_PATH, sols)
     return {"ok": True}
+
+
+@app.post("/api/teacher/pastpaper/solutions/delete-exam")
+def teacher_pp_delete_exam(body: dict):
+    """Delete every curated question belonging to one complete exam pack.
+
+    The uploaded model-answer/reference documents are intentionally left intact;
+    this action removes only the question records from past_paper_solutions.json.
+    """
+    if not check_teacher(body.get("passcode", "")):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+
+    course = str(body.get("course") or "").strip()
+    year = str(body.get("year") or "").strip()
+    series = str(body.get("series") or "").strip()
+    paper = str(body.get("paper") or "").strip()
+
+    if not course or not year or not series or not paper:
+        return JSONResponse(
+            {"error": "Course, year, series, and paper are required."},
+            status_code=400,
+        )
+
+    target = (
+        course.casefold(),
+        year.casefold(),
+        series.casefold(),
+        paper.casefold(),
+    )
+
+    sols = load_pp_json(PAST_PAPER_SOLUTIONS_PATH)
+    if not isinstance(sols, dict):
+        sols = {}
+
+    removed_keys = []
+    remaining = {}
+    for key, item in sols.items():
+        item_target = (
+            str(item.get("course") or "").strip().casefold(),
+            str(item.get("year") or "").strip().casefold(),
+            str(item.get("series") or "").strip().casefold(),
+            str(item.get("paper") or "").strip().casefold(),
+        )
+        if item_target == target:
+            removed_keys.append(key)
+        else:
+            remaining[key] = item
+
+    if not removed_keys:
+        return JSONResponse({"error": "No questions found for that exam."}, status_code=404)
+
+    save_pp_json(PAST_PAPER_SOLUTIONS_PATH, remaining)
+    return {
+        "ok": True,
+        "deleted": len(removed_keys),
+        "course": course,
+        "year": year,
+        "series": series,
+        "paper": paper,
+    }
 class SavePPSolutionBody(BaseModel):
     passcode: str
     course: str

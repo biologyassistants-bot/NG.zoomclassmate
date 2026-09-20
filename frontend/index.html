@@ -385,7 +385,7 @@
 
         <details style="background: var(--panel2); padding: 10px 14px; border-radius: 8px; border: 1px solid var(--line);">
           <summary style="font-weight: 700; font-size: 13px; cursor: pointer; color: var(--text);">📂 Manage Existing Uploaded Documents (<span id="docCountBadge">0</span>)</summary>
-          <div id="existingDocsContainer" style="margin-top: 10px; display: flex; flex-direction: column; gap: 8px; max-height: 320px; overflow-y: auto; padding-right: 4px;">
+          <div id="existingDocsContainer" style="margin-top: 10px; display: flex; flex-direction: column; gap: 8px;">
             <p class="meta" style="margin: 0;">Loading documents…</p>
           </div>
         </details>
@@ -427,7 +427,7 @@
 
         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 14px;">
           <label class="fld"><span>Video Walkthrough URL (Optional)</span><input id="bulkVideoUrl" type="url" placeholder="https://youtube.com/..." style="width: 100%; padding: 8px; border-radius: 8px; border: 1.5px solid var(--line);" /></label>
-          <label class="fld"><span id="bulkDocLabel">Link Model Answer Doc (Optional)</span><div style="display:flex;flex-direction:column;gap:6px;"><input id="bulkDocSearch" type="search" placeholder="🔎 Search uploaded documents…" autocomplete="off" style="width:100%;padding:7px 9px;border-radius:8px;border:1.5px solid var(--line);box-sizing:border-box;" /><select id="bulkDocSelect" style="width: 100%; padding: 8px; border-radius: 8px; border: 1.5px solid var(--line);"></select></div></label>
+          <label class="fld"><span>Link Model Answer Doc (Optional)</span><select id="bulkDocSelect" style="width: 100%; padding: 8px; border-radius: 8px; border: 1.5px solid var(--line);"></select></label>
         </div>
 
         <button id="processBulkBtn" class="primary" style="width: 100%; padding: 12px; font-weight: 800; font-size: 14px;">🚀 Upload &amp; Auto-Extract Exam Questions</button>
@@ -582,26 +582,32 @@
 
   <!-- Modal 3: SRS Flashcards Modal -->
   <div id="flashcardModal" class="modal hidden">
-    <div class="modal-card" style="max-width: 550px;">
+    <div class="modal-card" style="max-width: 600px;">
       <div class="modal-head">
         <h2 id="fcHeader">🃏 Flashcard Review</h2>
-        <button id="closeFcModal" class="close">✕</button>
+        <button id="closeFcModal" class="close" type="button">✕</button>
       </div>
-      <div class="modal-body" style="text-align: center; padding: 20px 10px;">
-        <div id="fcCard" style="min-height: 180px; background: var(--panel2); border: 2px solid var(--line); border-radius: 14px; padding: 24px; display: flex; flex-direction: column; justify-content: center; align-items: center; cursor: pointer; transition: transform 0.2s;">
-          <div id="fcFrontText" style="font-size: 17px; font-weight: 700; color: var(--text);"></div>
+      <div class="modal-body" style="text-align: center; padding: 20px 16px;">
+        <div id="fcCard" style="min-height: 210px; background: var(--panel2); border: 2px solid var(--line); border-radius: 14px; padding: 28px; display: flex; flex-direction: column; justify-content: center; align-items: center; cursor: pointer; transition: transform 0.2s;">
+          <div id="fcFrontText" style="font-size: 17px; font-weight: 700; color: var(--text); width: 100%;"></div>
           <div id="fcBackText" class="hidden" style="font-size: 16px; color: var(--brand-d); margin-top: 16px; border-top: 1px dashed var(--line); padding-top: 16px; width: 100%;"></div>
         </div>
-        <p class="meta" style="margin-top: 10px; font-size: 12px;">Click card to reveal answer</p>
-        
-        <div id="fcRatingBtns" class="hidden" style="display: flex; gap: 10px; justify-content: center; margin-top: 18px;">
-          <button id="fcHardBtn" class="ghost" style="border-color: #f03e3e; color: #f03e3e;">🔴 Hard (1 day)</button>
-          <button id="fcGoodBtn" class="ghost" style="border-color: #f59f00; color: #f59f00;">🟡 Good (3 days)</button>
-          <button id="fcEasyBtn" class="ghost" style="border-color: #37b24d; color: #37b24d;">🟢 Easy (7 days)</button>
+        <p class="meta" style="margin: 10px 0 14px; font-size: 12px;">Click the card to reveal the answer</p>
+
+        <div id="fcRatingBtns" class="hidden" style="display: flex; gap: 10px; justify-content: center; margin: 14px 0; flex-wrap: wrap;">
+          <button id="fcHardBtn" type="button" class="ghost" style="border-color: #f03e3e; color: #f03e3e;">🔴 Hard</button>
+          <button id="fcGoodBtn" type="button" class="ghost" style="border-color: #f59f00; color: #f59f00;">🟡 Good</button>
+          <button id="fcEasyBtn" type="button" class="ghost" style="border-color: #37b24d; color: #37b24d;">🟢 Easy</button>
+        </div>
+
+        <div style="display:flex; justify-content:center; gap:8px; margin-top:10px;">
+          <button id="fcPrevBtn" type="button" class="ghost-sm">← Previous</button>
+          <button id="fcNextBtn" type="button" class="ghost-sm">Next →</button>
         </div>
       </div>
-      <div class="modal-foot" style="text-align: center; color: var(--meta); font-size: 13px;">
-        <span id="fcProgress">Card 1 of 5</span>
+      <div class="modal-foot" style="display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap;">
+        <span id="fcProgress" class="meta">Card 0 of 0</span>
+        <button id="genFreshCardsBtn" type="button" class="primary" style="padding:8px 14px; font-size:12.5px;">✨ Generate New Flashcards</button>
       </div>
     </div>
   </div>
@@ -687,6 +693,6 @@
   }, 2500);
 })();
 </script>
-<script src="./app.js?v=289" onerror="(function(){var e=document.getElementById('toastMsg');var t=document.getElementById('toast');if(e&&t){e.textContent='Application script failed to load. Please deploy app.js beside index.html.';t.classList.remove('hidden');}})();"></script>
+<script src="./app.js?v=283" onerror="(function(){var e=document.getElementById('toastMsg');var t=document.getElementById('toast');if(e&&t){e.textContent='Application script failed to load. Please deploy app.js beside index.html.';t.classList.remove('hidden');}})();"></script>
 </body>
 </html>

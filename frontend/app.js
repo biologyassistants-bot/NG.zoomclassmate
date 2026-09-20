@@ -1457,8 +1457,9 @@ if(el("edGenPw")) {
   });
 }
 
-if(el("edSave")) {
-  el("edSave").addEventListener("click", async () => {
+const studentEditSaveBtn = el("edSave") || el("saveStudentEd");
+if(studentEditSaveBtn) {
+  studentEditSaveBtn.addEventListener("click", async () => {
     if (!editingStudent) return;
     const payload = {
       passcode: state.passcode,
@@ -1469,7 +1470,7 @@ if(el("edSave")) {
     };
     const np = el("edPassword") ? el("edPassword").value.trim() : "";
     if (np) payload.new_password = np;
-    el("edSave").disabled = true;
+    studentEditSaveBtn.disabled = true;
     try {
       const res = await fetch(`${API}/api/teacher/students/update`, {
         method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload)

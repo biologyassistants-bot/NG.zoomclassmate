@@ -1075,8 +1075,8 @@ if (generatePlanBtn) {
         })
       });
 
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Failed to generate plan");
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `Failed to generate plan (HTTP ${res.status})`);
 
       data.plan.forEach(day => {
         day.tasks.forEach(task => task.completed = false);

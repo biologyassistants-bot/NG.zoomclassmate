@@ -749,15 +749,21 @@ if(el("submitQuiz")) {
 // ================= SPACED REPETITION (SRS) FLASHCARDS =================
 let currentDeckCards = [];
 let currentCardIndex = 0;
+let flashcardIsFlipped = false;
 
 const flashcardBtn = el("flashcardBtn");
 const flashcardModal = el("flashcardModal");
-const closeFlashcards = el("closeFlashcards") || el("closeFcModal");
-const flashcardBody = el("flashcardBody") || el("fcCard");
-const prevCardBtn = el("prevCardBtn");
-const nextCardBtn = el("nextCardBtn");
-const cardCountIndicator = el("cardCountIndicator") || el("fcProgress");
-const srsRatingControls = el("srsRatingControls") || el("fcRatingBtns");
+const closeFcModal = el("closeFcModal");
+const fcCard = el("fcCard");
+const fcFrontText = el("fcFrontText");
+const fcBackText = el("fcBackText");
+const fcRatingBtns = el("fcRatingBtns");
+const fcProgress = el("fcProgress");
+const fcHardBtn = el("fcHardBtn");
+const fcGoodBtn = el("fcGoodBtn");
+const fcEasyBtn = el("fcEasyBtn");
+const fcPrevBtn = el("fcPrevBtn");
+const fcNextBtn = el("fcNextBtn");
 const genFreshCardsBtn = el("genFreshCardsBtn");
 const srsStatusText = el("srsStatusText");
 
@@ -770,11 +776,85 @@ function getRecordingCards(recId) {
   return state.flashcardDeck.filter(c => c.recording_id === recId);
 }
 
+function setFlashcardLoading(message) {
+  if (fcFrontText) {
+    fcFrontText.classList.remove("hidden");
+    fcFrontText.innerHTML = escapeHtml(message);
+  }
+  if (fcBackText) {
+    fcBackText.textContent = "";
+    fcBackText.classList.add("hidden");
+  }
+  if (fcRatingBtns) fcRatingBtns.classList.add("hidden");
+}
+
+function renderCurrentCard() {
+  if (!fcCard || !fcFrontText || !fcBackText) return;
+
+  if (!currentDeckCards.length) {
+    fcFrontText.textContent = 'No flashcards yet. Click “Generate New Flashcards” below.';
+    fcBackText.classList.add("hidden");
+    if (fcRatingBtns) fcRatingBtns.classList.add("hidden");
+    if (fcProgress) fcProgress.textContent = "0 cards";
+    if (fcPrevBtn) fcPrevBtn.disabled = true;
+    if (fcNextBtn) fcNextBtn.disabled = true;
+    return;
+  }
+
+  if (currentCardIndex >= currentDeckCards.length) currentCardIndex = 0;
+  if (currentCardIndex < 0) currentCardIndex = currentDeckCards.length - 1;
+
+  const card = currentDeckCards[currentCardIndex];
+  flashcardIsFlipped = false;
+
+  fcCard.style.background = 'var(--panel2)';
+  fcCard.style.borderColor = 'var(--line)';
+  fcFrontText.textContent = card.front || "(No question text)";
+  fcFrontText.classList.remove("hidden");
+  fcBackText.textContent = card.back || "(No answer text)";
+  fcBackText.classList.add("hidden");
+  if (fcRatingBtns) fcRatingBtns.classList.add("hidden");
+  if (fcProgress) fcProgress.textContent = `Card ${currentCardIndex + 1} of ${currentDeckCards.length}`;
+  if (fcPrevBtn) fcPrevBtn.disabled = currentDeckCards.length <= 1;
+  if (fcNextBtn) fcNextBtn.disabled = currentDeckCards.length <= 1;
+}
+
+function flipFlashcard() {
+  if (!currentDeckCards.length) return;
+  flashcardIsFlipped = !flashcardIsFlipped;
+  if (flashcardIsFlipped) {
+    fcCard.style.background = 'rgba(11,191,191,0.08)';
+    fcCard.style.borderColor = 'var(--brand)';
+    fcFrontText.classList.add("hidden");
+    fcBackText.classList.remove("hidden");
+    if (fcRatingBtns) fcRatingBtns.classList.remove("hidden");
+  } else {
+    fcCard.style.background = 'var(--panel2)';
+    fcCard.style.borderColor = 'var(--line)';
+    fcFrontText.classList.remove("hidden");
+    fcBackText.classList.add("hidden");
+    if (fcRatingBtns) fcRatingBtns.classList.add("hidden");
+  }
+}
+
+if (fcCard) fcCard.addEventListener("click", flipFlashcard);
+if (fcPrevBtn) fcPrevBtn.addEventListener("click", (e) => {
+  e.stopPropagation();
+  if (!currentDeckCards.length) return;
+  currentCardIndex = (currentCardIndex - 1 + currentDeckCards.length) % currentDeckCards.length;
+  renderCurrentCard();
+});
+if (fcNextBtn) fcNextBtn.addEventListener("click", (e) => {
+  e.stopPropagation();
+  if (!currentDeckCards.length) return;
+  currentCardIndex = (currentCardIndex + 1) % currentDeckCards.length;
+  renderCurrentCard();
+});
+
 if (flashcardBtn) {
   flashcardBtn.addEventListener("click", async () => {
-    if (!state.current) return;
+    if (!state.current || !flashcardModal) return;
     flashcardModal.classList.remove("hidden");
-    
     const existing = getRecordingCards(state.current.id);
     if (existing.length === 0) {
       await generateNewFlashcards();
@@ -788,28 +868,35 @@ if (flashcardBtn) {
 }
 
 if (genFreshCardsBtn) {
-  genFreshCardsBtn.addEventListener("click", () => generateNewFlashcards());
+  genFreshCardsBtn.addEventListener("click", async (e) => {
+    e.stopPropagation();
+    await generateNewFlashcards();
+  });
 }
 
 async function generateNewFlashcards() {
   if (!state.current) return;
-  flashcardBody.innerHTML = '<div class="typing">Crafting fresh flashcards from class <span class="dot">●</span><span class="dot">●</span><span class="dot">●</span></div>';
-  if (srsRatingControls) srsRatingControls.classList.add("hidden");
-  
-  const existingFronts = getRecordingCards(state.current.id).map(c => c.front);
+  setFlashcardLoading("✨ Generating fresh flashcards for this class…");
+  if (genFreshCardsBtn) {
+    genFreshCardsBtn.disabled = true;
+    genFreshCardsBtn.textContent = "Generating…";
+  }
+
+  const existingFronts = getRecordingCards(state.current.id).map(c => c.front).filter(Boolean);
 
   try {
     const res = await fetch(`${API}/api/flashcards`, {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ 
-        recording_id: state.current.id, 
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        recording_id: state.current.id,
         existing_fronts: existingFronts,
-        token: state.token 
+        token: state.token
       })
     });
-    const data = await res.json();
-    if (data.error || !data.flashcards || data.flashcards.length === 0) {
-      flashcardBody.innerHTML = '<p>Could not generate new cards for this class.</p>';
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.error || !Array.isArray(data.flashcards) || data.flashcards.length === 0) {
+      setFlashcardLoading(data.error || "Could not generate new flashcards for this class.");
       return;
     }
 
@@ -817,12 +904,17 @@ async function generateNewFlashcards() {
     const newCards = data.flashcards.map(fc => ({
       id: "fc_" + Math.random().toString(36).substring(2, 9),
       recording_id: state.current.id,
-      front: fc.front,
-      back: fc.back,
+      front: String(fc.front || "").trim(),
+      back: String(fc.back || "").trim(),
       interval: 1,
       reps: 0,
       dueDate: now
-    }));
+    })).filter(c => c.front && c.back);
+
+    if (!newCards.length) {
+      setFlashcardLoading("The AI returned no usable flashcards. Please try again.");
+      return;
+    }
 
     state.flashcardDeck.push(...newCards);
     await saveServerProfile();
@@ -832,7 +924,12 @@ async function generateNewFlashcards() {
     updateSrsHeader();
     renderCurrentCard();
   } catch (e) {
-    flashcardBody.innerHTML = '<p>Network error generating flashcards.</p>';
+    setFlashcardLoading("Network error generating flashcards. Please try again.");
+  } finally {
+    if (genFreshCardsBtn) {
+      genFreshCardsBtn.disabled = false;
+      genFreshCardsBtn.textContent = "✨ Generate New Flashcards";
+    }
   }
 }
 
@@ -843,47 +940,11 @@ function updateSrsHeader() {
   srsStatusText.textContent = `🎯 Due for Review: ${due} / ${total} cards`;
 }
 
-if (closeFlashcards) closeFlashcards.addEventListener("click", () => flashcardModal.classList.add("hidden"));
-
-function renderCurrentCard() {
-  if (!currentDeckCards.length) {
-    flashcardBody.innerHTML = '<p class="meta">No flashcards in deck. Click "Generate New Cards" above!</p>';
-    if (srsRatingControls) srsRatingControls.classList.add("hidden");
-    return;
-  }
-  
-  const card = currentDeckCards[currentCardIndex];
-  cardCountIndicator.textContent = `${currentCardIndex + 1} / ${currentDeckCards.length}`;
-  if (srsRatingControls) srsRatingControls.classList.add("hidden");
-
-  let isFlipped = false;
-  flashcardBody.innerHTML = `
-    <div id="activeFlashcard" style="width: 100%; height: 200px; background: var(--panel2); border: 2px solid var(--line); border-radius: 16px; display: flex; align-items: center; justify-content: center; padding: 20px; cursor: pointer; text-align: center; box-shadow: var(--shadow-sm); transition: 0.2s;">
-      <div style="font-size: 16px; font-weight: 700; color: var(--text);" id="cardTextContent">
-        💡 <strong>Front (Question):</strong><br><br>${escapeHtml(card.front)}
-        <div class="meta" style="font-size: 11px; margin-top: 10px; font-weight: 600;">(Click card to reveal answer & Spaced Repetition ratings)</div>
-      </div>
-    </div>
-  `;
-  
-  const cardElem = el("activeFlashcard");
-  const textElem = el("cardTextContent");
-  
-  cardElem.addEventListener("click", () => {
-    isFlipped = !isFlipped;
-    if (isFlipped) {
-      cardElem.style.background = 'rgba(11,191,191,0.08)';
-      cardElem.style.borderColor = 'var(--brand)';
-      textElem.innerHTML = `✅ <strong>Back (Answer):</strong><br><br>${escapeHtml(card.back)}`;
-      if (srsRatingControls) srsRatingControls.classList.remove("hidden");
-    } else {
-      cardElem.style.background = 'var(--panel2)';
-      cardElem.style.borderColor = 'var(--line)';
-      textElem.innerHTML = `💡 <strong>Front (Question):</strong><br><br>${escapeHtml(card.front)}`;
-      if (srsRatingControls) srsRatingControls.classList.add("hidden");
-    }
-  });
+function closeFlashcardModal() {
+  if (flashcardModal) flashcardModal.classList.add("hidden");
+  flashcardIsFlipped = false;
 }
+if (closeFcModal) closeFcModal.addEventListener("click", (e) => { e.stopPropagation(); closeFlashcardModal(); });
 
 async function rateCard(ratingFactor) {
   if (!currentDeckCards.length) return;
@@ -892,10 +953,7 @@ async function rateCard(ratingFactor) {
   if (!original) return;
 
   const now = new Date();
-  if (ratingFactor === 'again') {
-    original.interval = 1;
-    original.reps = 0;
-  } else if (ratingFactor === 'hard') {
+  if (ratingFactor === 'hard') {
     original.interval = Math.max(1, Math.round((original.interval || 1) * 1.2));
   } else if (ratingFactor === 'good') {
     original.interval = Math.max(2, Math.round((original.interval || 1) * 2.5));
@@ -905,30 +963,37 @@ async function rateCard(ratingFactor) {
     original.reps = (original.reps || 0) + 1;
   }
 
-  const nextReview = new Date(now.getTime() + (original.interval * 24 * 60 * 60 * 1000));
-  original.dueDate = nextReview.toISOString();
-
+  original.dueDate = new Date(now.getTime() + (original.interval * 24 * 60 * 60 * 1000)).toISOString();
   await saveServerProfile();
   updateSrsHeader();
 
-  if (currentCardIndex < currentDeckCards.length - 1) {
-    currentCardIndex++;
-  } else {
-    currentCardIndex = 0;
+  if (currentDeckCards.length > 1) {
+    currentCardIndex = (currentCardIndex + 1) % currentDeckCards.length;
   }
   renderCurrentCard();
 }
 
-if (el("srsAgainBtn")) el("srsAgainBtn").addEventListener("click", () => rateCard('again'));
-if (el("srsHardBtn")) el("srsHardBtn").addEventListener("click", () => rateCard('hard'));
-if (el("srsGoodBtn")) el("srsGoodBtn").addEventListener("click", () => rateCard('good'));
-if (el("srsEasyBtn")) el("srsEasyBtn").addEventListener("click", () => rateCard('easy'));
-if (el("fcHardBtn")) el("fcHardBtn").addEventListener("click", () => rateCard('hard'));
-if (el("fcGoodBtn")) el("fcGoodBtn").addEventListener("click", () => rateCard('good'));
-if (el("fcEasyBtn")) el("fcEasyBtn").addEventListener("click", () => rateCard('easy'));
+if (fcHardBtn) fcHardBtn.addEventListener("click", (e) => { e.stopPropagation(); rateCard('hard'); });
+if (fcGoodBtn) fcGoodBtn.addEventListener("click", (e) => { e.stopPropagation(); rateCard('good'); });
+if (fcEasyBtn) fcEasyBtn.addEventListener("click", (e) => { e.stopPropagation(); rateCard('easy'); });
 
-if (prevCardBtn) prevCardBtn.addEventListener("click", () => { if (currentCardIndex > 0) { currentCardIndex--; renderCurrentCard(); } });
-if (nextCardBtn) nextCardBtn.addEventListener("click", () => { if (currentCardIndex < currentDeckCards.length - 1) { currentCardIndex++; renderCurrentCard(); } });
+// Robust modal close fallbacks for both current and legacy IDs.
+document.addEventListener("click", (e) => {
+  const t = e.target;
+  if (!t) return;
+  if (t.id === "closeFcModal" || t.closest?.("#closeFcModal")) closeFlashcardModal();
+  if (t.id === "closeQuizModal" || t.closest?.("#closeQuizModal")) {
+    const q = el("quizModal");
+    if (q) q.classList.add("hidden");
+  }
+});
+
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape") return;
+  closeFlashcardModal();
+  const q = el("quizModal");
+  if (q) q.classList.add("hidden");
+});
 
 /* =========================================================
    STUDY PLAN FEATURE
@@ -1075,8 +1140,8 @@ if (generatePlanBtn) {
         })
       });
 
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error || `Failed to generate plan (HTTP ${res.status})`);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to generate plan");
 
       data.plan.forEach(day => {
         day.tasks.forEach(task => task.completed = false);
@@ -1460,9 +1525,8 @@ if(el("edGenPw")) {
   });
 }
 
-const studentEditSaveBtn = el("edSave") || el("saveStudentEd");
-if(studentEditSaveBtn) {
-  studentEditSaveBtn.addEventListener("click", async () => {
+if(el("edSave")) {
+  el("edSave").addEventListener("click", async () => {
     if (!editingStudent) return;
     const payload = {
       passcode: state.passcode,
@@ -1473,7 +1537,7 @@ if(studentEditSaveBtn) {
     };
     const np = el("edPassword") ? el("edPassword").value.trim() : "";
     if (np) payload.new_password = np;
-    studentEditSaveBtn.disabled = true;
+    el("edSave").disabled = true;
     try {
       const res = await fetch(`${API}/api/teacher/students/update`, {
         method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload)
@@ -2295,13 +2359,7 @@ function populateStudentCascade(level) {
     const paper = paperSel.value;
     const qs = [...new Set(ppStudentLibrary.filter(x => x.course === course && x.year === year && x.series === series && x.paper === paper).map(x => x.question))];
     qSel.innerHTML = '<option value="">Select Question...</option>';
-    const questionItems = [];
-    qs.forEach(q => {
-      const item = ppStudentLibrary.find(x => x.course === course && x.year === year && x.series === series && x.paper === paper && x.question === q);
-      const typeLabel = item && String(item.question_type || "written").toLowerCase() === "mcq" ? " · MCQ" : "";
-      questionItems.push({ value: q, label: `${q}${typeLabel}` });
-    });
-    questionItems.forEach(item => qSel.appendChild(new Option(item.label, item.value)));
+    qs.forEach(q => qSel.appendChild(new Option(q, q)));
     qSel.disabled = qs.length === 0;
   }
 }
@@ -2355,20 +2413,16 @@ function renderStudentPastPaperSolution(data) {
   resBox.classList.remove("hidden");
   resBox.innerHTML = "";
 
+  // Smoothly scroll the container to the top of the answer
   const pane = el("studentPastPapersPane");
   if (pane) pane.scrollTo({ top: 0, behavior: "smooth" });
-
-  const asset = data.teacher_asset || {};
-  const qType = String(asset.question_type || "written").toLowerCase();
-  const isMcq = qType === "mcq" || qType === "multiple_choice" || qType === "multiple choice";
-  const correctOption = String(asset.correct_option || "").toUpperCase();
-  const options = (asset.options && typeof asset.options === "object") ? asset.options : {};
-
-  // Optional Teacher Resource Card
+  
+  // 1. Optional Teacher Resource Card
   if (data.teacher_asset) {
+    const asset = data.teacher_asset;
     const assetCard = document.createElement("div");
     assetCard.style.cssText = "background: linear-gradient(135deg, rgba(11,191,191,0.08), rgba(12,166,120,0.12)); border: 1.5px solid var(--brand); border-radius: 12px; padding: 14px; margin-bottom: 16px;";
-
+    
     let links = "";
     if (asset.video_url) {
       links += `<a href="${escapeHtml(asset.video_url)}" target="_blank" class="primary" style="display:inline-flex; align-items:center; gap:6px; padding:6px 12px; font-size:12px; text-decoration:none; margin-right:8px; border-radius:8px;">🎥 Watch Video Walkthrough</a>`;
@@ -2376,12 +2430,9 @@ function renderStudentPastPaperSolution(data) {
     if (asset.answered_doc_name) {
       links += `<span class="ghost-sm" style="padding:6px 12px; font-size:12px; border-radius:8px;">📄 Model Answer Doc: <strong>${escapeHtml(asset.answered_doc_name)}</strong></span>`;
     }
-    const typeBadge = isMcq
-      ? '<span style="display:inline-flex; margin-left:8px; background:rgba(63,108,255,0.12); color:#3658c8; border:1px solid rgba(63,108,255,0.25); border-radius:8px; padding:4px 8px; font-size:11px; font-weight:800;">MCQ · A/B/C/D</span>'
-      : '<span style="display:inline-flex; margin-left:8px; background:rgba(11,191,191,0.10); color:var(--brand-d); border:1px solid rgba(11,191,191,0.22); border-radius:8px; padding:4px 8px; font-size:11px; font-weight:800;">WRITTEN RESPONSE</span>';
 
     assetCard.innerHTML = `
-      <div style="font-weight:800; font-size:13.5px; color:var(--brand-d); margin-bottom:8px;">👨‍🏫 Teacher Materials Linked ${typeBadge}</div>
+      <div style="font-weight:800; font-size:13.5px; color:var(--brand-d); margin-bottom:6px;">👨‍🏫 Teacher Materials Linked</div>
       <div>${links || '<span class="meta">Teacher resources indexed for this question.</span>'}</div>
     `;
     resBox.appendChild(assetCard);
@@ -2389,142 +2440,139 @@ function renderStudentPastPaperSolution(data) {
 
   const formatText = (txt) => {
     let clean = escapeHtml(txt || "");
-    clean = clean.replace(/\*\*(.+?)\*\*/g, '<strong style="color: var(--brand-d); background: rgba(11,191,191,0.12); padding: 1px 6px; border-radius: 4px; font-weight: 700;">$1</strong>');
-    clean = clean.replace(/\n/g, '<br>');
-    return clean;
+    return clean.replace(/\*\*(.+?)\*\*/g, '<strong style="color: var(--brand-d); background: rgba(11,191,191,0.12); padding: 1px 6px; border-radius: 4px; font-weight: 700;">$1</strong>');
   };
 
+  // 2. Parse the 4 Sections
   const raw = data.solution_markdown || "";
+  const sec1Match = raw.match(/###\s*1\.[^\n]*\n([\s\S]*?)(?=###\s*2\.|$)/i);
+  const sec2Match = raw.match(/###\s*2\.[^\n]*\n([\s\S]*?)(?=###\s*3\.|$)/i);
+  const sec3Match = raw.match(/###\s*3\.[^\n]*\n([\s\S]*?)(?=###\s*4\.|$)/i);
+  const sec4Match = raw.match(/###\s*4\.[^\n]*\n([\s\S]*?)$/i);
+
+  const sec1Raw = sec1Match ? sec1Match[1].trim() : "";
+  const sec2Raw = sec2Match ? sec2Match[1].trim() : "";
+  const sec3Raw = sec3Match ? sec3Match[1].trim() : "";
+  const sec4Raw = sec4Match ? sec4Match[1].trim() : "";
+
   const wrap = document.createElement("div");
   wrap.style.cssText = "display: flex; flex-direction: column; gap: 16px;";
 
+  // Header Banner
   wrap.innerHTML = `
-    <div style="display: flex; justify-content: space-between; align-items: center; gap: 12px; background: var(--panel); border: 1.5px solid var(--line); border-radius: 12px; padding: 12px 18px; flex-wrap: wrap;">
+    <div style="display: flex; justify-content: space-between; align-items: center; background: var(--panel); border: 1.5px solid var(--line); border-radius: 12px; padding: 12px 18px;">
       <div style="display: flex; align-items: center; gap: 10px;">
         <span class="q-num" style="font-size: 13.5px; font-weight: 800; padding: 4px 12px; border-radius: 20px;">${escapeHtml(data.exam_ref)}</span>
-        <span style="font-size: 13px; font-weight: 700; color: var(--text);">${isMcq ? 'MCQ Solution & Option Analysis' : 'Exam Solution & Examiner Guide'}</span>
+        <span style="font-size: 13px; font-weight: 700; color: var(--text);">Exam Solution &amp; Examiner Guide</span>
       </div>
-      <span class="meta" style="font-weight: 800; color: var(--brand-d); font-size: 12px;">${escapeHtml(data.syllabus || '')}</span>
+      <span class="meta" style="font-weight: 800; color: var(--brand-d); font-size: 12px;">${escapeHtml(data.syllabus)}</span>
     </div>
   `;
 
-  // The extracted answer key is shown independently of the generated prose so the learner can see the authoritative mapped option.
-  if (isMcq) {
-    const mcqCard = document.createElement("div");
-    mcqCard.style.cssText = "background: linear-gradient(180deg, var(--panel), var(--panel2)); border: 2px solid var(--brand); border-radius: 14px; padding: 18px 20px; box-shadow: var(--shadow-sm);";
-    const correctText = (correctOption && options[correctOption]) ? options[correctOption] : (asset.correct_answer_text || "");
-    const officialKey = correctOption ? `Answer: ${correctOption}` : "Official answer key not confidently extracted";
-    mcqCard.innerHTML = `
-      <div style="display:flex; justify-content:space-between; gap:12px; align-items:center; flex-wrap:wrap; margin-bottom:12px; border-bottom:1.5px solid var(--line); padding-bottom:8px;">
-        <div style="display:flex; align-items:center; gap:8px;"><span style="font-size:18px;">✅</span><h4 style="margin:0; font-size:15px; font-weight:800; color:var(--brand-d);">1. Correct Choice</h4></div>
-        <span style="font-size:12px; font-weight:900; background:var(--brand); color:white; padding:5px 10px; border-radius:12px;">${escapeHtml(officialKey)}</span>
+  // CARD 1: Complete Model Answer (A* Student Paper View)
+  if (sec1Raw) {
+    const card1 = document.createElement("div");
+    card1.style.cssText = "background: linear-gradient(180deg, var(--panel), var(--panel2)); border: 2px solid var(--brand); border-radius: 14px; padding: 18px 20px; box-shadow: var(--shadow-sm);";
+
+    const paras = sec1Raw.split(/\n\s*\n/).filter(Boolean);
+    const bodyHtml = paras.map(p => `<p style="font-size: 14px; line-height: 1.7; color: var(--text); margin-bottom: 10px; font-style: normal;">${formatText(p.trim())}</p>`).join("");
+
+    card1.innerHTML = `
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; border-bottom: 1.5px solid var(--line); padding-bottom: 8px;">
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <span style="font-size: 18px;">🏆</span>
+          <h4 style="margin: 0; font-size: 15px; font-weight: 800; color: var(--brand-d);">1. Complete Model Answer (Full Marks)</h4>
+        </div>
+        <span style="font-size: 11px; font-weight: 800; background: var(--brand); color: white; padding: 3px 8px; border-radius: 12px;">A* EXAM SCRIPT</span>
       </div>
-      ${correctText ? `<div style="background:var(--bg); padding:14px 16px; border-radius:10px; border-left:4px solid var(--brand); font-size:14px; line-height:1.65;"><strong>${escapeHtml(correctOption)}.</strong> ${formatText(correctText)}</div>` : `<div class="meta" style="padding:10px 0;">The mark-scheme answer letter could not be mapped with confidence during extraction. The full official mark scheme is shown below for verification.</div>`}
+      <div style="background: var(--bg); padding: 14px 18px; border-radius: 10px; border-left: 4px solid var(--brand);">${bodyHtml}</div>
     `;
-    wrap.appendChild(mcqCard);
+    wrap.appendChild(card1);
   }
 
-  // Parse the generated sections. MCQ prompts use a dedicated option-by-option structure; written questions use the classic four cards.
-  const sec2Pattern = isMcq ? /###\s*2\.[^\n]*\n([\s\S]*?)(?=###\s*3\.|$)/i : /###\s*2\.[^\n]*\n([\s\S]*?)(?=###\s*3\.|$)/i;
-  const sec3Pattern = /###\s*3\.[^\n]*\n([\s\S]*?)(?=###\s*4\.|$)/i;
-  const sec4Pattern = /###\s*4\.[^\n]*\n([\s\S]*?)$/i;
-  const sec1Pattern = /###\s*1\.[^\n]*\n([\s\S]*?)(?=###\s*2\.|$)/i;
+  // CARD 2: Mark Scheme Breakdown & Mandatory Keywords
+  if (sec2Raw) {
+    const card2 = document.createElement("div");
+    card2.style.cssText = "background: var(--panel); border: 1.5px solid var(--line); border-radius: 14px; padding: 18px 20px; box-shadow: var(--shadow-sm);";
 
-  const sec1Raw = (raw.match(sec1Pattern)?.[1] || "").trim();
-  const sec2Raw = (raw.match(sec2Pattern)?.[1] || "").trim();
-  const sec3Raw = (raw.match(sec3Pattern)?.[1] || "").trim();
-  const sec4Raw = (raw.match(sec4Pattern)?.[1] || "").trim();
+    const lines = sec2Raw.split("\n").map(l => l.trim()).filter(Boolean);
+    let rubricHtml = "";
 
-  if (isMcq) {
-    // For MCQs, section 1 is usually redundant with the authoritative answer banner. Still show it when the model included useful clarification.
-    if (sec1Raw && !/^\*?answer\s*:/i.test(sec1Raw)) {
-      const c = document.createElement("div");
-      c.style.cssText = "background:var(--panel); border:1.5px solid var(--line); border-radius:14px; padding:18px 20px;";
-      c.innerHTML = `<h4 style="margin:0 0 10px; font-size:15px; color:var(--brand-d);">Answer Explanation</h4><div style="font-size:13.5px; line-height:1.65;">${formatText(sec1Raw)}</div>`;
-      wrap.appendChild(c);
-    }
-
-    if (sec2Raw) {
-      const card = document.createElement("div");
-      card.style.cssText = "background:var(--panel); border:1.5px solid var(--line); border-radius:14px; padding:18px 20px; box-shadow:var(--shadow-sm);";
-      const lines = sec2Raw.split("\n").map(x => x.trim()).filter(Boolean);
-      let html = `<div style="display:flex; align-items:center; gap:8px; margin-bottom:12px; border-bottom:1.5px solid var(--line); padding-bottom:8px;"><span style="font-size:17px;">🔎</span><h4 style="margin:0; font-size:15px; font-weight:800; color:var(--brand-d);">2. Option-by-Option Analysis</h4></div>`;
-      for (const line0 of lines) {
-        const line = line0.replace(/^[-*]\s*/, "");
-        const m = line.match(/^\s*([ABCD])\s*[:.)-]\s*(.*)$/i);
-        const letter = m ? m[1].toUpperCase() : "";
-        const body = m ? m[2] : line;
-        const correct = letter && correctOption && letter === correctOption;
-        const status = /\b(correct|incorrect)\b/i.test(body) ? (body.match(/\b(correct|incorrect)\b/i)?.[1] || "") : (letter ? (correct ? "Correct" : "Incorrect") : "");
-        const cleanBody = body.replace(/^\s*\b(correct|incorrect)\b\s*[:\-]?\s*/i, "");
-        const badgeColor = status.toLowerCase() === "correct" ? "#2b8a3e" : status.toLowerCase() === "incorrect" ? "#c92a2a" : "var(--brand-d)";
-        if (letter) {
-          html += `<div style="display:flex; gap:12px; align-items:flex-start; padding:11px 0; border-bottom:1px dashed var(--line);"><span style="background:${badgeColor}; color:#fff; font-weight:900; font-size:12px; min-width:30px; height:30px; border-radius:8px; display:flex; align-items:center; justify-content:center;">${letter}</span><div style="flex:1; font-size:13.5px; line-height:1.55;"><div style="margin-bottom:4px;"><strong>${status || (correct ? 'Correct' : 'Incorrect')}</strong></div><div>${formatText(cleanBody)}</div></div></div>`;
-        } else {
-          html += `<div style="font-size:13.5px; line-height:1.55; margin-bottom:8px;">${formatText(line)}</div>`;
-        }
+    lines.forEach(line => {
+      const numMatch = line.match(/^(\d+)\.\s*(.*)/);
+      if (numMatch) {
+        rubricHtml += `
+          <div style="display: flex; gap: 12px; align-items: flex-start; padding: 8px 0; border-bottom: 1px dashed var(--line);">
+            <span style="background: var(--brand-d); color: #fff; font-weight: 800; font-size: 11px; min-width: 24px; height: 24px; border-radius: 50%; display: flex; align-items: center; justify-content: center; margin-top: 1px;">${numMatch[1]}</span>
+            <div style="font-size: 13.5px; line-height: 1.5; color: var(--text); flex: 1;">${formatText(numMatch[2])}</div>
+          </div>
+        `;
+      } else {
+        rubricHtml += `<p style="font-size: 13px; color: var(--muted); margin-bottom: 8px;">${formatText(line)}</p>`;
       }
-      html += `<div class="meta" style="margin-top:10px; font-size:11.5px;">The option analysis is grounded in the extracted question options and official mark-scheme text. Where the mark scheme only supplies the key letter, the detailed distractor reasoning is explanatory rather than quoted from the mark scheme.</div>`;
-      card.innerHTML = html;
-      wrap.appendChild(card);
-    }
+    });
 
-    if (sec3Raw) {
-      const c = document.createElement("div");
-      c.style.cssText = "background:var(--panel); border:1.5px solid var(--line); border-radius:14px; padding:18px 20px;";
-      c.innerHTML = `<div style="display:flex; align-items:center; gap:8px; margin-bottom:12px; border-bottom:1.5px solid var(--line); padding-bottom:8px;"><span style="font-size:17px;">🎯</span><h4 style="margin:0; font-size:15px; font-weight:800; color:var(--brand-d);">3. Mark Scheme Link</h4></div><div style="font-size:13.5px; line-height:1.65;">${formatText(sec3Raw)}</div>`;
-      wrap.appendChild(c);
-    }
-
-    if (sec4Raw) {
-      const c = document.createElement("div");
-      c.style.cssText = "background:rgba(245,159,0,0.05); border:1.5px solid rgba(245,159,0,0.35); border-radius:14px; padding:18px 20px;";
-      c.innerHTML = `<div style="display:flex; align-items:center; gap:8px; margin-bottom:12px; border-bottom:1px solid rgba(245,159,0,0.25); padding-bottom:8px;"><span style="font-size:17px;">💡</span><h4 style="margin:0; font-size:15px; font-weight:800; color:#f59f00;">4. Exam Tip</h4></div><div style="font-size:13px; line-height:1.55;">${formatText(sec4Raw)}</div>`;
-      wrap.appendChild(c);
-    }
-  } else {
-    // Written-response rendering: preserve the existing four-card behaviour.
-    if (sec1Raw) {
-      const card1 = document.createElement("div");
-      card1.style.cssText = "background: linear-gradient(180deg, var(--panel), var(--panel2)); border: 2px solid var(--brand); border-radius: 14px; padding: 18px 20px; box-shadow: var(--shadow-sm);";
-      const paras = sec1Raw.split(/\n\s*\n/).filter(Boolean);
-      const bodyHtml = paras.map(p => `<p style="font-size: 14px; line-height: 1.7; color: var(--text); margin-bottom: 10px;">${formatText(p.trim())}</p>`).join("");
-      card1.innerHTML = `<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; border-bottom:1.5px solid var(--line); padding-bottom:8px;"><div style="display:flex; align-items:center; gap:8px;"><span style="font-size:18px;">🏆</span><h4 style="margin:0; font-size:15px; font-weight:800; color:var(--brand-d);">1. Complete Model Answer (Full Marks)</h4></div><span style="font-size:11px; font-weight:800; background:var(--brand); color:white; padding:3px 8px; border-radius:12px;">A* EXAM SCRIPT</span></div><div style="background:var(--bg); padding:14px 18px; border-radius:10px; border-left:4px solid var(--brand);">${bodyHtml}</div>`;
-      wrap.appendChild(card1);
-    }
-    if (sec2Raw) {
-      const card2 = document.createElement("div");
-      card2.style.cssText = "background:var(--panel); border:1.5px solid var(--line); border-radius:14px; padding:18px 20px; box-shadow:var(--shadow-sm);";
-      const lines = sec2Raw.split("\n").map(l => l.trim()).filter(Boolean);
-      let rubricHtml = "";
-      lines.forEach(line => {
-        const numMatch = line.match(/^(\d+)\.\s*(.*)/);
-        if (numMatch) rubricHtml += `<div style="display:flex; gap:12px; align-items:flex-start; padding:8px 0; border-bottom:1px dashed var(--line);"><span style="background:var(--brand-d); color:#fff; font-weight:800; font-size:11px; min-width:24px; height:24px; border-radius:50%; display:flex; align-items:center; justify-content:center; margin-top:1px;">${numMatch[1]}</span><div style="font-size:13.5px; line-height:1.5; color:var(--text); flex:1;">${formatText(numMatch[2])}</div></div>`;
-        else rubricHtml += `<p style="font-size:13px; color:var(--muted); margin-bottom:8px;">${formatText(line)}</p>`;
-      });
-      card2.innerHTML = `<div style="display:flex; align-items:center; gap:8px; margin-bottom:12px; border-bottom:1.5px solid var(--line); padding-bottom:8px;"><span style="font-size:17px;">🎯</span><h4 style="margin:0; font-size:15px; font-weight:800; color:var(--brand-d);">2. Mark Scheme Breakdown &amp; Mandatory Keywords</h4></div><div>${rubricHtml}</div>`;
-      wrap.appendChild(card2);
-    }
-    if (sec3Raw) {
-      const card3 = document.createElement("div");
-      card3.style.cssText = "background:var(--panel); border:1.5px solid var(--line); border-radius:14px; padding:18px 20px; box-shadow:var(--shadow-sm);";
-      card3.innerHTML = `<div style="display:flex; align-items:center; gap:8px; margin-bottom:12px; border-bottom:1.5px solid var(--line); padding-bottom:8px;"><span style="font-size:17px;">🧬</span><h4 style="margin:0; font-size:15px; font-weight:800; color:var(--text);">3. Conceptual Link &amp; Biological Mechanism</h4></div><div style="font-size:13.5px; line-height:1.65;">${formatText(sec3Raw)}</div>`;
-      wrap.appendChild(card3);
-    }
-    if (sec4Raw) {
-      const card4 = document.createElement("div");
-      card4.style.cssText = "background:rgba(245,159,0,0.05); border:1.5px solid rgba(245,159,0,0.35); border-radius:14px; padding:18px 20px;";
-      const trapsHtml = sec4Raw.split("\n").map(l => l.trim()).filter(Boolean).map(line => `<div style="display:flex; gap:10px; align-items:flex-start; margin-bottom:8px;"><span style="color:#f59f00; font-size:14px; margin-top:2px;">⚠️</span><div style="font-size:13px; line-height:1.5; color:var(--text);">${formatText(line.replace(/^[-*]\s*/, ""))}</div></div>`).join("");
-      card4.innerHTML = `<div style="display:flex; align-items:center; gap:8px; margin-bottom:12px; border-bottom:1px solid rgba(245,159,0,0.25); padding-bottom:8px;"><h4 style="margin:0; font-size:15px; font-weight:800; color:#f59f00;">4. Examiner Traps &amp; Common Mistakes</h4></div><div>${trapsHtml}</div>`;
-      wrap.appendChild(card4);
-    }
+    card2.innerHTML = `
+      <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 12px; border-bottom: 1.5px solid var(--line); padding-bottom: 8px;">
+        <span style="font-size: 17px;">🎯</span>
+        <h4 style="margin: 0; font-size: 15px; font-weight: 800; color: var(--brand-d);">2. Mark Scheme Breakdown &amp; Mandatory Keywords</h4>
+      </div>
+      <div>${rubricHtml}</div>
+    `;
+    wrap.appendChild(card2);
   }
 
-  if (!wrap.children.length || (!sec1Raw && !sec2Raw && !sec3Raw && !sec4Raw && !isMcq)) {
+  // CARD 3: Mechanism & Conceptual Link
+  if (sec3Raw) {
+    const card3 = document.createElement("div");
+    card3.style.cssText = "background: var(--panel); border: 1.5px solid var(--line); border-radius: 14px; padding: 18px 20px; box-shadow: var(--shadow-sm);";
+
+    const paras = sec3Raw.split(/\n\s*\n/).filter(Boolean);
+    const bodyHtml = paras.map(p => `<p style="font-size: 13.5px; line-height: 1.65; color: var(--text); margin-bottom: 10px;">${formatText(p.trim())}</p>`).join("");
+
+    card3.innerHTML = `
+      <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 12px; border-bottom: 1.5px solid var(--line); padding-bottom: 8px;">
+        <span style="font-size: 17px;">🧬</span>
+        <h4 style="margin: 0; font-size: 15px; font-weight: 800; color: var(--text);">3. Conceptual Link &amp; Biological Mechanism</h4>
+      </div>
+      <div>${bodyHtml}</div>
+    `;
+    wrap.appendChild(card3);
+  }
+
+  // CARD 4: Examiner Traps & Common Mistakes
+  if (sec4Raw) {
+    const card4 = document.createElement("div");
+    card4.style.cssText = "background: rgba(245, 159, 0, 0.05); border: 1.5px solid rgba(245, 159, 0, 0.35); border-radius: 14px; padding: 18px 20px;";
+
+    const trapLines = sec4Raw.split("\n").map(l => l.trim()).filter(Boolean);
+    let trapsHtml = "";
+
+    trapLines.forEach(line => {
+      const cleanLine = line.replace(/^[-*]\s*/, "");
+      trapsHtml += `
+        <div style="display: flex; gap: 10px; align-items: flex-start; margin-bottom: 8px;">
+          <span style="color: #f59f00; font-size: 14px; margin-top: 2px;">⚠️</span>
+          <div style="font-size: 13px; line-height: 1.5; color: var(--text);">${formatText(cleanLine)}</div>
+        </div>
+      `;
+    });
+
+    card4.innerHTML = `
+      <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 12px; border-bottom: 1px solid rgba(245, 159, 0, 0.25); padding-bottom: 8px;">
+        <h4 style="margin: 0; font-size: 15px; font-weight: 800; color: #f59f00;">4. Examiner Traps &amp; Common Mistakes</h4>
+      </div>
+      <div>${trapsHtml}</div>
+    `;
+    wrap.appendChild(card4);
+  }
+
+  // Fallback if headings were altered
+  if (!sec1Raw && !sec2Raw && !sec3Raw && !sec4Raw) {
     const fallback = document.createElement("div");
     fallback.className = "q-block";
     fallback.style.padding = "20px";
-    fallback.innerHTML = `<div style="line-height:1.65; font-size:13.5px;">${formatText(raw)}</div>`;
+    fallback.innerHTML = `<div style="line-height: 1.65; font-size: 13.5px;">${formatText(raw).replace(/\n/g, '<br>')}</div>`;
     wrap.appendChild(fallback);
   }
 
@@ -2605,99 +2653,152 @@ if (el("tppCourseSelect")) {
 }
 
 // ==========================================
-// FIX: PAST PAPER HUB COURSES & DOCUMENT LIBRARY
+// PAST PAPER CURATED QUESTION LIBRARY
 // ==========================================
+
+function parseExamPackId(examKey) {
+  const m = String(examKey || "").match(/^(\d{4})\s+(.+?)\s+Paper\s+(.+)$/i);
+  if (!m) return { year: "", series: "", paper: "" };
+  return { year: m[1], series: m[2].trim(), paper: m[3].trim() };
+}
 
 function renderTeacherOverrides(list) {
   const container = el("tppOverridesList");
   if (!container) return;
   container.innerHTML = "";
 
-  if (!list || !list.length) {
+  if (!Array.isArray(list) || !list.length) {
     container.innerHTML = '<p class="meta">No questions added to the library yet.</p>';
     return;
   }
 
-  // Group by Course -> Exam Pack (Year Series Paper)
   const tree = {};
   list.forEach(item => {
     const course = item.course || "Unassigned Course";
-    const examKey = `${item.year || ''} ${item.series || ''} Paper ${item.paper || ''}`.trim();
-    
+    const examKey = `${item.year || ""} ${item.series || ""} Paper ${item.paper || ""}`.trim();
     if (!tree[course]) tree[course] = {};
     if (!tree[course][examKey]) tree[course][examKey] = [];
     tree[course][examKey].push(item);
   });
 
-  // Render Course Groups
-  Object.keys(tree).sort().forEach(courseName => {
+  const courses = Object.keys(tree).sort((a,b) => a.localeCompare(b));
+  courses.forEach(courseName => {
     const courseCard = document.createElement("div");
-    courseCard.style.cssText = "background: var(--panel); border: 1.5px solid var(--line); border-radius: 12px; margin-bottom: 16px; overflow: hidden; box-shadow: var(--shadow-sm);";
+    courseCard.style.cssText = "background:var(--panel);border:1.5px solid var(--line);border-radius:12px;margin-bottom:16px;overflow:hidden;box-shadow:var(--shadow-sm);";
 
-    let examBlocksHtml = "";
-    const examKeys = Object.keys(tree[courseName]).sort().reverse();
+    const courseHeader = document.createElement("div");
+    courseHeader.style.cssText = "padding:12px 14px;background:var(--panel2);font-weight:800;color:var(--brand-d);";
+    courseHeader.textContent = `📚 ${courseName}`;
+    courseCard.appendChild(courseHeader);
 
-    examKeys.forEach(examKey => {
-      const qItems = tree[courseName][examKey];
-      // Sort questions alphanumerically (Q1(a), Q1(b), Q2...)
-      qItems.sort((a,b) => String(a.question).localeCompare(String(b.question), undefined, {numeric: true}));
+    const examList = tree[courseName];
+    Object.keys(examList).sort((a,b) => b.localeCompare(a, undefined, {numeric:true})).forEach(examKey => {
+      const qItems = examList[examKey].slice().sort((a,b) => String(a.question).localeCompare(String(b.question), undefined, {numeric:true}));
+      const parsed = parseExamPackId(examKey);
+      const examWrap = document.createElement("div");
+      examWrap.style.cssText = "padding:12px 14px;border-top:1px solid var(--line);";
 
-      let qRows = "";
+      const examHeader = document.createElement("div");
+      examHeader.style.cssText = "display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;";
+      const title = document.createElement("div");
+      title.innerHTML = `<strong style="font-size:13px;color:var(--text);">📝 ${escapeHtml(examKey)}</strong><span class="meta" style="margin-left:8px;">${qItems.length} question${qItems.length === 1 ? "" : "s"}</span>`;
+
+      const deleteExamBtn = document.createElement("button");
+      deleteExamBtn.type = "button";
+      deleteExamBtn.className = "ghost-sm danger-btn";
+      deleteExamBtn.textContent = "🗑️ Delete Full Exam";
+      deleteExamBtn.title = "Delete every curated question in this exam pack";
+      deleteExamBtn.addEventListener("click", async () => {
+        const confirmText = `Delete the FULL exam\n\n${courseName} — ${examKey}\n\nThis will permanently remove ${qItems.length} question${qItems.length === 1 ? "" : "s"} from the Past Paper Library.\n\nUploaded answered/reference documents will NOT be deleted.\n\nContinue?`;
+        if (!confirm(confirmText)) return;
+
+        deleteExamBtn.disabled = true;
+        const oldText = deleteExamBtn.textContent;
+        deleteExamBtn.textContent = "Deleting…";
+        try {
+          const res = await fetch(`${API}/api/teacher/pastpaper/solutions/delete-exam`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              passcode: state.passcode,
+              course: courseName,
+              year: parsed.year,
+              series: parsed.series,
+              paper: parsed.paper
+            })
+          });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) {
+            toast(data.error || "Could not delete the exam.", "error");
+            return;
+          }
+          toast(`Deleted ${data.deleted || qItems.length} question${(data.deleted || qItems.length) === 1 ? "" : "s"} from ${examKey} ✓`, "success", 4500);
+          await refreshPastPaperHub();
+        } catch (err) {
+          console.error(err);
+          toast("Network error while deleting the exam.", "error");
+        } finally {
+          deleteExamBtn.disabled = false;
+          deleteExamBtn.textContent = oldText;
+        }
+      });
+
+      examHeader.appendChild(title);
+      examHeader.appendChild(deleteExamBtn);
+      examWrap.appendChild(examHeader);
+
+      const qContainer = document.createElement("div");
+      qContainer.style.cssText = "display:flex;flex-direction:column;gap:6px;margin-top:8px;";
       qItems.forEach(q => {
-        const hasEr = q.examiner_notes && q.examiner_notes.trim().length > 0;
-        qRows += `
-          <div style="display: flex; justify-content: space-between; align-items: center; padding: 8px 12px; background: var(--bg); border-radius: 8px; margin-top: 6px; font-size: 12.5px; border: 1px solid var(--line);">
-            <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
-              <strong style="color: var(--brand-d); font-weight: 800;">Q${escapeHtml(q.question)}</strong>
-              ${hasEr ? '<span style="background: rgba(245,159,0,0.15); color: #d97706; font-size: 10.5px; font-weight: 700; padding: 1px 6px; border-radius: 4px;">📊 Examiner Report</span>' : ''}
-              ${q.video_url ? '<span style="font-size: 11px;">🎥 Video</span>' : ''}
-              ${q.answered_doc_name ? `<span style="font-size: 11px; color: var(--muted);">📄 ${escapeHtml(q.answered_doc_name)}</span>` : ''}
-            </div>
-            <button class="ghost-sm danger-btn" data-key="${escapeHtml(q.key)}" style="padding: 2px 8px; font-size: 11px;">🗑️ Delete</button>
+        const row = document.createElement("div");
+        row.style.cssText = "display:flex;justify-content:space-between;align-items:center;gap:10px;padding:8px 10px;background:var(--bg);border:1px solid var(--line);border-radius:8px;font-size:12px;";
+        const metaBits = [];
+        if (q.examiner_notes && q.examiner_notes.trim()) metaBits.push("📊 Examiner Report");
+        if (q.video_url) metaBits.push("🎥 Video");
+        if (q.answered_doc_name) metaBits.push(`📄 ${q.answered_doc_name}`);
+        row.innerHTML = `
+          <div style="min-width:0;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+            <strong style="color:var(--brand-d);">Q${escapeHtml(q.question)}</strong>
+            ${metaBits.length ? `<span class="meta">${escapeHtml(metaBits.join(" · "))}</span>` : ""}
           </div>
-        `;
-      });
-
-      examBlocksHtml += `
-        <details style="margin-bottom: 10px; background: var(--panel2); border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px;" open>
-          <summary style="font-weight: 800; font-size: 13.5px; cursor: pointer; color: var(--text); display: flex; justify-content: space-between; align-items: center;">
-            <span>📄 Exam Pack: ${escapeHtml(examKey)}</span>
-            <span class="meta" style="font-weight: 700; font-size: 11.5px; background: var(--panel); padding: 2px 8px; border-radius: 12px;">${qItems.length} questions</span>
-          </summary>
-          <div style="margin-top: 8px; display: flex; flex-direction: column; gap: 4px;">
-            ${qRows}
-          </div>
-        </details>
-      `;
-    });
-
-    courseCard.innerHTML = `
-      <div style="background: var(--brand); color: white; padding: 10px 16px; font-weight: 800; font-size: 14px; display: flex; justify-content: space-between; align-items: center;">
-        <span>📚 Course: ${escapeHtml(courseName)}</span>
-        <span style="font-size: 12px; font-weight: 600; opacity: 0.9;">${examKeys.length} Exam Paper(s)</span>
-      </div>
-      <div style="padding: 14px;">
-        ${examBlocksHtml}
-      </div>
-    `;
-
-    // Attach individual delete handlers
-    courseCard.querySelectorAll("button.danger-btn").forEach(btn => {
-      btn.addEventListener("click", async (e) => {
-        e.stopPropagation();
-        const key = btn.dataset.key;
-        if (!confirm("Delete this question from the library?")) return;
-        await fetch(`${API}/api/teacher/pastpaper/solutions/delete`, {
-          method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ passcode: state.passcode, key })
+          <button type="button" class="ghost-sm danger-btn pp-question-delete" style="padding:2px 8px;font-size:10.5px;">🗑️ Delete</button>`;
+        row.querySelector(".pp-question-delete").addEventListener("click", async () => {
+          if (!confirm(`Delete question Q${q.question} from ${examKey}?`)) return;
+          const btn = row.querySelector(".pp-question-delete");
+          btn.disabled = true;
+          try {
+            const res = await fetch(`${API}/api/teacher/pastpaper/solutions/delete`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ passcode: state.passcode, key: q.key })
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) {
+              toast(data.error || "Could not delete the question.", "error");
+              return;
+            }
+            toast(`Q${q.question} deleted ✓`, "success");
+            await refreshPastPaperHub();
+          } catch (err) {
+            toast("Network error while deleting the question.", "error");
+          } finally {
+            btn.disabled = false;
+          }
         });
-        loadTeacherPastPaperHub();
+        qContainer.appendChild(row);
       });
+
+      examWrap.appendChild(qContainer);
+      courseCard.appendChild(examWrap);
     });
 
     container.appendChild(courseCard);
   });
 }
+
+// ==========================================
+// FIX: PAST PAPER HUB COURSES & DOCUMENT LIBRARY
+// ==========================================
 
 async function refreshPastPaperHub() {
   const passcode = (typeof state !== "undefined" && state.passcode)
@@ -2769,9 +2870,9 @@ async function refreshPastPaperHub() {
           })
         ].join("");
         row.innerHTML = `
-          <div style="min-width:0;flex:1;display:flex;flex-direction:column;gap:4px;">
-            <span title="${escapeHtml(doc.filename || "Untitled")}" style="font-size:12.5px;font-weight:800;line-height:1.35;white-space:normal;overflow-wrap:anywhere;word-break:break-word;color:var(--text);">📄 ${escapeHtml(doc.filename || "Untitled")}</span>
-            <span class="meta" style="font-size:10.5px;line-height:1.35;">${doc.uploaded_at ? `Uploaded ${escapeHtml(doc.uploaded_at)} · ` : ""}${Number(doc.text_chars || 0).toLocaleString()} characters indexed</span>
+          <div style="min-width:0;display:flex;flex-direction:column;gap:2px;">
+            <span style="font-size:12.5px;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">📄 ${escapeHtml(doc.filename || "Untitled")}</span>
+            <span class="meta" style="font-size:10.5px;">${doc.uploaded_at ? `Uploaded ${escapeHtml(doc.uploaded_at)} · ` : ""}${Number(doc.text_chars || 0).toLocaleString()} characters indexed</span>
           </div>
           <div style="display:flex;align-items:center;gap:8px;flex-shrink:0;">
             <label style="display:flex;align-items:center;gap:6px;font-size:11px;font-weight:700;">Course
@@ -2819,44 +2920,16 @@ async function refreshPastPaperHub() {
     const eligible = ppDocs.filter(doc => {
       const dc = (doc.course || "").trim().toLowerCase();
       return !course || !dc || dc === course;
-    }).sort((a,b) => {
-      const ad = String(a.uploaded_at || "");
-      const bd = String(b.uploaded_at || "");
-      if (ad !== bd) return bd.localeCompare(ad);
-      return String(a.filename || "").localeCompare(String(b.filename || ""));
     });
-
-    const search = id === "bulkDocSelect" ? (document.getElementById("bulkDocSearch")?.value || "").trim().toLowerCase() : "";
-    const visible = search
-      ? eligible.filter(doc => String(doc.filename || "").toLowerCase().includes(search))
-      : eligible;
-
     select.innerHTML = '<option value="">-- Optional: Link Reference Document --</option>';
-    visible.forEach(doc => {
+    eligible.forEach(doc => {
       select.appendChild(new Option(`${doc.filename || "Untitled"} — ${doc.course || "Shared / Unassigned"}`, doc.id));
     });
-
-    if (id === "bulkDocSelect") {
-      const label = document.getElementById("bulkDocLabel");
-      if (label) label.textContent = `Link Model Answer Doc (Optional) — ${eligible.length} available`;
-      if (visible.length === 0 && search) {
-        select.appendChild(new Option("No documents match the search", ""));
-      }
-    }
-
-    if (current && visible.some(d => d.id === current)) select.value = current;
+    if (current && eligible.some(d => d.id === current)) select.value = current;
   }
 
   populateLinkedDocSelect("bulkDocSelect", document.getElementById("bulkCourseSelect")?.value || "");
   populateLinkedDocSelect("tqAnsweredDocSelect", document.getElementById("tqCourseSelect")?.value || "");
-
-  const bulkDocSearch = document.getElementById("bulkDocSearch");
-  if (bulkDocSearch && bulkDocSearch.dataset.ppSearchBinding !== "1") {
-    bulkDocSearch.dataset.ppSearchBinding = "1";
-    bulkDocSearch.addEventListener("input", () => {
-      populateLinkedDocSelect("bulkDocSelect", document.getElementById("bulkCourseSelect")?.value || "");
-    });
-  }
 
   ["bulkCourseSelect","tqCourseSelect"].forEach(id => {
     const select = document.getElementById(id);
@@ -3136,40 +3209,4 @@ document.addEventListener('submit', (e) => {
 });
 
 bindPastPaperBulkUpload();
-
-/* ======== GLOBAL MODAL CLOSE FALLBACK ======== */
-(function bindGlobalModalCloseHandlers() {
-  function closeById(id) {
-    const node = document.getElementById(id);
-    if (node) node.classList.add('hidden');
-  }
-
-  document.addEventListener('click', function (event) {
-    const target = event.target && event.target.closest
-      ? event.target.closest('#closeFcModal, #closeFlashcards, #closeQuizModal, #closeQuiz')
-      : null;
-    if (!target) return;
-
-    event.preventDefault();
-    event.stopPropagation();
-
-    if (target.id === 'closeFcModal' || target.id === 'closeFlashcards') {
-      closeById('flashcardModal');
-      return;
-    }
-
-    if (target.id === 'closeQuizModal' || target.id === 'closeQuiz') {
-      closeById('quizModal');
-    }
-  }, true);
-
-  document.addEventListener('keydown', function (event) {
-    if (event.key !== 'Escape') return;
-    const flash = document.getElementById('flashcardModal');
-    const quiz = document.getElementById('quizModal');
-    if (flash && !flash.classList.contains('hidden')) flash.classList.add('hidden');
-    if (quiz && !quiz.classList.contains('hidden')) quiz.classList.add('hidden');
-  });
-})();
-
 loadBranding();

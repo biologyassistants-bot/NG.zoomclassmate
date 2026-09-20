@@ -1982,33 +1982,101 @@ async def generate_study_plan(body: StudyPlanBody):
     )
 
     try:
+        # Give the model enough room for multi-day plans, especially when many classes are selected.
         raw = await llm(
             [{"role": "system", "content": system}, {"role": "user", "content": user}],
-            max_tokens=3000,
-            temperature=0.3,
+            max_tokens=5000,
+            temperature=0.2,
         )
     except (LLMConfigError, LLMUpstreamError) as e:
         return JSONResponse({"error": str(e)}, status_code=503)
 
-    data = None
-    txt = (raw or "").strip()
-    if txt.startswith("```"):
-        txt = txt.strip("`")
-        if "\n" in txt:
-            txt = txt.split("\n", 1)[-1]
-            
-    try:
-        start = txt.find("{")
-        end = txt.rfind("}")
-        if start != -1 and end != -1:
-            data = json.loads(txt[start:end+1])
-    except Exception as e:
-        print(f"[Study Plan Error] Could not parse JSON: {e}")
-                
-    if not data or "plan" not in data:
-        return JSONResponse({"error": "Could not generate the plan. Please try again.", "raw": raw[:500]}, status_code=500)
-        
-    return data
+    def parse_plan_json(raw_text: str):
+        txt = (raw_text or "").strip()
+        # Remove common markdown fences without assuming the exact fence language.
+        if txt.startswith("```"):
+            parts = txt.split("\n", 1)
+            txt = parts[1] if len(parts) == 2 else txt.strip("`")
+            if txt.endswith("```"):
+                txt = txt[:-3].rstrip()
+
+        # First try the whole response, then the largest JSON object in it.
+        candidates = [txt]
+        start, end = txt.find("{"), txt.rfind("}")
+        if start >= 0 and end > start:
+            candidates.append(txt[start:end + 1])
+
+        for candidate in candidates:
+            try:
+                parsed = json.loads(candidate)
+                if isinstance(parsed, dict) and isinstance(parsed.get("plan"), list):
+                    return parsed
+            except Exception:
+                pass
+
+        # Repair a common LLM formatting issue: trailing commas before ] or }.
+        repaired = re.sub(r",\s*([}\]])", r"\1", txt)
+        try:
+            parsed = json.loads(repaired)
+            if isinstance(parsed, dict) and isinstance(parsed.get("plan"), list):
+                return parsed
+        except Exception:
+            pass
+        return None
+
+    data = parse_plan_json(raw)
+
+    if not data:
+        # Reliable non-AI fallback: never leave the student without a usable plan
+        # just because the model returned malformed/truncated JSON.
+        fallback = []
+        daily_minutes = max(1, int(total_available_mins / max(1, body.days)))
+        class_minutes = max(20, min(60, int(total_available_mins / max(1, num_classes))))
+        focus_desc = {
+            "First-time learning": "Review the lesson carefully, consolidate notes, and explain the key concepts in your own words.",
+            "Reviewing and memorizing definitions": "Use active recall, definition drills, and flashcards to test the key terminology.",
+            "Past paper and exam practice": "Review the lesson, then practise exam-style questions and check your wording against the mark scheme."
+        }.get(body.focus, "Review the class and actively recall the key learning points.")
+
+        for day_num in range(1, body.days + 1):
+            day_tasks = []
+            for idx, rec in enumerate(selected_recs):
+                # Spread classes across the available days.
+                if (idx % body.days) + 1 != day_num:
+                    continue
+                raw_title = rec.split("] ", 1)[-1].rsplit(" (Target review:", 1)[0]
+                day_tasks.append({
+                    "title": f"Review: {raw_title}",
+                    "description": focus_desc,
+                    "est_minutes": min(class_minutes, daily_minutes)
+                })
+            fallback.append({
+                "day": day_num,
+                "quote": "Small, consistent sessions build strong exam readiness.",
+                "tasks": day_tasks
+            })
+        data = {"plan": fallback}
+
+    # Normalize the model/fallback output so the frontend always receives the expected shape.
+    normalized = []
+    for i, day in enumerate(data.get("plan", []), start=1):
+        tasks = []
+        for task in (day.get("tasks") or []):
+            tasks.append({
+                "title": str(task.get("title") or "Study session"),
+                "description": str(task.get("description") or "Review the selected class and practise active recall."),
+                "est_minutes": max(1, int(task.get("est_minutes") or 1))
+            })
+        normalized.append({
+            "day": int(day.get("day") or i),
+            "quote": str(day.get("quote") or ""),
+            "tasks": tasks
+        })
+
+    if not normalized:
+        return JSONResponse({"error": "Could not generate a study plan. Please select at least one class and try again."}, status_code=500)
+
+    return {"plan": normalized}
 
 
 # ---------- Zoom webhook ----------

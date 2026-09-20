@@ -3335,6 +3335,9 @@ async def teacher_pp_bulk_upload(
     ms_file: UploadFile = File(...),
     er_file: UploadFile = File(None)
 ):
+    """Ingest a whole exam pack. Paper 1/MCQ exams are parsed in small batches
+    because a complete MCQ paper can otherwise exceed the LLM's structured-output
+    budget even when the PDFs themselves extract perfectly."""
     if not check_passcode(passcode):
         return JSONResponse({"error": "Unauthorized passcode."}, status_code=401)
 
@@ -3343,7 +3346,6 @@ async def teacher_pp_bulk_upload(
         ms_bytes = await ms_file.read()
         qp_text = extract_text_from_upload(qp_bytes, qp_file.filename or "qp.pdf")
         ms_text = extract_text_from_upload(ms_bytes, ms_file.filename or "ms.pdf")
-        
         er_text = ""
         if er_file and er_file.filename:
             er_bytes = await er_file.read()
@@ -3361,59 +3363,187 @@ async def teacher_pp_bulk_upload(
     syllabus_name = syllabus_map.get(course, "") if isinstance(syllabus_map, dict) else ""
     paper_is_mcq = infer_pastpaper_is_mcq(course, paper, syllabus_name)
 
-    system_prompt = (
-        "You are an exhaustive past-paper exam ingestion parser.\n"
-        "Segment the Question Paper, Mark Scheme, and (if provided) Examiner Report into individual question items.\n"
-        "For EVERY question, first classify it as either 'mcq' or 'written'. Use the actual question-paper structure, not guesses based on the topic.\n"
-        + (
-            "THIS ENTIRE PAPER IS DETERMINISTICALLY A MULTIPLE-CHOICE PAPER. Classify EVERY extracted question as 'mcq', preserve A/B/C/D options, and map the official answer letter from the mark scheme.\n"
-            if paper_is_mcq else
+    # ------------------------------------------------------------------
+    # MCQ / Paper 1 path: deterministic question splitting + official key
+    # ------------------------------------------------------------------
+    if paper_is_mcq:
+        # Cambridge mark schemes such as 1 A 1 ... 40 A 1 give us the
+        # authoritative answer letter without asking the model to infer it.
+        answer_map = {
+            str(n): letter.upper()
+            for n, letter in re.findall(r"(?m)^\s*(\d{1,2})\s+([ABCD])\s+1\s*$", ms_text, re.I)
+        }
+
+        # Split the extracted paper by the sequential main question numbers.
+        # This avoids accidentally treating internal statements (1, 2, 3) as
+        # new questions because we advance strictly from Q1 -> Q2 -> ...
+        main_starts = []
+        cursor = 0
+        for qn in range(1, 41):
+            pat = re.compile(rf"(?m)^\s*{qn}\s+(?=[A-Z])")
+            m = next((m for m in pat.finditer(qp_text) if m.start() >= cursor), None)
+            if not m:
+                break
+            main_starts.append((qn, m.start()))
+            cursor = m.start() + 1
+
+        if len(main_starts) < 2 or len(answer_map) < 2:
+            return JSONResponse({
+                "error": (
+                    "This Paper 1 could be read as MCQ, but the Question Paper/Mark Scheme "
+                    "could not be segmented reliably. The PDFs contain extractable text, so this "
+                    "is a paper-structure parsing issue rather than a file-upload issue."
+                )
+            }, status_code=422)
+
+        question_blocks = []
+        for i, (qn, pos) in enumerate(main_starts):
+            end_pos = main_starts[i + 1][1] if i + 1 < len(main_starts) else len(qp_text)
+            block = qp_text[pos:end_pos].strip()
+            question_blocks.append((str(qn), block))
+
+        all_items = []
+        batch_size = 8
+        for batch_start in range(0, len(question_blocks), batch_size):
+            batch = question_blocks[batch_start:batch_start + batch_size]
+            batch_numbers = [qn for qn, _ in batch]
+            batch_text = "\n\n".join(
+                f"===== QUESTION {qn} =====\n{block}" for qn, block in batch
+            )
+            batch_keys = "\n".join(
+                f"Question {qn}: {answer_map.get(qn, '[answer not found]')}" for qn in batch_numbers
+            )
+
+            system_prompt = (
+                "You are an exhaustive Cambridge Biology Paper 1 ingestion parser.\n"
+                "The source is a multiple-choice paper. Parse ONLY the numbered questions supplied in this batch.\n"
+                "Return one JSON object with a 'questions' array and exactly one object per supplied question.\n"
+                "For each question return:\n"
+                "- question_number: the supplied number\n"
+                "- question_type: exactly 'mcq'\n"
+                "- question_text: the question stem, cleaned of page headers/footers\n"
+                "- options: object containing A, B, C, D when recoverable from the supplied text\n"
+                "- correct_option: use the authoritative answer letter supplied separately; do not infer or change it\n"
+                "- correct_answer_text: option text matching correct_option when recoverable\n"
+                "- mark_scheme: exactly 'Official answer: X (1 mark)'\n"
+                "- examiner_notes: empty string unless examiner-report text is supplied\n"
+                "Do not invent missing diagram content. If a diagram-based option is not recoverable from text, keep the option text as the best faithful text extraction you can make.\n"
+                "Return STRICT JSON only.\n"
+                '{"questions":[{"question_number":"1","question_type":"mcq","question_text":"...","options":{"A":"...","B":"...","C":"...","D":"..."},"correct_option":"A","correct_answer_text":"...","mark_scheme":"Official answer: A (1 mark)","examiner_notes":""}]}'
+            )
+            user_prompt = (
+                f"EXAM: {course} {year} {series} Paper {paper}\n\n"
+                "AUTHORITATIVE MARK-SCHEME ANSWER LETTERS FOR THIS BATCH:\n"
+                f"{batch_keys}\n\n"
+                "QUESTION PAPER BATCH:\n"
+                f"{batch_text}"
+            )
+
+            try:
+                raw = await llm(
+                    [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
+                    max_tokens=5000,
+                    temperature=0.0
+                )
+                clean_raw = (raw or "").strip()
+                if clean_raw.startswith("```"):
+                    clean_raw = clean_raw.strip("`")
+                    if "\n" in clean_raw:
+                        clean_raw = clean_raw.split("\n", 1)[-1]
+                start_idx = clean_raw.find("{")
+                end_idx = clean_raw.rfind("}")
+                if start_idx == -1 or end_idx <= start_idx:
+                    raise ValueError("AI returned no complete JSON object.")
+                parsed = json.loads(clean_raw[start_idx:end_idx + 1])
+                batch_items = parsed.get("questions", [])
+                if not isinstance(batch_items, list):
+                    raise ValueError("AI returned an invalid questions array.")
+            except Exception as e:
+                return JSONResponse({
+                    "error": f"AI parsing failed while processing Paper 1 questions {batch_numbers[0]}–{batch_numbers[-1]}: {e}"
+                }, status_code=500)
+
+            # Normalize, enforce the official answer key, and collect.
+            by_num = {str(item.get("question_number", "")).strip(): item for item in batch_items if isinstance(item, dict)}
+            for qn, original_block in batch:
+                item = dict(by_num.get(qn, {}))
+                item["question_number"] = qn
+                item["question_type"] = "mcq"
+                options = item.get("options") if isinstance(item.get("options"), dict) else {}
+                normalized = {
+                    letter: str(options.get(letter)).strip()
+                    for letter in ("A", "B", "C", "D")
+                    if options.get(letter)
+                }
+                if len(normalized) < 3:
+                    recovered = extract_mcq_options(item.get("question_text", ""))
+                    if len(recovered) >= 3:
+                        normalized = recovered
+                official = answer_map.get(qn, "")
+                item["options"] = normalized
+                item["correct_option"] = official
+                item["correct_answer_text"] = normalized.get(official, "")
+                item["mark_scheme"] = f"Official answer: {official} (1 mark)" if official else ""
+                item["examiner_notes"] = str(item.get("examiner_notes", "") or "").strip()
+                if not item.get("question_text"):
+                    item["question_text"] = original_block
+                all_items.append(item)
+
+        parsed_questions = all_items
+
+    # ---------------------------------------------------------------
+    # Written-response / non-MCQ path: retain the original whole-pack flow.
+    # ---------------------------------------------------------------
+    else:
+        system_prompt = (
+            "You are an exhaustive past-paper exam ingestion parser.\n"
+            "Segment the Question Paper, Mark Scheme, and (if provided) Examiner Report into individual question items.\n"
+            "For EVERY question, first classify it as either 'mcq' or 'written'. Use the actual question-paper structure, not guesses based on the topic.\n"
             "Do not force MCQ classification unless the question paper actually contains answer choices.\n"
+            "For MCQs, preserve the option text exactly enough to distinguish A/B/C/D, and map the official mark-scheme answer letter to correct_option.\n"
+            "For written questions, set options to {} and correct_option to ''.\n"
+            "For each question, extract:\n"
+            "1. question_number: e.g., '1(a)'\n"
+            "2. question_type: exactly 'mcq' or 'written'\n"
+            "3. question_text: Prompt text, including any statement/set-up needed to understand the question\n"
+            "4. options: for MCQ only, an object with A, B, C, D option text; otherwise {}\n"
+            "5. correct_option: for MCQ only, the official correct letter from the mark scheme (A/B/C/D); otherwise ''\n"
+            "6. correct_answer_text: for MCQ only, the exact option text corresponding to correct_option if available; otherwise ''\n"
+            "7. mark_scheme: Corresponding mark criteria and acceptable points exactly as supplied\n"
+            "8. examiner_notes: Specific commentary, misconceptions, or candidate errors mentioned in the Examiner Report (leave empty string if not found or not provided).\n"
+            "IMPORTANT: Do not invent a correct option. If the mark scheme answer cannot be confidently mapped, leave correct_option blank and retain the raw mark_scheme text.\n\n"
+            "Return STRICT JSON only without prose or markdown fences:\n"
+            '{"questions": [{"question_number": "1(a)", "question_type": "written", "question_text": "...", "options": {}, "correct_option": "", "correct_answer_text": "", "mark_scheme": "...", "examiner_notes": "..."}]}'
         )
-        +
-        "A Cambridge Paper 1 style question with four answer choices must be classified as 'mcq'.\n"
-        "For MCQs, preserve the option text exactly enough to distinguish A/B/C/D, and map the official mark-scheme answer letter to correct_option.\n"
-        "For written questions, set options to {} and correct_option to ''.\n"
-        "For each question, extract:\n"
-        "1. question_number: e.g., '1(a)'\n"
-        "2. question_type: exactly 'mcq' or 'written'\n"
-        "3. question_text: Prompt text, including any statement/set-up needed to understand the question\n"
-        "4. options: for MCQ only, an object with A, B, C, D option text; otherwise {}\n"
-        "5. correct_option: for MCQ only, the official correct letter from the mark scheme (A/B/C/D); otherwise ''\n"
-        "6. correct_answer_text: for MCQ only, the exact option text corresponding to correct_option if available; otherwise ''\n"
-        "7. mark_scheme: Corresponding mark criteria and acceptable points exactly as supplied\n"
-        "8. examiner_notes: Specific commentary, misconceptions, or candidate errors mentioned for this question in the Examiner Report (leave empty string if not found or not provided).\n"
-        "IMPORTANT: Do not invent a correct option. If the mark scheme answer cannot be confidently mapped, leave correct_option blank and retain the raw mark_scheme text.\n\n"
-        "Return STRICT JSON only without prose or markdown fences:\n"
-        '{"questions": [{"question_number": "1", "question_type": "mcq", "question_text": "...", "options": {"A": "...", "B": "...", "C": "...", "D": "..."}, "correct_option": "A", "correct_answer_text": "...", "mark_scheme": "...", "examiner_notes": "..."}]}'
-    )
 
-    er_block = f"\n\n=== EXAMINER REPORT (FULL) ===\n{er_text[:60000]}" if er_text else ""
-    user_prompt = (
-        f"EXAM: {course} {year} {series} Paper {paper}\n\n"
-        f"=== QUESTION PAPER (FULL) ===\n{qp_text[:60000]}\n\n"
-        f"=== MARK SCHEME (FULL) ===\n{ms_text[:60000]}"
-        f"{er_block}"
-    )
-
-    try:
-        raw = await llm(
-            [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
-            max_tokens=8000,
-            temperature=0.0
+        er_block = f"\n\n=== EXAMINER REPORT (FULL) ===\n{er_text[:60000]}" if er_text else ""
+        user_prompt = (
+            f"EXAM: {course} {year} {series} Paper {paper}\n\n"
+            f"=== QUESTION PAPER (FULL) ===\n{qp_text[:60000]}\n\n"
+            f"=== MARK SCHEME (FULL) ===\n{ms_text[:60000]}"
+            f"{er_block}"
         )
-        clean_raw = (raw or "").strip()
-        if clean_raw.startswith("```"):
-            clean_raw = clean_raw.strip("`")
-            if "\n" in clean_raw:
-                clean_raw = clean_raw.split("\n", 1)[-1]
 
-        start_idx = clean_raw.find("{")
-        end_idx = clean_raw.rfind("}")
-        parsed = json.loads(clean_raw[start_idx:end_idx + 1])
-        parsed_questions = parsed.get("questions", [])
-    except Exception as e:
-        return JSONResponse({"error": f"AI Parsing error: {str(e)}"}, status_code=500)
+        try:
+            raw = await llm(
+                [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
+                max_tokens=8000,
+                temperature=0.0
+            )
+            clean_raw = (raw or "").strip()
+            if clean_raw.startswith("```"):
+                clean_raw = clean_raw.strip("`")
+                if "\n" in clean_raw:
+                    clean_raw = clean_raw.split("\n", 1)[-1]
+
+            start_idx = clean_raw.find("{")
+            end_idx = clean_raw.rfind("}")
+            if start_idx == -1 or end_idx <= start_idx:
+                raise ValueError("AI returned no complete JSON object.")
+            parsed = json.loads(clean_raw[start_idx:end_idx + 1])
+            parsed_questions = parsed.get("questions", [])
+        except Exception as e:
+            return JSONResponse({"error": f"AI Parsing error: {str(e)}"}, status_code=500)
 
     sols = load_pp_json(PAST_PAPER_SOLUTIONS_PATH)
     doc = pp_doc_by_id(answered_doc_id) if answered_doc_id else None
@@ -3430,7 +3560,7 @@ async def teacher_pp_bulk_upload(
             options = {}
         normalized_options = {}
         for letter in ("A", "B", "C", "D"):
-            val = options.get(letter) if isinstance(options, dict) else None
+            val = options.get(letter)
             if val:
                 normalized_options[letter] = str(val).strip()
         is_mcq_item = paper_is_mcq or raw_type in {"mcq", "multiple_choice", "multiple choice", "paper 1"} or len(normalized_options) >= 3
@@ -3439,6 +3569,8 @@ async def teacher_pp_bulk_upload(
             if len(recovered) >= 3:
                 normalized_options = recovered
         extracted_correct_option = str(item.get("correct_option", "")).strip().upper() if is_mcq_item else ""
+        if is_mcq_item and extracted_correct_option not in {"A", "B", "C", "D"}:
+            extracted_correct_option = infer_correct_option_from_ms(str(item.get("mark_scheme", "")), normalized_options)
         extracted_correct_text = normalized_options.get(extracted_correct_option, "") if extracted_correct_option else ""
         sols[key] = {
             "course": course.strip(),
@@ -3461,7 +3593,7 @@ async def teacher_pp_bulk_upload(
 
     save_pp_json(PAST_PAPER_SOLUTIONS_PATH, sols)
     return {"ok": True, "indexed": len(indexed_labels), "questions": indexed_labels}
-    
+
 if os.path.isdir(FRONTEND_DIR) and os.path.isfile(os.path.join(FRONTEND_DIR, "index.html")):
     @app.get("/")
     def index():

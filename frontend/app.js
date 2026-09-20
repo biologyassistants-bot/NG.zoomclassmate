@@ -2681,58 +2681,64 @@ function renderTeacherOverrides(list) {
     tree[course][examKey].push(item);
   });
 
-  const courses = Object.keys(tree).sort((a,b) => a.localeCompare(b));
-  courses.forEach(courseName => {
-    const courseCard = document.createElement("div");
-    courseCard.style.cssText = "background:var(--panel);border:1.5px solid var(--line);border-radius:12px;margin-bottom:16px;overflow:hidden;box-shadow:var(--shadow-sm);";
+  Object.keys(tree).sort((a,b) => a.localeCompare(b)).forEach(courseName => {
+    const courseItems = tree[courseName];
+    const examKeys = Object.keys(courseItems).sort((a,b) => b.localeCompare(a, undefined, {numeric:true}));
+    const courseQuestionCount = examKeys.reduce((n, k) => n + courseItems[k].length, 0);
 
-    const courseHeader = document.createElement("div");
-    courseHeader.style.cssText = "padding:12px 14px;background:var(--panel2);font-weight:800;color:var(--brand-d);";
-    courseHeader.textContent = `📚 ${courseName}`;
-    courseCard.appendChild(courseHeader);
+    const courseDetails = document.createElement("details");
+    courseDetails.style.cssText = "width:100%;box-sizing:border-box;background:var(--panel);border:1.5px solid var(--line);border-radius:12px;margin-bottom:14px;overflow:hidden;box-shadow:var(--shadow-sm);";
 
-    const examList = tree[courseName];
-    Object.keys(examList).sort((a,b) => b.localeCompare(a, undefined, {numeric:true})).forEach(examKey => {
-      const qItems = examList[examKey].slice().sort((a,b) => String(a.question).localeCompare(String(b.question), undefined, {numeric:true}));
+    const courseSummary = document.createElement("summary");
+    courseSummary.style.cssText = "list-style:none;cursor:pointer;padding:13px 16px;background:var(--panel2);font-weight:800;color:var(--brand-d);display:flex;align-items:center;justify-content:space-between;gap:12px;";
+    courseSummary.innerHTML = `
+      <span>📚 Course: ${escapeHtml(courseName)}</span>
+      <span class="meta" style="font-size:11.5px;background:var(--panel);padding:3px 9px;border-radius:12px;">${examKeys.length} exam${examKeys.length === 1 ? "" : "s"} · ${courseQuestionCount} question${courseQuestionCount === 1 ? "" : "s"}</span>`;
+    courseDetails.appendChild(courseSummary);
+
+    const courseBody = document.createElement("div");
+    courseBody.style.cssText = "padding:12px 14px;";
+
+    examKeys.forEach(examKey => {
+      const qItems = courseItems[examKey].slice().sort((a,b) => String(a.question).localeCompare(String(b.question), undefined, {numeric:true}));
       const parsed = parseExamPackId(examKey);
-      const examWrap = document.createElement("div");
-      examWrap.style.cssText = "padding:12px 14px;border-top:1px solid var(--line);";
 
-      const examHeader = document.createElement("div");
-      examHeader.style.cssText = "display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;";
-      const title = document.createElement("div");
-      title.innerHTML = `<strong style="font-size:13px;color:var(--text);">📝 ${escapeHtml(examKey)}</strong><span class="meta" style="margin-left:8px;">${qItems.length} question${qItems.length === 1 ? "" : "s"}</span>`;
+      const examDetails = document.createElement("details");
+      examDetails.style.cssText = "border:1px solid var(--line);border-radius:10px;background:var(--panel2);margin-bottom:10px;overflow:hidden;";
+
+      const examSummary = document.createElement("summary");
+      examSummary.style.cssText = "list-style:none;cursor:pointer;padding:11px 13px;display:flex;align-items:center;justify-content:space-between;gap:12px;";
+
+      const examTitle = document.createElement("span");
+      examTitle.innerHTML = `<strong style="font-size:13.5px;color:var(--text);">📝 ${escapeHtml(examKey)}</strong><span class="meta" style="margin-left:8px;">${qItems.length} question${qItems.length===1?"":"s"}</span>`;
 
       const deleteExamBtn = document.createElement("button");
       deleteExamBtn.type = "button";
       deleteExamBtn.className = "ghost-sm danger-btn";
       deleteExamBtn.textContent = "🗑️ Delete Full Exam";
       deleteExamBtn.title = "Delete every curated question in this exam pack";
-      deleteExamBtn.addEventListener("click", async () => {
-        const confirmText = `Delete the FULL exam\n\n${courseName} — ${examKey}\n\nThis will permanently remove ${qItems.length} question${qItems.length === 1 ? "" : "s"} from the Past Paper Library.\n\nUploaded answered/reference documents will NOT be deleted.\n\nContinue?`;
+      deleteExamBtn.style.cssText = "padding:5px 10px;font-size:11px;white-space:nowrap;";
+      deleteExamBtn.addEventListener("click", async e => {
+        e.preventDefault();
+        e.stopPropagation();
+        const confirmText = `Delete the FULL exam\n\n${courseName} — ${examKey}\n\nThis will permanently remove ${qItems.length} question${qItems.length===1?"":"s"} from the Past Paper Library.\n\nUploaded answered/reference documents will NOT be deleted.\n\nContinue?`;
         if (!confirm(confirmText)) return;
-
         deleteExamBtn.disabled = true;
         const oldText = deleteExamBtn.textContent;
         deleteExamBtn.textContent = "Deleting…";
         try {
           const res = await fetch(`${API}/api/teacher/pastpaper/solutions/delete-exam`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              passcode: state.passcode,
-              course: courseName,
-              year: parsed.year,
-              series: parsed.series,
-              paper: parsed.paper
-            })
+            method:"POST",
+            headers:{"Content-Type":"application/json"},
+            body:JSON.stringify({passcode:state.passcode,course:courseName,year:parsed.year,series:parsed.series,paper:parsed.paper})
           });
           const data = await res.json().catch(() => ({}));
           if (!res.ok) {
             toast(data.error || "Could not delete the exam.", "error");
             return;
           }
-          toast(`Deleted ${data.deleted || qItems.length} question${(data.deleted || qItems.length) === 1 ? "" : "s"} from ${examKey} ✓`, "success", 4500);
+          const deleted = data.deleted ?? qItems.length;
+          toast(`Deleted ${deleted} question${deleted === 1 ? "" : "s"} from ${examKey} ✓`, "success", 4500);
           await refreshPastPaperHub();
         } catch (err) {
           console.error(err);
@@ -2743,12 +2749,12 @@ function renderTeacherOverrides(list) {
         }
       });
 
-      examHeader.appendChild(title);
-      examHeader.appendChild(deleteExamBtn);
-      examWrap.appendChild(examHeader);
+      examSummary.appendChild(examTitle);
+      examSummary.appendChild(deleteExamBtn);
+      examDetails.appendChild(examSummary);
 
       const qContainer = document.createElement("div");
-      qContainer.style.cssText = "display:flex;flex-direction:column;gap:6px;margin-top:8px;";
+      qContainer.style.cssText = "display:flex;flex-direction:column;gap:6px;padding:0 10px 10px;";
       qItems.forEach(q => {
         const row = document.createElement("div");
         row.style.cssText = "display:flex;justify-content:space-between;align-items:center;gap:10px;padding:8px 10px;background:var(--bg);border:1px solid var(--line);border-radius:8px;font-size:12px;";
@@ -2768,9 +2774,9 @@ function renderTeacherOverrides(list) {
           btn.disabled = true;
           try {
             const res = await fetch(`${API}/api/teacher/pastpaper/solutions/delete`, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ passcode: state.passcode, key: q.key })
+              method:"POST",
+              headers:{"Content-Type":"application/json"},
+              body:JSON.stringify({passcode:state.passcode,key:q.key})
             });
             const data = await res.json().catch(() => ({}));
             if (!res.ok) {
@@ -2787,12 +2793,12 @@ function renderTeacherOverrides(list) {
         });
         qContainer.appendChild(row);
       });
-
-      examWrap.appendChild(qContainer);
-      courseCard.appendChild(examWrap);
+      examDetails.appendChild(qContainer);
+      courseBody.appendChild(examDetails);
     });
 
-    container.appendChild(courseCard);
+    courseDetails.appendChild(courseBody);
+    container.appendChild(courseDetails);
   });
 }
 
@@ -2861,7 +2867,20 @@ async function refreshPastPaperHub() {
     } else {
       ppDocs.forEach(doc => {
         const row = document.createElement("div");
-        row.style.cssText = "display:flex;align-items:center;justify-content:space-between;padding:9px 12px;background:var(--bg);border:1px solid var(--line);border-radius:8px;gap:12px;";
+        row.className = "pastpaper-doc-row";
+        row.style.cssText = [
+          "display:grid",
+          "grid-template-columns:minmax(260px,1fr) minmax(190px,auto) auto",
+          "align-items:center",
+          "gap:14px",
+          "width:100%",
+          "box-sizing:border-box",
+          "padding:11px 12px",
+          "background:var(--bg)",
+          "border:1px solid var(--line)",
+          "border-radius:9px"
+        ].join(";");
+
         const options = [
           '<option value="">-- Unassigned / Shared --</option>',
           ...allCourses.map(c => {
@@ -2869,20 +2888,22 @@ async function refreshPastPaperHub() {
             return `<option value="${escapeHtml(c)}"${selected}>${escapeHtml(c)}</option>`;
           })
         ].join("");
+
+        const fileName = doc.filename || "Untitled document";
         row.innerHTML = `
-          <div style="min-width:0;display:flex;flex-direction:column;gap:2px;">
-            <span style="font-size:12.5px;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">📄 ${escapeHtml(doc.filename || "Untitled")}</span>
+          <div style="min-width:0;display:flex;flex-direction:column;gap:4px;">
+            <span class="pastpaper-doc-name" title="${escapeHtml(fileName)}" style="font-size:13px;font-weight:800;white-space:normal;overflow:visible;text-overflow:clip;overflow-wrap:anywhere;word-break:break-word;">📄 ${escapeHtml(fileName)}</span>
             <span class="meta" style="font-size:10.5px;">${doc.uploaded_at ? `Uploaded ${escapeHtml(doc.uploaded_at)} · ` : ""}${Number(doc.text_chars || 0).toLocaleString()} characters indexed</span>
           </div>
-          <div style="display:flex;align-items:center;gap:8px;flex-shrink:0;">
-            <label style="display:flex;align-items:center;gap:6px;font-size:11px;font-weight:700;">Course
-              <select class="doc-course-assign" data-docid="${escapeHtml(doc.id)}" style="padding:5px 8px;font-size:11.5px;border-radius:6px;border:1px solid var(--line);">${options}</select>
-            </label>
-            <button class="ghost-sm danger-btn doc-delete-btn" type="button" title="Delete document">🗑️</button>
-          </div>`;
+          <label style="display:flex;align-items:center;gap:7px;font-size:11px;font-weight:800;white-space:nowrap;">
+            Course
+            <select class="doc-course-assign" data-docid="${escapeHtml(doc.id)}" style="min-width:180px;padding:6px 9px;font-size:11.5px;border-radius:7px;border:1px solid var(--line);">${options}</select>
+          </label>
+          <button class="ghost-sm danger-btn doc-delete-btn" type="button" title="Delete document" style="padding:7px 10px;">🗑️</button>`;
 
         const assign = row.querySelector(".doc-course-assign");
         assign.addEventListener("change", async e => {
+          const oldValue = doc.course || "";
           const fd = new FormData();
           fd.append("passcode", passcode);
           fd.append("doc_id", doc.id);
@@ -2893,20 +2914,20 @@ async function refreshPastPaperHub() {
             const data = await res.json().catch(() => ({}));
             if (!res.ok) {
               toast(data.error || "Failed to update document course.", "error");
-              e.target.value = doc.course || "";
+              e.target.value = oldValue;
               return;
             }
-            toast(`"${doc.filename}" assigned to ${e.target.value || "Shared / Unassigned"} ✓`, "success");
-            await refreshPastPaperHub();
+            doc.course = e.target.value;
+            toast(`"${fileName}" assigned to ${e.target.value || "Shared / Unassigned"} ✓`, "success");
           } catch (err) {
             console.error(err);
             toast("Network error updating document course.", "error");
-            e.target.value = doc.course || "";
+            e.target.value = oldValue;
           } finally {
             e.target.disabled = false;
           }
         });
-        row.querySelector(".doc-delete-btn").addEventListener("click", () => deletePastPaperDoc(doc.id, doc.filename));
+        row.querySelector(".doc-delete-btn").addEventListener("click", () => deletePastPaperDoc(doc.id, fileName));
         container.appendChild(row);
       });
     }

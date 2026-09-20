@@ -3361,7 +3361,7 @@ async def teacher_pp_bulk_upload(
 
     syllabus_map = load_pp_json(PAST_PAPER_CONFIG_PATH)
     syllabus_name = syllabus_map.get(course, "") if isinstance(syllabus_map, dict) else ""
-    paper_is_mcq = infer_pastpaper_is_mcq(course, paper, syllabus_name)
+    paper_is_mcq = (infer_pastpaper_is_mcq(course, paper, syllabus_name) or bool(re.search(r"multiple\s+choice", qp_text[:5000], re.I)) or bool(re.search(r"four\s+possible\s+answers\s+A\s*,?\s*B\s*,?\s*C\s*,?\s*and\s*D", qp_text[:8000], re.I)))
 
     # ------------------------------------------------------------------
     # MCQ / Paper 1 path: deterministic question splitting + official key
@@ -3371,7 +3371,7 @@ async def teacher_pp_bulk_upload(
         # authoritative answer letter without asking the model to infer it.
         answer_map = {
             str(n): letter.upper()
-            for n, letter in re.findall(r"(?m)^\s*(\d{1,2})\s+([ABCD])\s+1\s*$", ms_text, re.I)
+            for n, letter in re.findall(r"(?m)^\s*(\d{1,2})\s+([ABCD])\s+1(?:\s|$)", ms_text, re.I)
         }
 
         # Split the extracted paper by the sequential main question numbers.

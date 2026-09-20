@@ -752,12 +752,12 @@ let currentCardIndex = 0;
 
 const flashcardBtn = el("flashcardBtn");
 const flashcardModal = el("flashcardModal");
-const closeFlashcards = el("closeFlashcards");
-const flashcardBody = el("flashcardBody");
+const closeFlashcards = el("closeFlashcards") || el("closeFcModal");
+const flashcardBody = el("flashcardBody") || el("fcCard");
 const prevCardBtn = el("prevCardBtn");
 const nextCardBtn = el("nextCardBtn");
-const cardCountIndicator = el("cardCountIndicator");
-const srsRatingControls = el("srsRatingControls");
+const cardCountIndicator = el("cardCountIndicator") || el("fcProgress");
+const srsRatingControls = el("srsRatingControls") || el("fcRatingBtns");
 const genFreshCardsBtn = el("genFreshCardsBtn");
 const srsStatusText = el("srsStatusText");
 
@@ -923,6 +923,9 @@ if (el("srsAgainBtn")) el("srsAgainBtn").addEventListener("click", () => rateCar
 if (el("srsHardBtn")) el("srsHardBtn").addEventListener("click", () => rateCard('hard'));
 if (el("srsGoodBtn")) el("srsGoodBtn").addEventListener("click", () => rateCard('good'));
 if (el("srsEasyBtn")) el("srsEasyBtn").addEventListener("click", () => rateCard('easy'));
+if (el("fcHardBtn")) el("fcHardBtn").addEventListener("click", () => rateCard('hard'));
+if (el("fcGoodBtn")) el("fcGoodBtn").addEventListener("click", () => rateCard('good'));
+if (el("fcEasyBtn")) el("fcEasyBtn").addEventListener("click", () => rateCard('easy'));
 
 if (prevCardBtn) prevCardBtn.addEventListener("click", () => { if (currentCardIndex > 0) { currentCardIndex--; renderCurrentCard(); } });
 if (nextCardBtn) nextCardBtn.addEventListener("click", () => { if (currentCardIndex < currentDeckCards.length - 1) { currentCardIndex++; renderCurrentCard(); } });
@@ -3133,4 +3136,40 @@ document.addEventListener('submit', (e) => {
 });
 
 bindPastPaperBulkUpload();
+
+/* ======== GLOBAL MODAL CLOSE FALLBACK ======== */
+(function bindGlobalModalCloseHandlers() {
+  function closeById(id) {
+    const node = document.getElementById(id);
+    if (node) node.classList.add('hidden');
+  }
+
+  document.addEventListener('click', function (event) {
+    const target = event.target && event.target.closest
+      ? event.target.closest('#closeFcModal, #closeFlashcards, #closeQuizModal, #closeQuiz')
+      : null;
+    if (!target) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+
+    if (target.id === 'closeFcModal' || target.id === 'closeFlashcards') {
+      closeById('flashcardModal');
+      return;
+    }
+
+    if (target.id === 'closeQuizModal' || target.id === 'closeQuiz') {
+      closeById('quizModal');
+    }
+  }, true);
+
+  document.addEventListener('keydown', function (event) {
+    if (event.key !== 'Escape') return;
+    const flash = document.getElementById('flashcardModal');
+    const quiz = document.getElementById('quizModal');
+    if (flash && !flash.classList.contains('hidden')) flash.classList.add('hidden');
+    if (quiz && !quiz.classList.contains('hidden')) quiz.classList.add('hidden');
+  });
+})();
+
 loadBranding();

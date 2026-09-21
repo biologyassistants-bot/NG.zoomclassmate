@@ -891,9 +891,6 @@ async def transcribe_recording_by_id(meeting_id):
         raise LLMUpstreamError("Audio file exceeds 25 MB and ffmpeg is unavailable.")
 
     rec["segments"] = segments
-    rec["transcript_source"] = "openai"
-    rec["transcript_status"] = "ready"
-    rec["transcript_checked_at"] = time.time()
     save_recordings(RECORDINGS)
     try:
         audio_bytes = None
@@ -951,144 +948,24 @@ async def _download_zoom_text(url: str, token: str) -> str:
 
 
 def parse_vtt(text):
-    """Parse Zoom WebVTT into the app's timestamped transcript segments.
-
-    Zoom may encode speakers either as `Speaker: text` or WebVTT voice spans
-    such as `<v Speaker>text`. This parser accepts both forms and strips
-    lightweight VTT/HTML markup so the transcript is clean for students and
-    downstream AI retrieval.
-    """
-    from html import unescape
-
     segments = []
-    blocks = re.split(r"\n\s*\n", (text or "").strip())
+    blocks = re.split(r"\n\s*\n", text.strip())
     for b in blocks:
-        lines = [l.strip() for l in b.splitlines() if l.strip()]
+        lines = [l for l in b.splitlines() if l.strip()]
         if not lines:
             continue
         tline_i = next((i for i, l in enumerate(lines) if "-->" in l), None)
         if tline_i is None:
             continue
-
-        start = lines[tline_i].split("-->", 1)[0].strip()
-        # Keep the UI timestamp compact while preserving hours.
-        if "." in start:
-            start = start.split(".", 1)[0]
-
+        start = lines[tline_i].split("-->")[0].strip().split(".")[0]
         body = " ".join(lines[tline_i + 1:]).strip()
-        if not body:
-            continue
-
         speaker = ""
-        # WebVTT voice span: <v Speaker Name>text</v>
-        vm = re.match(r"^<v\s+([^>]+)>(.*?)(?:</v>)?$", body, re.I)
-        if vm:
-            speaker = unescape(vm.group(1).strip())
-            body = vm.group(2).strip()
-        else:
-            # Plain-text speaker prefix: Speaker Name: text
-            sm = re.match(r"^([^:]{1,80}):\s*(.*)$", body)
-            if sm:
-                speaker = unescape(sm.group(1).strip())
-                body = sm.group(2).strip()
-
-        # Strip common VTT cue/style markup without destroying the words.
-        body = re.sub(r"<[^>]+>", "", body)
-        body = unescape(body).strip()
-        body = re.sub(r"\s+", " ", body)
+        m = re.match(r"^([^:]{1,40}):\s*(.*)$", body)
+        if m:
+            speaker, body = m.group(1).strip(), m.group(2).strip()
         if body:
             segments.append({"start": start, "speaker": speaker, "text": body})
     return segments
-
-
-def _zoom_transcript_file(files):
-    """Return the best transcript file from a Zoom recording list.
-
-    Prefer Zoom's actual TRANSCRIPT file over closed captions when both exist.
-    """
-    files = files or []
-    for f in files:
-        ftype = (f.get("file_type") or "").upper()
-        rtype = (f.get("recording_type") or "").lower()
-        if ftype == "TRANSCRIPT" or rtype == "audio_transcript":
-            return f
-    for f in files:
-        ftype = (f.get("file_type") or "").upper()
-        fext = (f.get("file_extension") or "").upper()
-        if ftype in ("AUDIO_TRANSCRIPT", "CC") or fext == "VTT":
-            return f
-    return None
-
-
-async def _attach_zoom_transcript(meeting_id, rec=None, supplied_files=None):
-    """Fetch a fresh Zoom recording-file list and attach its VTT transcript.
-
-    This deliberately refreshes the file list even when a webhook supplied
-    recording_files, because Zoom can finish the MP4 first and add the
-    TRANSCRIPT file later.
-    """
-    files = list(supplied_files or [])
-    transcript = _zoom_transcript_file(files)
-
-    # Always refresh once when the supplied event does not contain a transcript.
-    if transcript is None:
-        try:
-            fresh = await fetch_zoom_recording_files(meeting_id)
-            if fresh:
-                files = fresh
-                transcript = _zoom_transcript_file(fresh)
-        except Exception as e:
-            print(f"[zoom] transcript file-list refresh failed for {meeting_id}: {e}")
-
-    if not transcript or not transcript.get("download_url"):
-        return False
-
-    try:
-        token = await zoom_token()
-        vtt_text = await _download_zoom_text(transcript["download_url"], token)
-        segments = parse_vtt(vtt_text) if vtt_text else []
-    except Exception as e:
-        print(f"[zoom] transcript download failed for {meeting_id}: {e}")
-        return False
-
-    if not segments:
-        return False
-
-    target = rec or REC_BY_ID.get(str(meeting_id))
-    if not target:
-        return False
-
-    target["segments"] = segments
-    target["transcript_source"] = "zoom"
-    target["transcript_status"] = "ready"
-    target["transcript_checked_at"] = time.time()
-    target.pop("embeddings", None)
-    save_recordings(RECORDINGS)
-    print(f"[zoom] Attached {len(segments)} Zoom transcript lines to: '{target.get('display_title')}'")
-    return True
-
-
-async def _wait_for_zoom_transcript(meeting_id, attempts=5):
-    """Poll briefly for the delayed Zoom transcript instead of transcribing audio."""
-    delays = [30, 60, 120, 300, 600]
-    for i in range(min(attempts, len(delays))):
-        rec = REC_BY_ID.get(str(meeting_id))
-        if not rec:
-            return False
-        if rec.get("segments"):
-            return True
-
-        await asyncio.sleep(delays[i])
-        ok = await _attach_zoom_transcript(meeting_id, rec=rec)
-        if ok:
-            return True
-
-    rec = REC_BY_ID.get(str(meeting_id))
-    if rec and not rec.get("segments"):
-        rec["transcript_status"] = "unavailable"
-        rec["transcript_checked_at"] = time.time()
-        save_recordings(RECORDINGS)
-    return False
 
 
 def _detect_source(obj):
@@ -1102,70 +979,53 @@ def _detect_source(obj):
     return "meeting"
 
 
-async def ingest_zoom_meeting(obj, allow_whisper_fallback=False):
-    """Import a Zoom recording and reuse Zoom's own transcript when available.
-
-    The MP4/M4A recording and Zoom TRANSCRIPT file are generated on separate
-    timelines. A recording.completed webhook can arrive before the transcript
-    exists, so this function imports the recording immediately and schedules
-    short background polling. Manual OpenAI transcription remains an explicit
-    fallback rather than competing with the Zoom transcript.
-    """
+async def ingest_zoom_meeting(obj, allow_whisper_fallback=True):
     uuid = obj.get("uuid")
     mid = obj.get("id")
     meeting_id = str(uuid or mid or secrets.token_hex(6))
     numeric_id = str(mid) if mid else ""
-
+    
     existing = REC_BY_ID.get(meeting_id) or (REC_BY_ID.get(numeric_id) if numeric_id else None)
-
+    
     if existing and len(existing.get("segments", [])) > 0:
         return False
 
     topic = obj.get("topic", "Untitled class")
     start_time = (obj.get("start_time") or "")[:10]
     source = _detect_source(obj)
-    files = obj.get("recording_files", []) or []
+    files = obj.get("recording_files", [])
 
     if not files and (mid or uuid):
         try:
             files = await fetch_zoom_recording_files(mid or uuid)
-        except Exception as e:
-            print(f"[zoom] recording file lookup failed for {meeting_id}: {e}")
+        except Exception:
             files = []
+    
+    transcript = next(
+        (f for f in files if (f.get("file_type") or "").upper() in ("TRANSCRIPT", "AUDIO_TRANSCRIPT", "CC") 
+         or (f.get("file_extension") or "").upper() == "VTT"
+         or f.get("recording_type") == "audio_transcript"), 
+        None
+    )
+    
+    segments = []
+    if transcript and transcript.get("download_url"):
+        try:
+            token = await zoom_token()
+            vtt_text = await _download_zoom_text(transcript["download_url"], token)
+            if vtt_text:
+                segments = parse_vtt(vtt_text)
+        except Exception as e:
+            print(f"[zoom] VTT transcript download failed for {meeting_id}: {e}")
 
     if existing:
-        # Existing imports with no transcript are candidates for attachment.
-        existing["transcript_status"] = "processing"
-        existing["transcript_checked_at"] = time.time()
-        save_recordings(RECORDINGS)
-        attached = await _attach_zoom_transcript(meeting_id, rec=existing, supplied_files=files)
-        if attached:
+        if segments:
+            existing["segments"] = segments
+            save_recordings(RECORDINGS)
+            print(f"[zoom] Attached {len(segments)} transcript lines to: '{existing.get('display_title')}'")
             return True
-        asyncio.create_task(_wait_for_zoom_transcript(meeting_id))
         return False
 
-    segments = []
-    if files or mid or uuid:
-        # Prefer Zoom's own transcript. This may require a fresh API lookup if
-        # the initial recording event did not yet include the TRANSCRIPT file.
-        transcript = _zoom_transcript_file(files)
-        if transcript is None and (mid or uuid):
-            try:
-                files = await fetch_zoom_recording_files(mid or uuid)
-                transcript = _zoom_transcript_file(files)
-            except Exception as e:
-                print(f"[zoom] transcript refresh failed for {meeting_id}: {e}")
-                transcript = None
-        if transcript and transcript.get("download_url"):
-            try:
-                token = await zoom_token()
-                vtt_text = await _download_zoom_text(transcript["download_url"], token)
-                if vtt_text:
-                    segments = parse_vtt(vtt_text)
-            except Exception as e:
-                print(f"[zoom] VTT transcript download failed for {meeting_id}: {e}")
-
-    # Keep the existing manual/legacy fallback available only when explicitly requested.
     if allow_whisper_fallback and not segments and OPENAI_API_KEY:
         audio = _pick_audio_file(files)
         if audio and audio.get("download_url"):
@@ -1181,7 +1041,6 @@ async def ingest_zoom_meeting(obj, allow_whisper_fallback=False):
                     segments = await transcribe_audio_bytes(ar.content, filename=f"{meeting_id}.{ext}")
             except Exception as e:
                 print(f"[ingest] whisper fallback failed for {meeting_id}: {e}")
-
     new_rec = {
         "id": meeting_id,
         "topic": topic,
@@ -1192,10 +1051,7 @@ async def ingest_zoom_meeting(obj, allow_whisper_fallback=False):
         "unit": "",
         "visible": False,
         "segments": segments,
-        "note_ids": [],
-        "transcript_source": "zoom" if segments else "",
-        "transcript_status": "ready" if segments else "processing",
-        "transcript_checked_at": time.time(),
+        "note_ids": []
     }
     RECORDINGS.append(new_rec)
     REC_BY_ID[meeting_id] = new_rec
@@ -1203,11 +1059,6 @@ async def ingest_zoom_meeting(obj, allow_whisper_fallback=False):
         REC_BY_ID[numeric_id] = new_rec
     save_recordings(RECORDINGS)
     print(f"[zoom] Successfully imported '{topic}' with {len(segments)} lines.")
-
-    if not segments:
-        # Zoom transcript generation can lag behind recording availability.
-        asyncio.create_task(_wait_for_zoom_transcript(meeting_id))
-
     return True
 
 
@@ -1222,8 +1073,6 @@ def _card(r, include_hidden=False):
         "unit": r.get("unit") or "Unassigned",
         "visible": r.get("visible", True),
         "segments": len(r.get("segments", [])),
-        "transcript_status": r.get("transcript_status") or ("ready" if r.get("segments") else "none"),
-        "transcript_source": r.get("transcript_source") or ("zoom" if r.get("segments") else ""),
         "has_summary": bool(r.get("summary")),
         "summary": r.get("summary") or "",
         "topics": r.get("topics") or [],
@@ -2272,7 +2121,7 @@ async def zoom_webhook(request: Request, background_tasks: BackgroundTasks):
             obj = p_load.get("object", {})
             
         if obj.get("id") or obj.get("uuid"):
-            background_tasks.add_task(ingest_zoom_meeting, obj, False)
+            background_tasks.add_task(ingest_zoom_meeting, obj)
             print(f"[zoom webhook] queued background ingest for webinar/meeting: '{obj.get('topic')}'")
         else:
             print(f"[zoom webhook warning] could not extract meeting/webinar ID from payload: {payload}")

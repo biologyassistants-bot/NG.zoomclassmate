@@ -672,98 +672,199 @@ if(el("askForm")) {
 
 // ---------- quiz ----------
 let quizData = null;
-if(el("quizBtn")) el("quizBtn").addEventListener("click", generateQuiz);
+if (el("quizBtn")) el("quizBtn").addEventListener("click", generateQuiz);
+
+function getQuizSubmitButton() {
+  return el("quizSubmitBtn") || el("submitQuiz");
+}
+
+function getQuizCloseButton() {
+  return el("closeQuizModal") || el("closeQuiz");
+}
 
 async function generateQuiz() {
   if (!state.current) return;
-  if(el("quizModal")) el("quizModal").classList.remove("hidden");
-  if(el("submitQuiz")) el("submitQuiz").classList.add("hidden"); 
-  if(el("retryQuiz")) el("retryQuiz").classList.add("hidden");
-  if(el("quizBody")) el("quizBody").innerHTML = '<div class="typing">Creating your quiz from the recording <span class="dot">●</span><span class="dot">●</span><span class="dot">●</span></div>';
+
+  const submitBtn = getQuizSubmitButton();
+  const retryBtn = el("retryQuiz");
+  const scoreBadge = el("quizScoreBadge");
+
+  if (el("quizModal")) el("quizModal").classList.remove("hidden");
+  if (submitBtn) {
+    submitBtn.classList.remove("hidden");
+    submitBtn.disabled = true;
+    submitBtn.dataset.quizSubmitted = "0";
+    submitBtn.textContent = "Creating Quiz...";
+  }
+  if (retryBtn) retryBtn.classList.add("hidden");
+  if (scoreBadge) scoreBadge.textContent = "";
+  if (el("quizBody")) {
+    el("quizBody").innerHTML = '<div class="typing">Creating your quiz from the recording <span class="dot">●</span><span class="dot">●</span><span class="dot">●</span></div>';
+  }
+
   try {
     const res = await fetch(`${API}/api/quiz`, {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ recording_id: state.current.id, num_questions: 5, language: "English", token: state.token })
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        recording_id: state.current.id,
+        num_questions: 5,
+        language: "English",
+        token: state.token
+      })
     });
+
     const data = await res.json();
-    if (data.error || !data.questions) { if(el("quizBody")) el("quizBody").innerHTML = '<p>Sorry, I could not build a quiz for this recording. Try another one.</p>'; return; }
-    quizData = data.questions; 
+    if (!res.ok || data.error || !Array.isArray(data.questions) || data.questions.length === 0) {
+      if (el("quizBody")) {
+        el("quizBody").innerHTML = `<p>${escapeHtml(data.error || "Sorry, I could not build a quiz for this recording. Try another one.")}</p>`;
+      }
+      if (submitBtn) {
+        submitBtn.disabled = false;
+        submitBtn.textContent = "Submit Quiz";
+      }
+      return;
+    }
+
+    quizData = data.questions;
     renderQuiz();
-    
     studentStats.quizzes++;
     saveStudentStats();
-  } catch (e) { if(el("quizBody")) el("quizBody").innerHTML = '<p>Could not reach the server. Please try again.</p>'; }
+  } catch (e) {
+    console.error("Quiz generation failed:", e);
+    if (el("quizBody")) el("quizBody").innerHTML = '<p>Could not reach the server. Please try again.</p>';
+    if (submitBtn) {
+      submitBtn.disabled = false;
+      submitBtn.textContent = "Try Again";
+    }
+  }
 }
 
-if(el("closeQuiz")) el("closeQuiz").addEventListener("click", () => el("quizModal").classList.add("hidden"));
-if(el("retryQuiz")) el("retryQuiz").addEventListener("click", generateQuiz);
+const quizCloseButton = getQuizCloseButton();
+if (quizCloseButton) {
+  quizCloseButton.addEventListener("click", () => {
+    if (el("quizModal")) el("quizModal").classList.add("hidden");
+  });
+}
+
+if (el("retryQuiz")) el("retryQuiz").addEventListener("click", generateQuiz);
 
 function renderQuiz() {
-  const body = el("quizBody"); 
-  if(!body) return;
+  const body = el("quizBody");
+  if (!body || !Array.isArray(quizData)) return;
+
   body.innerHTML = "";
+
   quizData.forEach((q, qi) => {
-    const block = document.createElement("div"); block.className = "q-block";
+    const block = document.createElement("div");
+    block.className = "q-block";
+
+    const options = Array.isArray(q.options) ? q.options : [];
     let opts = "";
-    q.options.forEach((opt, oi) => { opts += `<label class="opt" data-q="${qi}" data-o="${oi}"><input type="radio" name="q${qi}" value="${oi}" />${escapeHtml(opt)}</label>`; });
-    block.innerHTML = `<div class="q-title"><span class="q-num">Q${qi + 1}</span>${escapeHtml(q.question)}</div>${opts}<div class="explain hidden" id="exp${qi}"></div>`;
+    options.forEach((opt, oi) => {
+      opts += `<label class="opt" data-q="${qi}" data-o="${oi}"><input type="radio" name="q${qi}" value="${oi}" />${escapeHtml(opt)}</label>`;
+    });
+
+    block.innerHTML = `
+      <div class="q-title"><span class="q-num">Q${qi + 1}</span>${escapeHtml(q.question || "")}</div>
+      ${opts}
+      <div class="explain hidden" id="exp${qi}"></div>
+    `;
     body.appendChild(block);
   });
-  body.querySelectorAll(".opt").forEach(l => l.addEventListener("click", () => {
-    const qi = l.dataset.q;
-    body.querySelectorAll(`.opt[data-q="${qi}"]`).forEach(x => x.classList.remove("sel"));
-    l.classList.add("sel");
-  }));
-  if(el("submitQuiz")) el("submitQuiz").classList.remove("hidden"); 
-  if(el("retryQuiz")) el("retryQuiz").classList.add("hidden");
+
+  body.querySelectorAll(".opt").forEach(label => {
+    label.addEventListener("click", () => {
+      const qi = label.dataset.q;
+      body.querySelectorAll(`.opt[data-q="${qi}"]`).forEach(x => x.classList.remove("sel"));
+      label.classList.add("sel");
+    });
+  });
+
+  const submitBtn = getQuizSubmitButton();
+  const retryBtn = el("retryQuiz");
+  const scoreBadge = el("quizScoreBadge");
+
+  if (submitBtn) {
+    submitBtn.classList.remove("hidden");
+    submitBtn.disabled = false;
+    submitBtn.dataset.quizSubmitted = "0";
+    submitBtn.textContent = "Submit Quiz";
+  }
+  if (retryBtn) retryBtn.classList.add("hidden");
+  if (scoreBadge) scoreBadge.textContent = "";
 }
 
-if(el("submitQuiz")) {
-  el("submitQuiz").addEventListener("click", () => {
+const quizSubmitButton = getQuizSubmitButton();
+if (quizSubmitButton) {
+  quizSubmitButton.addEventListener("click", async () => {
+    if (!Array.isArray(quizData) || quizData.length === 0) return;
+
+    // After a quiz has been submitted, the same button starts a fresh quiz.
+    if (quizSubmitButton.dataset.quizSubmitted === "1") {
+      await generateQuiz();
+      return;
+    }
+
     let score = 0;
+
     quizData.forEach((q, qi) => {
       const chosen = document.querySelector(`input[name="q${qi}"]:checked`);
-      const ci = chosen ? parseInt(chosen.value) : -1;
+      const ci = chosen ? parseInt(chosen.value, 10) : -1;
+      const correctIndex = Number.parseInt(q.answer_index, 10);
+
       document.querySelectorAll(`.opt[data-q="${qi}"]`).forEach((lab, oi) => {
         lab.style.pointerEvents = "none";
-        if (oi === q.answer_index) lab.classList.add("correct");
+        if (oi === correctIndex) lab.classList.add("correct");
         else if (oi === ci) lab.classList.add("wrong");
       });
-      if (ci === q.answer_index) score++;
+
+      if (ci === correctIndex) score++;
+
       const exp = el(`exp${qi}`);
-      if(exp) {
+      if (exp) {
         const ts = q.timestamp ? `<span class="ts-chip">⏱ ${escapeHtml(q.timestamp)}</span>` : "";
-        exp.innerHTML = `✅ <strong>Answer:</strong> ${escapeHtml(q.options[q.answer_index])} ${ts}<br>${escapeHtml(q.explanation || "")}`;
+        const correctText = Array.isArray(q.options) && q.options[correctIndex] != null
+          ? q.options[correctIndex]
+          : "See explanation";
+        exp.innerHTML = `✅ <strong>Answer:</strong> ${escapeHtml(correctText)} ${ts}<br>${escapeHtml(q.explanation || "")}`;
         exp.classList.remove("hidden");
       }
     });
-    const head = document.createElement("div"); head.className = "score";
+
     const pct = Math.round(100 * score / quizData.length);
-    head.textContent = `You scored ${score} / ${quizData.length}  (${pct}%) ${pct >= 80 ? "🎉" : pct >= 50 ? "👍" : "📖 keep reviewing!"}`;
-    if(el("quizBody")) el("quizBody").prepend(head);
-    if(el("submitQuiz")) el("submitQuiz").classList.add("hidden"); 
-    if(el("retryQuiz")) el("retryQuiz").classList.remove("hidden");
+    const scoreText = `You scored ${score} / ${quizData.length} (${pct}%) ${pct >= 80 ? "🎉" : pct >= 50 ? "👍" : "📖 Keep reviewing!"}`;
+
+    const scoreBadge = el("quizScoreBadge");
+    if (scoreBadge) scoreBadge.textContent = scoreText;
+
+    // Also keep the score visible inside the quiz body for older layouts.
+    const oldScores = document.querySelectorAll("#quizBody > .score");
+    oldScores.forEach(x => x.remove());
+    const head = document.createElement("div");
+    head.className = "score";
+    head.textContent = scoreText;
+    if (el("quizBody")) el("quizBody").prepend(head);
+
+    quizSubmitButton.dataset.quizSubmitted = "1";
+    quizSubmitButton.disabled = false;
+    quizSubmitButton.textContent = "New Quiz";
+    if (el("retryQuiz")) el("retryQuiz").classList.remove("hidden");
   });
 }
 
 // ================= SPACED REPETITION (SRS) FLASHCARDS =================
 let currentDeckCards = [];
 let currentCardIndex = 0;
-let flashcardIsFlipped = false;
 
 const flashcardBtn = el("flashcardBtn");
 const flashcardModal = el("flashcardModal");
-const closeFcModal = el("closeFcModal");
-const fcCard = el("fcCard");
-const fcFrontText = el("fcFrontText");
-const fcBackText = el("fcBackText");
-const fcRatingBtns = el("fcRatingBtns");
-const fcProgress = el("fcProgress");
-const fcHardBtn = el("fcHardBtn");
-const fcGoodBtn = el("fcGoodBtn");
-const fcEasyBtn = el("fcEasyBtn");
-const fcPrevBtn = el("fcPrevBtn");
-const fcNextBtn = el("fcNextBtn");
+const closeFlashcards = el("closeFlashcards");
+const flashcardBody = el("flashcardBody");
+const prevCardBtn = el("prevCardBtn");
+const nextCardBtn = el("nextCardBtn");
+const cardCountIndicator = el("cardCountIndicator");
+const srsRatingControls = el("srsRatingControls");
 const genFreshCardsBtn = el("genFreshCardsBtn");
 const srsStatusText = el("srsStatusText");
 
@@ -776,85 +877,11 @@ function getRecordingCards(recId) {
   return state.flashcardDeck.filter(c => c.recording_id === recId);
 }
 
-function setFlashcardLoading(message) {
-  if (fcFrontText) {
-    fcFrontText.classList.remove("hidden");
-    fcFrontText.innerHTML = escapeHtml(message);
-  }
-  if (fcBackText) {
-    fcBackText.textContent = "";
-    fcBackText.classList.add("hidden");
-  }
-  if (fcRatingBtns) fcRatingBtns.classList.add("hidden");
-}
-
-function renderCurrentCard() {
-  if (!fcCard || !fcFrontText || !fcBackText) return;
-
-  if (!currentDeckCards.length) {
-    fcFrontText.textContent = 'No flashcards yet. Click “Generate New Flashcards” below.';
-    fcBackText.classList.add("hidden");
-    if (fcRatingBtns) fcRatingBtns.classList.add("hidden");
-    if (fcProgress) fcProgress.textContent = "0 cards";
-    if (fcPrevBtn) fcPrevBtn.disabled = true;
-    if (fcNextBtn) fcNextBtn.disabled = true;
-    return;
-  }
-
-  if (currentCardIndex >= currentDeckCards.length) currentCardIndex = 0;
-  if (currentCardIndex < 0) currentCardIndex = currentDeckCards.length - 1;
-
-  const card = currentDeckCards[currentCardIndex];
-  flashcardIsFlipped = false;
-
-  fcCard.style.background = 'var(--panel2)';
-  fcCard.style.borderColor = 'var(--line)';
-  fcFrontText.textContent = card.front || "(No question text)";
-  fcFrontText.classList.remove("hidden");
-  fcBackText.textContent = card.back || "(No answer text)";
-  fcBackText.classList.add("hidden");
-  if (fcRatingBtns) fcRatingBtns.classList.add("hidden");
-  if (fcProgress) fcProgress.textContent = `Card ${currentCardIndex + 1} of ${currentDeckCards.length}`;
-  if (fcPrevBtn) fcPrevBtn.disabled = currentDeckCards.length <= 1;
-  if (fcNextBtn) fcNextBtn.disabled = currentDeckCards.length <= 1;
-}
-
-function flipFlashcard() {
-  if (!currentDeckCards.length) return;
-  flashcardIsFlipped = !flashcardIsFlipped;
-  if (flashcardIsFlipped) {
-    fcCard.style.background = 'rgba(11,191,191,0.08)';
-    fcCard.style.borderColor = 'var(--brand)';
-    fcFrontText.classList.add("hidden");
-    fcBackText.classList.remove("hidden");
-    if (fcRatingBtns) fcRatingBtns.classList.remove("hidden");
-  } else {
-    fcCard.style.background = 'var(--panel2)';
-    fcCard.style.borderColor = 'var(--line)';
-    fcFrontText.classList.remove("hidden");
-    fcBackText.classList.add("hidden");
-    if (fcRatingBtns) fcRatingBtns.classList.add("hidden");
-  }
-}
-
-if (fcCard) fcCard.addEventListener("click", flipFlashcard);
-if (fcPrevBtn) fcPrevBtn.addEventListener("click", (e) => {
-  e.stopPropagation();
-  if (!currentDeckCards.length) return;
-  currentCardIndex = (currentCardIndex - 1 + currentDeckCards.length) % currentDeckCards.length;
-  renderCurrentCard();
-});
-if (fcNextBtn) fcNextBtn.addEventListener("click", (e) => {
-  e.stopPropagation();
-  if (!currentDeckCards.length) return;
-  currentCardIndex = (currentCardIndex + 1) % currentDeckCards.length;
-  renderCurrentCard();
-});
-
 if (flashcardBtn) {
   flashcardBtn.addEventListener("click", async () => {
-    if (!state.current || !flashcardModal) return;
+    if (!state.current) return;
     flashcardModal.classList.remove("hidden");
+    
     const existing = getRecordingCards(state.current.id);
     if (existing.length === 0) {
       await generateNewFlashcards();
@@ -868,35 +895,28 @@ if (flashcardBtn) {
 }
 
 if (genFreshCardsBtn) {
-  genFreshCardsBtn.addEventListener("click", async (e) => {
-    e.stopPropagation();
-    await generateNewFlashcards();
-  });
+  genFreshCardsBtn.addEventListener("click", () => generateNewFlashcards());
 }
 
 async function generateNewFlashcards() {
   if (!state.current) return;
-  setFlashcardLoading("✨ Generating fresh flashcards for this class…");
-  if (genFreshCardsBtn) {
-    genFreshCardsBtn.disabled = true;
-    genFreshCardsBtn.textContent = "Generating…";
-  }
-
-  const existingFronts = getRecordingCards(state.current.id).map(c => c.front).filter(Boolean);
+  flashcardBody.innerHTML = '<div class="typing">Crafting fresh flashcards from class <span class="dot">●</span><span class="dot">●</span><span class="dot">●</span></div>';
+  if (srsRatingControls) srsRatingControls.classList.add("hidden");
+  
+  const existingFronts = getRecordingCards(state.current.id).map(c => c.front);
 
   try {
     const res = await fetch(`${API}/api/flashcards`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        recording_id: state.current.id,
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ 
+        recording_id: state.current.id, 
         existing_fronts: existingFronts,
-        token: state.token
+        token: state.token 
       })
     });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok || data.error || !Array.isArray(data.flashcards) || data.flashcards.length === 0) {
-      setFlashcardLoading(data.error || "Could not generate new flashcards for this class.");
+    const data = await res.json();
+    if (data.error || !data.flashcards || data.flashcards.length === 0) {
+      flashcardBody.innerHTML = '<p>Could not generate new cards for this class.</p>';
       return;
     }
 
@@ -904,17 +924,12 @@ async function generateNewFlashcards() {
     const newCards = data.flashcards.map(fc => ({
       id: "fc_" + Math.random().toString(36).substring(2, 9),
       recording_id: state.current.id,
-      front: String(fc.front || "").trim(),
-      back: String(fc.back || "").trim(),
+      front: fc.front,
+      back: fc.back,
       interval: 1,
       reps: 0,
       dueDate: now
-    })).filter(c => c.front && c.back);
-
-    if (!newCards.length) {
-      setFlashcardLoading("The AI returned no usable flashcards. Please try again.");
-      return;
-    }
+    }));
 
     state.flashcardDeck.push(...newCards);
     await saveServerProfile();
@@ -924,12 +939,7 @@ async function generateNewFlashcards() {
     updateSrsHeader();
     renderCurrentCard();
   } catch (e) {
-    setFlashcardLoading("Network error generating flashcards. Please try again.");
-  } finally {
-    if (genFreshCardsBtn) {
-      genFreshCardsBtn.disabled = false;
-      genFreshCardsBtn.textContent = "✨ Generate New Flashcards";
-    }
+    flashcardBody.innerHTML = '<p>Network error generating flashcards.</p>';
   }
 }
 
@@ -940,11 +950,47 @@ function updateSrsHeader() {
   srsStatusText.textContent = `🎯 Due for Review: ${due} / ${total} cards`;
 }
 
-function closeFlashcardModal() {
-  if (flashcardModal) flashcardModal.classList.add("hidden");
-  flashcardIsFlipped = false;
+if (closeFlashcards) closeFlashcards.addEventListener("click", () => flashcardModal.classList.add("hidden"));
+
+function renderCurrentCard() {
+  if (!currentDeckCards.length) {
+    flashcardBody.innerHTML = '<p class="meta">No flashcards in deck. Click "Generate New Cards" above!</p>';
+    if (srsRatingControls) srsRatingControls.classList.add("hidden");
+    return;
+  }
+  
+  const card = currentDeckCards[currentCardIndex];
+  cardCountIndicator.textContent = `${currentCardIndex + 1} / ${currentDeckCards.length}`;
+  if (srsRatingControls) srsRatingControls.classList.add("hidden");
+
+  let isFlipped = false;
+  flashcardBody.innerHTML = `
+    <div id="activeFlashcard" style="width: 100%; height: 200px; background: var(--panel2); border: 2px solid var(--line); border-radius: 16px; display: flex; align-items: center; justify-content: center; padding: 20px; cursor: pointer; text-align: center; box-shadow: var(--shadow-sm); transition: 0.2s;">
+      <div style="font-size: 16px; font-weight: 700; color: var(--text);" id="cardTextContent">
+        💡 <strong>Front (Question):</strong><br><br>${escapeHtml(card.front)}
+        <div class="meta" style="font-size: 11px; margin-top: 10px; font-weight: 600;">(Click card to reveal answer & Spaced Repetition ratings)</div>
+      </div>
+    </div>
+  `;
+  
+  const cardElem = el("activeFlashcard");
+  const textElem = el("cardTextContent");
+  
+  cardElem.addEventListener("click", () => {
+    isFlipped = !isFlipped;
+    if (isFlipped) {
+      cardElem.style.background = 'rgba(11,191,191,0.08)';
+      cardElem.style.borderColor = 'var(--brand)';
+      textElem.innerHTML = `✅ <strong>Back (Answer):</strong><br><br>${escapeHtml(card.back)}`;
+      if (srsRatingControls) srsRatingControls.classList.remove("hidden");
+    } else {
+      cardElem.style.background = 'var(--panel2)';
+      cardElem.style.borderColor = 'var(--line)';
+      textElem.innerHTML = `💡 <strong>Front (Question):</strong><br><br>${escapeHtml(card.front)}`;
+      if (srsRatingControls) srsRatingControls.classList.add("hidden");
+    }
+  });
 }
-if (closeFcModal) closeFcModal.addEventListener("click", (e) => { e.stopPropagation(); closeFlashcardModal(); });
 
 async function rateCard(ratingFactor) {
   if (!currentDeckCards.length) return;
@@ -953,7 +999,10 @@ async function rateCard(ratingFactor) {
   if (!original) return;
 
   const now = new Date();
-  if (ratingFactor === 'hard') {
+  if (ratingFactor === 'again') {
+    original.interval = 1;
+    original.reps = 0;
+  } else if (ratingFactor === 'hard') {
     original.interval = Math.max(1, Math.round((original.interval || 1) * 1.2));
   } else if (ratingFactor === 'good') {
     original.interval = Math.max(2, Math.round((original.interval || 1) * 2.5));
@@ -963,37 +1012,27 @@ async function rateCard(ratingFactor) {
     original.reps = (original.reps || 0) + 1;
   }
 
-  original.dueDate = new Date(now.getTime() + (original.interval * 24 * 60 * 60 * 1000)).toISOString();
+  const nextReview = new Date(now.getTime() + (original.interval * 24 * 60 * 60 * 1000));
+  original.dueDate = nextReview.toISOString();
+
   await saveServerProfile();
   updateSrsHeader();
 
-  if (currentDeckCards.length > 1) {
-    currentCardIndex = (currentCardIndex + 1) % currentDeckCards.length;
+  if (currentCardIndex < currentDeckCards.length - 1) {
+    currentCardIndex++;
+  } else {
+    currentCardIndex = 0;
   }
   renderCurrentCard();
 }
 
-if (fcHardBtn) fcHardBtn.addEventListener("click", (e) => { e.stopPropagation(); rateCard('hard'); });
-if (fcGoodBtn) fcGoodBtn.addEventListener("click", (e) => { e.stopPropagation(); rateCard('good'); });
-if (fcEasyBtn) fcEasyBtn.addEventListener("click", (e) => { e.stopPropagation(); rateCard('easy'); });
+if (el("srsAgainBtn")) el("srsAgainBtn").addEventListener("click", () => rateCard('again'));
+if (el("srsHardBtn")) el("srsHardBtn").addEventListener("click", () => rateCard('hard'));
+if (el("srsGoodBtn")) el("srsGoodBtn").addEventListener("click", () => rateCard('good'));
+if (el("srsEasyBtn")) el("srsEasyBtn").addEventListener("click", () => rateCard('easy'));
 
-// Robust modal close fallbacks for both current and legacy IDs.
-document.addEventListener("click", (e) => {
-  const t = e.target;
-  if (!t) return;
-  if (t.id === "closeFcModal" || t.closest?.("#closeFcModal")) closeFlashcardModal();
-  if (t.id === "closeQuizModal" || t.closest?.("#closeQuizModal")) {
-    const q = el("quizModal");
-    if (q) q.classList.add("hidden");
-  }
-});
-
-document.addEventListener("keydown", (e) => {
-  if (e.key !== "Escape") return;
-  closeFlashcardModal();
-  const q = el("quizModal");
-  if (q) q.classList.add("hidden");
-});
+if (prevCardBtn) prevCardBtn.addEventListener("click", () => { if (currentCardIndex > 0) { currentCardIndex--; renderCurrentCard(); } });
+if (nextCardBtn) nextCardBtn.addEventListener("click", () => { if (currentCardIndex < currentDeckCards.length - 1) { currentCardIndex++; renderCurrentCard(); } });
 
 /* =========================================================
    STUDY PLAN FEATURE
@@ -2653,156 +2692,6 @@ if (el("tppCourseSelect")) {
 }
 
 // ==========================================
-// PAST PAPER CURATED QUESTION LIBRARY
-// ==========================================
-
-function parseExamPackId(examKey) {
-  const m = String(examKey || "").match(/^(\d{4})\s+(.+?)\s+Paper\s+(.+)$/i);
-  if (!m) return { year: "", series: "", paper: "" };
-  return { year: m[1], series: m[2].trim(), paper: m[3].trim() };
-}
-
-function renderTeacherOverrides(list) {
-  const container = el("tppOverridesList");
-  if (!container) return;
-  container.innerHTML = "";
-
-  if (!Array.isArray(list) || !list.length) {
-    container.innerHTML = '<p class="meta">No questions added to the library yet.</p>';
-    return;
-  }
-
-  const tree = {};
-  list.forEach(item => {
-    const course = item.course || "Unassigned Course";
-    const examKey = `${item.year || ""} ${item.series || ""} Paper ${item.paper || ""}`.trim();
-    if (!tree[course]) tree[course] = {};
-    if (!tree[course][examKey]) tree[course][examKey] = [];
-    tree[course][examKey].push(item);
-  });
-
-  Object.keys(tree).sort((a,b) => a.localeCompare(b)).forEach(courseName => {
-    const courseItems = tree[courseName];
-    const examKeys = Object.keys(courseItems).sort((a,b) => b.localeCompare(a, undefined, {numeric:true}));
-    const courseQuestionCount = examKeys.reduce((n, k) => n + courseItems[k].length, 0);
-
-    const courseDetails = document.createElement("details");
-    courseDetails.style.cssText = "width:100%;box-sizing:border-box;background:var(--panel);border:1.5px solid var(--line);border-radius:12px;margin-bottom:14px;overflow:hidden;box-shadow:var(--shadow-sm);";
-
-    const courseSummary = document.createElement("summary");
-    courseSummary.style.cssText = "list-style:none;cursor:pointer;padding:13px 16px;background:var(--panel2);font-weight:800;color:var(--brand-d);display:flex;align-items:center;justify-content:space-between;gap:12px;";
-    courseSummary.innerHTML = `
-      <span>📚 Course: ${escapeHtml(courseName)}</span>
-      <span class="meta" style="font-size:11.5px;background:var(--panel);padding:3px 9px;border-radius:12px;">${examKeys.length} exam${examKeys.length === 1 ? "" : "s"} · ${courseQuestionCount} question${courseQuestionCount === 1 ? "" : "s"}</span>`;
-    courseDetails.appendChild(courseSummary);
-
-    const courseBody = document.createElement("div");
-    courseBody.style.cssText = "padding:12px 14px;";
-
-    examKeys.forEach(examKey => {
-      const qItems = courseItems[examKey].slice().sort((a,b) => String(a.question).localeCompare(String(b.question), undefined, {numeric:true}));
-      const parsed = parseExamPackId(examKey);
-
-      const examDetails = document.createElement("details");
-      examDetails.style.cssText = "border:1px solid var(--line);border-radius:10px;background:var(--panel2);margin-bottom:10px;overflow:hidden;";
-
-      const examSummary = document.createElement("summary");
-      examSummary.style.cssText = "list-style:none;cursor:pointer;padding:11px 13px;display:flex;align-items:center;justify-content:space-between;gap:12px;";
-
-      const examTitle = document.createElement("span");
-      examTitle.innerHTML = `<strong style="font-size:13.5px;color:var(--text);">📝 ${escapeHtml(examKey)}</strong><span class="meta" style="margin-left:8px;">${qItems.length} question${qItems.length===1?"":"s"}</span>`;
-
-      const deleteExamBtn = document.createElement("button");
-      deleteExamBtn.type = "button";
-      deleteExamBtn.className = "ghost-sm danger-btn";
-      deleteExamBtn.textContent = "🗑️ Delete Full Exam";
-      deleteExamBtn.title = "Delete every curated question in this exam pack";
-      deleteExamBtn.style.cssText = "padding:5px 10px;font-size:11px;white-space:nowrap;";
-      deleteExamBtn.addEventListener("click", async e => {
-        e.preventDefault();
-        e.stopPropagation();
-        const confirmText = `Delete the FULL exam\n\n${courseName} — ${examKey}\n\nThis will permanently remove ${qItems.length} question${qItems.length===1?"":"s"} from the Past Paper Library.\n\nUploaded answered/reference documents will NOT be deleted.\n\nContinue?`;
-        if (!confirm(confirmText)) return;
-        deleteExamBtn.disabled = true;
-        const oldText = deleteExamBtn.textContent;
-        deleteExamBtn.textContent = "Deleting…";
-        try {
-          const res = await fetch(`${API}/api/teacher/pastpaper/solutions/delete-exam`, {
-            method:"POST",
-            headers:{"Content-Type":"application/json"},
-            body:JSON.stringify({passcode:state.passcode,course:courseName,year:parsed.year,series:parsed.series,paper:parsed.paper})
-          });
-          const data = await res.json().catch(() => ({}));
-          if (!res.ok) {
-            toast(data.error || "Could not delete the exam.", "error");
-            return;
-          }
-          const deleted = data.deleted ?? qItems.length;
-          toast(`Deleted ${deleted} question${deleted === 1 ? "" : "s"} from ${examKey} ✓`, "success", 4500);
-          await refreshPastPaperHub();
-        } catch (err) {
-          console.error(err);
-          toast("Network error while deleting the exam.", "error");
-        } finally {
-          deleteExamBtn.disabled = false;
-          deleteExamBtn.textContent = oldText;
-        }
-      });
-
-      examSummary.appendChild(examTitle);
-      examSummary.appendChild(deleteExamBtn);
-      examDetails.appendChild(examSummary);
-
-      const qContainer = document.createElement("div");
-      qContainer.style.cssText = "display:flex;flex-direction:column;gap:6px;padding:0 10px 10px;";
-      qItems.forEach(q => {
-        const row = document.createElement("div");
-        row.style.cssText = "display:flex;justify-content:space-between;align-items:center;gap:10px;padding:8px 10px;background:var(--bg);border:1px solid var(--line);border-radius:8px;font-size:12px;";
-        const metaBits = [];
-        if (q.examiner_notes && q.examiner_notes.trim()) metaBits.push("📊 Examiner Report");
-        if (q.video_url) metaBits.push("🎥 Video");
-        if (q.answered_doc_name) metaBits.push(`📄 ${q.answered_doc_name}`);
-        row.innerHTML = `
-          <div style="min-width:0;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
-            <strong style="color:var(--brand-d);">Q${escapeHtml(q.question)}</strong>
-            ${metaBits.length ? `<span class="meta">${escapeHtml(metaBits.join(" · "))}</span>` : ""}
-          </div>
-          <button type="button" class="ghost-sm danger-btn pp-question-delete" style="padding:2px 8px;font-size:10.5px;">🗑️ Delete</button>`;
-        row.querySelector(".pp-question-delete").addEventListener("click", async () => {
-          if (!confirm(`Delete question Q${q.question} from ${examKey}?`)) return;
-          const btn = row.querySelector(".pp-question-delete");
-          btn.disabled = true;
-          try {
-            const res = await fetch(`${API}/api/teacher/pastpaper/solutions/delete`, {
-              method:"POST",
-              headers:{"Content-Type":"application/json"},
-              body:JSON.stringify({passcode:state.passcode,key:q.key})
-            });
-            const data = await res.json().catch(() => ({}));
-            if (!res.ok) {
-              toast(data.error || "Could not delete the question.", "error");
-              return;
-            }
-            toast(`Q${q.question} deleted ✓`, "success");
-            await refreshPastPaperHub();
-          } catch (err) {
-            toast("Network error while deleting the question.", "error");
-          } finally {
-            btn.disabled = false;
-          }
-        });
-        qContainer.appendChild(row);
-      });
-      examDetails.appendChild(qContainer);
-      courseBody.appendChild(examDetails);
-    });
-
-    courseDetails.appendChild(courseBody);
-    container.appendChild(courseDetails);
-  });
-}
-
-// ==========================================
 // FIX: PAST PAPER HUB COURSES & DOCUMENT LIBRARY
 // ==========================================
 
@@ -2867,20 +2756,7 @@ async function refreshPastPaperHub() {
     } else {
       ppDocs.forEach(doc => {
         const row = document.createElement("div");
-        row.className = "pastpaper-doc-row";
-        row.style.cssText = [
-          "display:grid",
-          "grid-template-columns:minmax(260px,1fr) minmax(190px,auto) auto",
-          "align-items:center",
-          "gap:14px",
-          "width:100%",
-          "box-sizing:border-box",
-          "padding:11px 12px",
-          "background:var(--bg)",
-          "border:1px solid var(--line)",
-          "border-radius:9px"
-        ].join(";");
-
+        row.style.cssText = "display:flex;align-items:center;justify-content:space-between;padding:9px 12px;background:var(--bg);border:1px solid var(--line);border-radius:8px;gap:12px;";
         const options = [
           '<option value="">-- Unassigned / Shared --</option>',
           ...allCourses.map(c => {
@@ -2888,22 +2764,20 @@ async function refreshPastPaperHub() {
             return `<option value="${escapeHtml(c)}"${selected}>${escapeHtml(c)}</option>`;
           })
         ].join("");
-
-        const fileName = doc.filename || "Untitled document";
         row.innerHTML = `
-          <div style="min-width:0;display:flex;flex-direction:column;gap:4px;">
-            <span class="pastpaper-doc-name" title="${escapeHtml(fileName)}" style="font-size:13px;font-weight:800;white-space:normal;overflow:visible;text-overflow:clip;overflow-wrap:anywhere;word-break:break-word;">📄 ${escapeHtml(fileName)}</span>
+          <div style="min-width:0;display:flex;flex-direction:column;gap:2px;">
+            <span style="font-size:12.5px;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">📄 ${escapeHtml(doc.filename || "Untitled")}</span>
             <span class="meta" style="font-size:10.5px;">${doc.uploaded_at ? `Uploaded ${escapeHtml(doc.uploaded_at)} · ` : ""}${Number(doc.text_chars || 0).toLocaleString()} characters indexed</span>
           </div>
-          <label style="display:flex;align-items:center;gap:7px;font-size:11px;font-weight:800;white-space:nowrap;">
-            Course
-            <select class="doc-course-assign" data-docid="${escapeHtml(doc.id)}" style="min-width:180px;padding:6px 9px;font-size:11.5px;border-radius:7px;border:1px solid var(--line);">${options}</select>
-          </label>
-          <button class="ghost-sm danger-btn doc-delete-btn" type="button" title="Delete document" style="padding:7px 10px;">🗑️</button>`;
+          <div style="display:flex;align-items:center;gap:8px;flex-shrink:0;">
+            <label style="display:flex;align-items:center;gap:6px;font-size:11px;font-weight:700;">Course
+              <select class="doc-course-assign" data-docid="${escapeHtml(doc.id)}" style="padding:5px 8px;font-size:11.5px;border-radius:6px;border:1px solid var(--line);">${options}</select>
+            </label>
+            <button class="ghost-sm danger-btn doc-delete-btn" type="button" title="Delete document">🗑️</button>
+          </div>`;
 
         const assign = row.querySelector(".doc-course-assign");
         assign.addEventListener("change", async e => {
-          const oldValue = doc.course || "";
           const fd = new FormData();
           fd.append("passcode", passcode);
           fd.append("doc_id", doc.id);
@@ -2914,20 +2788,20 @@ async function refreshPastPaperHub() {
             const data = await res.json().catch(() => ({}));
             if (!res.ok) {
               toast(data.error || "Failed to update document course.", "error");
-              e.target.value = oldValue;
+              e.target.value = doc.course || "";
               return;
             }
-            doc.course = e.target.value;
-            toast(`"${fileName}" assigned to ${e.target.value || "Shared / Unassigned"} ✓`, "success");
+            toast(`"${doc.filename}" assigned to ${e.target.value || "Shared / Unassigned"} ✓`, "success");
+            await refreshPastPaperHub();
           } catch (err) {
             console.error(err);
             toast("Network error updating document course.", "error");
-            e.target.value = oldValue;
+            e.target.value = doc.course || "";
           } finally {
             e.target.disabled = false;
           }
         });
-        row.querySelector(".doc-delete-btn").addEventListener("click", () => deletePastPaperDoc(doc.id, fileName));
+        row.querySelector(".doc-delete-btn").addEventListener("click", () => deletePastPaperDoc(doc.id, doc.filename));
         container.appendChild(row);
       });
     }

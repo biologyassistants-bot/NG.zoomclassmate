@@ -2957,6 +2957,103 @@ def _syllabus_topic_source(course: str, syllabi):
     return str(raw or "").strip(), []
 
 
+async def _syllabus_map_expand_query(query: str, structured_topics):
+    """Use AI to expand a student's concept/sentence into context-aware search phrases.
+
+    This is deliberately a retrieval step, not the final answer. It helps paraphrased
+    student questions match syllabus terminology, teacher notes, transcripts, and
+    past-paper wording without relying on exact keyword overlap.
+    """
+    catalog = []
+    for entry in structured_topics or []:
+        course = entry.get("course") or ""
+        for topic in entry.get("topics") or []:
+            if isinstance(topic, dict):
+                title = str(topic.get("title") or topic.get("name") or "").strip()
+                if not title:
+                    continue
+                code = str(topic.get("id") or topic.get("code") or "").strip()
+                desc = str(topic.get("description") or "").strip()
+                catalog.append({"course": course, "id": code, "title": title, "description": desc})
+            elif isinstance(topic, str) and topic.strip():
+                catalog.append({"course": course, "id": "", "title": topic.strip(), "description": ""})
+    catalog_text = json.dumps(catalog[:160], ensure_ascii=False)[:16000]
+    system = (
+        "You are a retrieval-query expansion engine for a Biology academic platform. "
+        "The student enters either a keyword, concept, question, or full sentence. "
+        "Expand it into a small set of biologically meaningful search phrases that can be used "
+        "to search an official syllabus, teacher notes, lecture transcripts, and past-paper questions. "
+        "Do not answer the student's question. Return STRICT JSON only:\n"
+        '{"search_terms":[string],"syllabus_phrases":[string]}'
+        "\nRules: preserve the original meaning; include synonyms and the underlying biological process when clear; "
+        "do not invent a syllabus code; prefer phrases that would plausibly appear in official teaching material. "
+        "If a syllabus catalog is supplied, syllabus_phrases should preferentially reuse or closely match its titles."
+    )
+    user = f"STUDENT QUERY:\n{query}\n\nSYLLABUS CATALOG (may be empty):\n{catalog_text or '[none]'}"
+    try:
+        raw = await llm(
+            [{"role": "system", "content": system}, {"role": "user", "content": user}],
+            max_tokens=700,
+            temperature=0.0,
+        )
+        txt = (raw or "").strip()
+        start = txt.find("{")
+        end = txt.rfind("}")
+        parsed = json.loads(txt[start:end + 1]) if start != -1 and end != -1 else {}
+    except Exception as exc:
+        print(f"[syllabus-map] query expansion failed: {exc}")
+        parsed = {}
+
+    def clean_list(value, limit=12):
+        out = []
+        for item in value if isinstance(value, list) else []:
+            item = str(item or "").strip()
+            if item and item.lower() not in {x.lower() for x in out}:
+                out.append(item)
+            if len(out) >= limit:
+                break
+        return out
+
+    search_terms = clean_list(parsed.get("search_terms"), 12)
+    syllabus_phrases = clean_list(parsed.get("syllabus_phrases"), 10)
+    return search_terms, syllabus_phrases
+
+
+def _syllabus_map_note_candidates(query: str, expanded_query: str, recordings, allowed_courses, max_items=40):
+    """Search teacher notes by concept/context and return only strong note matches."""
+    rows = []
+    notes_lib = load_notes_library()
+    notes_by_id = {str(n.get("id")): n for n in notes_lib if isinstance(n, dict)}
+    query_terms = _syllabus_map_tokens(expanded_query or query)
+    for rec in recordings:
+        unit = (rec.get("unit") or "Unassigned").strip()
+        if allowed_courses and unit not in allowed_courses:
+            continue
+        title = rec.get("display_title") or rec.get("topic") or "Class recording"
+        for nid in (rec.get("note_ids") or []):
+            note = notes_by_id.get(str(nid))
+            if not note:
+                continue
+            filename = note.get("filename") or "Teacher notes"
+            for chunk in note.get("chunks") or []:
+                text = str(chunk or "").strip()
+                if not text:
+                    continue
+                score = _syllabus_map_score(query_terms, text)
+                if score <= 0:
+                    continue
+                rows.append({
+                    "recording_id": rec.get("id"),
+                    "title": title,
+                    "course": unit,
+                    "note_title": filename,
+                    "text": text,
+                    "score": score,
+                })
+    rows.sort(key=lambda x: x["score"], reverse=True)
+    return rows[:max_items]
+
+
 def _syllabus_map_lexical_recording_candidates(query: str, recordings, allowed_courses):
     query_terms = _syllabus_map_tokens(query)
     candidates = []
@@ -3100,8 +3197,12 @@ async def student_syllabus_map(body: dict):
         if topics:
             structured_topics.append({"course": course, "syllabus": name, "topics": topics})
 
-    lexical = _syllabus_map_lexical_recording_candidates(query, eligible_recordings, allowed_courses)
-    class_evidence = await _syllabus_map_semantic_candidates(query, lexical, max_recordings=20)
+    search_terms, syllabus_phrases = await _syllabus_map_expand_query(query, structured_topics)
+    expanded_query = " ".join([query] + search_terms + syllabus_phrases).strip()
+
+    lexical = _syllabus_map_lexical_recording_candidates(expanded_query, eligible_recordings, allowed_courses)
+    class_evidence = await _syllabus_map_semantic_candidates(expanded_query, lexical, max_recordings=20)
+    note_evidence = _syllabus_map_note_candidates(query, expanded_query, eligible_recordings, allowed_courses, max_items=40)
 
     # De-duplicate evidence while keeping the strongest timestamp for each recording.
     seen = set()
@@ -3115,9 +3216,9 @@ async def student_syllabus_map(body: dict):
     class_evidence = unique_classes[:45]
 
     sols = load_pp_json(PAST_PAPER_SOLUTIONS_PATH)
-    pp_candidates = _syllabus_map_pastpaper_candidates(query, sols, allowed_courses, max_items=35)
+    pp_candidates = _syllabus_map_pastpaper_candidates(expanded_query, sols, allowed_courses, max_items=35)
 
-    if not class_evidence and not pp_candidates:
+    if not class_evidence and not note_evidence and not pp_candidates:
         return {
             "query": query,
             "courses": course_names,
@@ -3138,6 +3239,10 @@ async def student_syllabus_map(body: dict):
     pp_text = "\n".join(
         f"[{i}] course={p['course']} | year={p['year']} | series={p['series']} | paper={p['paper']} | question={p['question']} | type={p['question_type']} | text={p['text']}"
         for i, p in enumerate(pp_candidates)
+    )
+    note_text = "\n".join(
+        f"[{i}] course={n['course']} | recording={n['title']} | note={n['note_title']} | text={n['text']}"
+        for i, n in enumerate(note_evidence)
     )
 
     system = (
@@ -3160,13 +3265,16 @@ async def student_syllabus_map(body: dict):
         "Do not invent numeric syllabus codes. If a structured topic list is supplied, choose from those exact topic titles. "
         "2. syllabus_subtopic can be a narrower concept phrase grounded in the evidence. "
         "3. class_indices should contain only the strongest relevant class evidence records, usually 1-6. "
-        "4. past_paper_indices should contain only genuinely related exam questions, usually 0-8. "
-        "5. topic_explanation should be one concise sentence explaining the mapping."
+        "4. A keyword match alone is NOT enough. The evidence must discuss the student's requested concept in the correct biological/academic context. "
+        "5. Use teacher-note evidence and syllabus-topic evidence to disambiguate paraphrases and sentences. "
+        "6. past_paper_indices should contain only genuinely related exam questions, usually 0-8. "
+        "7. topic_explanation should be one concise sentence explaining the mapping."
     )
     user = (
         f"STUDENT QUERY:\n{query}\n\n"
         f"SYLLABUS NAMES:\n{syllabus_names_text}\n\n"
         f"STRUCTURED SYLLABUS TOPICS (if available):\n{structured_text}\n\n"
+        f"TEACHER NOTE EVIDENCE:\n{note_text or '[none]'}\n\n"
         f"CLASS EVIDENCE:\n{class_text or '[none]'}\n\n"
         f"PAST PAPER CANDIDATES:\n{pp_text or '[none]'}"
     )
@@ -3208,17 +3316,21 @@ async def student_syllabus_map(body: dict):
     if not pp_indices:
         pp_indices = list(range(min(5, len(pp_candidates))))
 
-    classes = []
+    grouped = {}
     for i in class_indices:
         c = class_evidence[i]
-        classes.append({
+        rid = str(c["recording_id"])
+        entry = grouped.setdefault(rid, {
             "recording_id": c["recording_id"],
             "title": c["title"],
             "course": c["course"],
             "date": c["date"],
-            "timestamp": c["timestamp"],
-            "evidence": c["text"],
+            "timestamps": [],
         })
+        ts = c.get("timestamp") or ""
+        if ts and ts not in entry["timestamps"]:
+            entry["timestamps"].append(ts)
+    classes = list(grouped.values())
 
     past_papers = []
     for i in pp_indices:

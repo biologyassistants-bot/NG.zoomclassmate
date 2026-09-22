@@ -2428,7 +2428,7 @@ async function runSyllabusMapSearch() {
   }
   if (empty) empty.classList.add("hidden");
   results.classList.remove("hidden");
-  results.innerHTML = '<div class="typing" style="padding: 30px; text-align:center;">Searching your classes and past-paper library <span class="dot">●</span><span class="dot">●</span><span class="dot">●</span></div>';
+  results.innerHTML = '<div class="typing" style="padding: 30px; text-align:center;">Searching the syllabus, teacher notes, classes and past-paper library <span class="dot">●</span><span class="dot">●</span><span class="dot">●</span></div>';
 
   try {
     const res = await fetch(`${API}/api/student/syllabus-map`, {
@@ -2482,19 +2482,22 @@ function renderSyllabusMapResults(data) {
   html += `<section style="background:var(--panel); border:1.5px solid var(--line); border-radius:14px; padding:16px;">`;
   html += `<div style="font-size:15px; font-weight:900; margin-bottom:10px;">🎥 Related Classes <span class="meta">(${classes.length})</span></div>`;
   if (!classes.length) {
-    html += `<p class="meta">No matching class excerpt was selected for this concept.</p>`;
+    html += `<p class="meta">No matching class was selected for this concept.</p>`;
   } else {
     classes.forEach(c => {
+      const timestamps = Array.isArray(c.timestamps) ? [...new Set(c.timestamps.filter(Boolean))] : (c.timestamp ? [c.timestamp] : []);
+      const tsHtml = timestamps.length
+        ? `<div style="display:flex; flex-direction:column; align-items:flex-end; gap:5px; flex:0 0 auto;">${timestamps.map(ts => `<span class="ts-chip" style="white-space:nowrap;">⏱ ${escapeHtml(ts)}</span>`).join("")}</div>`
+        : "";
       html += `
         <div style="padding:12px; border:1px solid var(--line); background:var(--panel2); border-radius:11px; margin-top:9px;">
-          <div style="display:flex; justify-content:space-between; gap:12px; align-items:flex-start;">
-            <div>
+          <div style="display:flex; justify-content:space-between; gap:14px; align-items:flex-start;">
+            <div style="min-width:0;">
               <div style="font-weight:850;">${escapeHtml(c.title || "Class recording")}</div>
               <div class="meta" style="margin-top:3px;">${escapeHtml(c.course || "")} ${c.date ? `· ${escapeHtml(c.date)}` : ""}</div>
             </div>
-            ${c.timestamp ? `<span class="ts-chip" style="white-space:nowrap;">⏱ ${escapeHtml(c.timestamp)}</span>` : ""}
+            ${tsHtml}
           </div>
-          ${c.evidence ? `<div style="font-size:12.5px; line-height:1.45; margin-top:8px; color:var(--muted);">“${escapeHtml(c.evidence)}”</div>` : ""}
           <button type="button" class="ghost-sm sm-open-class" data-recording-id="${escapeHtml(c.recording_id || "")}" style="margin-top:9px;">Open class →</button>
         </div>`;
     });

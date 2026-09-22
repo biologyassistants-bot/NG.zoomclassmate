@@ -456,6 +456,18 @@
           </label>
           <button id="saveSyllabusBtn" class="primary" style="height: 42px;">Save Mapping</button>
         </div>
+        <div style="margin-top:14px; padding-top:14px; border-top:1px solid var(--line);">
+          <div style="font-weight:800; font-size:13px; margin-bottom:5px;">Build the Syllabus Map data</div>
+          <p class="meta" style="margin:0 0 10px;">Upload the official syllabus PDF/Word file once. ClassMate will extract the exact topic hierarchy and use it as the authoritative source for student Syllabus Map searches.</p>
+          <div style="display:grid; grid-template-columns:minmax(220px,1fr) auto; gap:10px; align-items:end;">
+            <label class="fld">
+              <span>Official syllabus file</span>
+              <input id="tppSyllabusFile" type="file" accept=".pdf,.docx,.txt,.md" style="width:100%; font-size:12px; padding:7px;" />
+            </label>
+            <button id="buildSyllabusMapBtn" class="ghost" type="button" style="height:42px;">Build / Update Syllabus Map</button>
+          </div>
+          <div id="syllabusMapBuildStatus" class="meta" style="margin-top:8px;"></div>
+        </div>
       </div>
 
       <!-- Card B: Upload Model Answer / Reference Document -->
@@ -787,6 +799,6 @@
   }, 2500);
 })();
 </script>
-<script src="./app.js?v=296" onerror="(function(){var e=document.getElementById('toastMsg');var t=document.getElementById('toast');if(e&&t){e.textContent='Application script failed to load. Please deploy app.js beside index.html.';t.classList.remove('hidden');}})();"></script>
+<script src="./app.js?v=297" onerror="(function(){var e=document.getElementById('toastMsg');var t=document.getElementById('toast');if(e&&t){e.textContent='Application script failed to load. Please deploy app.js beside index.html.';t.classList.remove('hidden');}})();"></script>
 </body>
 </html>

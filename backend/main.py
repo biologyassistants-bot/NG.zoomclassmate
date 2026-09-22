@@ -2903,6 +2903,351 @@ def student_pp_meta(body: RecListBody):
     }
 
 # --- Student Solver Endpoint ---
+# ============================================================================
+# STUDENT SYLLABUS MAP
+# ============================================================================
+
+def _syllabus_map_tokens(text: str):
+    """Lightweight lexical tokens used to shortlist recordings/past-paper questions."""
+    stop = {
+        "the", "a", "an", "and", "or", "of", "to", "in", "is", "are", "was", "were", "be",
+        "been", "what", "where", "which", "who", "why", "how", "when", "this", "that", "these",
+        "those", "about", "from", "with", "for", "on", "at", "by", "do", "does", "did", "can",
+        "could", "would", "should", "will", "please", "me", "my", "we", "i", "you", "it", "they",
+        "find", "tell", "show", "covered", "cover", "study", "studied", "class", "topic"
+    }
+    return [w for w in tokenize(text) if len(w) > 2 and w not in stop]
+
+
+def _syllabus_map_score(query_terms, text: str) -> float:
+    terms = _syllabus_map_tokens(text)
+    if not terms or not query_terms:
+        return 0.0
+    qset = set(query_terms)
+    tset = set(terms)
+    overlap = len(qset & tset)
+    if not overlap:
+        return 0.0
+    density = overlap / max(1, len(qset))
+    return overlap + density * 2.0
+
+
+def _syllabus_topic_source(course: str, syllabi):
+    """Return optional structured syllabus topics when a course config contains them.
+
+    Backwards compatible with the existing string-valued past_paper_config.json.
+    Supported structured form:
+      {"name": "Cambridge Biology 9700", "topics": [{"id":"...", "title":"..."}, ...]}
+    """
+    raw = syllabi.get(course, "") if isinstance(syllabi, dict) else ""
+    if isinstance(raw, dict):
+        name = str(raw.get("name") or raw.get("title") or course).strip()
+        topics = raw.get("topics") or raw.get("outline") or []
+        clean = []
+        if isinstance(topics, list):
+            for i, topic in enumerate(topics):
+                if isinstance(topic, str) and topic.strip():
+                    clean.append({"id": str(i + 1), "title": topic.strip()})
+                elif isinstance(topic, dict) and (topic.get("title") or topic.get("name")):
+                    clean.append({
+                        "id": str(topic.get("id") or topic.get("code") or i + 1),
+                        "title": str(topic.get("title") or topic.get("name")).strip(),
+                    })
+        return name, clean
+    return str(raw or "").strip(), []
+
+
+def _syllabus_map_lexical_recording_candidates(query: str, recordings, allowed_courses):
+    query_terms = _syllabus_map_tokens(query)
+    candidates = []
+    for rec in recordings:
+        unit = (rec.get("unit") or "Unassigned").strip()
+        if allowed_courses and unit not in allowed_courses:
+            continue
+        if not rec.get("visible", True):
+            continue
+        title = rec.get("display_title") or rec.get("topic") or "Class recording"
+        title_score = _syllabus_map_score(query_terms, f"{title} {unit}")
+        segs = rec.get("segments") or []
+        best = []
+        for idx, seg in enumerate(segs):
+            text = str(seg.get("text") or "").strip()
+            if not text:
+                continue
+            score = _syllabus_map_score(query_terms, text) + title_score * 0.35
+            if score > 0:
+                best.append((score, idx, text))
+        best.sort(reverse=True, key=lambda x: x[0])
+        if best:
+            candidates.append({"rec": rec, "best": best[:4], "score": best[0][0]})
+        elif title_score > 0:
+            candidates.append({"rec": rec, "best": [], "score": title_score})
+    candidates.sort(key=lambda x: x["score"], reverse=True)
+    return candidates
+
+
+async def _syllabus_map_semantic_candidates(query: str, lexical_candidates, max_recordings=20):
+    """Use the existing semantic transcript retrieval on a bounded shortlist.
+
+    The lexical stage keeps the feature affordable even for large libraries; when the
+    number of recordings is small, the shortlist includes every eligible class.
+    """
+    out = []
+    for item in lexical_candidates[:max_recordings]:
+        rec = item["rec"]
+        indices = []
+        try:
+            indices = await retrieve(rec, query, k=4, window=1)
+        except Exception as exc:
+            print(f"[syllabus-map] semantic retrieval failed for {rec.get('id')}: {exc}")
+        if indices:
+            for i in indices[:6]:
+                if i < 0 or i >= len(rec.get("segments") or []):
+                    continue
+                seg = rec["segments"][i]
+                text = str(seg.get("text") or "").strip()
+                if not text:
+                    continue
+                out.append({
+                    "recording_id": rec.get("id"),
+                    "title": rec.get("display_title") or rec.get("topic") or "Class recording",
+                    "course": rec.get("unit") or "Unassigned",
+                    "date": rec.get("date") or "",
+                    "segment_index": i,
+                    "timestamp": fmt_ts(seg.get("start")),
+                    "text": text,
+                })
+        else:
+            for score, i, text in item.get("best", [])[:3]:
+                seg = (rec.get("segments") or [])[i]
+                out.append({
+                    "recording_id": rec.get("id"),
+                    "title": rec.get("display_title") or rec.get("topic") or "Class recording",
+                    "course": rec.get("unit") or "Unassigned",
+                    "date": rec.get("date") or "",
+                    "segment_index": i,
+                    "timestamp": fmt_ts(seg.get("start")),
+                    "text": text,
+                })
+    return out
+
+
+def _syllabus_map_pastpaper_candidates(query: str, sols, allowed_courses, max_items=35):
+    query_terms = _syllabus_map_tokens(query)
+    rows = []
+    if not isinstance(sols, dict):
+        return rows
+    for key, item in sols.items():
+        if not isinstance(item, dict):
+            continue
+        course = str(item.get("course") or "").strip()
+        if allowed_courses and course not in allowed_courses:
+            continue
+        q = str(item.get("question") or "").strip()
+        qp = str(item.get("qp_text") or "").strip()
+        ans = str(item.get("solution_markdown") or item.get("model_answer") or "").strip()
+        searchable = " ".join([q, qp, ans[:2500], course, str(item.get("paper") or "")])
+        score = _syllabus_map_score(query_terms, searchable)
+        if score <= 0:
+            continue
+        rows.append({
+            "key": str(key),
+            "course": course,
+            "year": str(item.get("year") or ""),
+            "series": str(item.get("series") or ""),
+            "paper": str(item.get("paper") or ""),
+            "question": q or str(item.get("question_number") or ""),
+            "question_type": str(item.get("question_type") or ""),
+            "text": (qp or q or ans)[:1600],
+            "score": score,
+        })
+    rows.sort(key=lambda x: x["score"], reverse=True)
+    return rows[:max_items]
+
+
+@app.post("/api/student/syllabus-map")
+async def student_syllabus_map(body: dict):
+    token = str(body.get("token") or "")
+    query = str(body.get("query") or "").strip()
+    requested_course = str(body.get("course") or "").strip()
+    sess = valid_session(token)
+    if not sess:
+        return JSONResponse({"error": "Your session has expired. Please log in again."}, status_code=401)
+    if len(query) < 2:
+        return JSONResponse({"error": "Please enter a specific concept or question to search."}, status_code=400)
+
+    student_courses = [str(c).strip() for c in (sess.get("courses") or []) if str(c).strip()]
+    allowed_courses = set(student_courses)
+    if requested_course:
+        if allowed_courses and requested_course not in allowed_courses:
+            return JSONResponse({"error": "That course is not assigned to your account."}, status_code=403)
+        allowed_courses = {requested_course}
+
+    eligible_recordings = [
+        r for r in RECORDINGS
+        if r.get("visible", True) and ((not allowed_courses) or ((r.get("unit") or "Unassigned").strip() in allowed_courses))
+    ]
+    if not eligible_recordings:
+        return JSONResponse({"error": "No class recordings are available for the selected course."}, status_code=404)
+
+    syllabi = load_pp_json(PAST_PAPER_CONFIG_PATH)
+    course_names = sorted({(r.get("unit") or "Unassigned").strip() for r in eligible_recordings})
+    syllabus_context = []
+    structured_topics = []
+    for course in course_names:
+        name, topics = _syllabus_topic_source(course, syllabi)
+        syllabus_context.append({"course": course, "syllabus": name})
+        if topics:
+            structured_topics.append({"course": course, "syllabus": name, "topics": topics})
+
+    lexical = _syllabus_map_lexical_recording_candidates(query, eligible_recordings, allowed_courses)
+    class_evidence = await _syllabus_map_semantic_candidates(query, lexical, max_recordings=20)
+
+    # De-duplicate evidence while keeping the strongest timestamp for each recording.
+    seen = set()
+    unique_classes = []
+    for c in class_evidence:
+        key = (c["recording_id"], c["segment_index"])
+        if key in seen:
+            continue
+        seen.add(key)
+        unique_classes.append(c)
+    class_evidence = unique_classes[:45]
+
+    sols = load_pp_json(PAST_PAPER_SOLUTIONS_PATH)
+    pp_candidates = _syllabus_map_pastpaper_candidates(query, sols, allowed_courses, max_items=35)
+
+    if not class_evidence and not pp_candidates:
+        return {
+            "query": query,
+            "courses": course_names,
+            "syllabus_topic": None,
+            "syllabus_reference": syllabus_context,
+            "classes": [],
+            "past_papers": [],
+            "message": "No close match was found in the available classes or past-paper library.",
+        }
+
+    # Let the AI map the concept to the syllabus and select only evidence-backed results.
+    structured_text = json.dumps(structured_topics, ensure_ascii=False)[:18000]
+    syllabus_names_text = json.dumps(syllabus_context, ensure_ascii=False)[:4000]
+    class_text = "\n".join(
+        f"[{i}] course={c['course']} | recording={c['title']} | date={c['date']} | timestamp={c['timestamp']} | excerpt={c['text']}"
+        for i, c in enumerate(class_evidence)
+    )
+    pp_text = "\n".join(
+        f"[{i}] course={p['course']} | year={p['year']} | series={p['series']} | paper={p['paper']} | question={p['question']} | type={p['question_type']} | text={p['text']}"
+        for i, p in enumerate(pp_candidates)
+    )
+
+    system = (
+        "You are the Syllabus Map engine for a Biology academic platform. "
+        "The student asks about one specific concept. Your job is to map it to the supplied syllabus context, "
+        "then select the class-recording evidence and past-paper questions that are genuinely related. "
+        "Return STRICT JSON only. Never invent a course, recording, timestamp, year, series, paper, or question number. "
+        "Use only the numbered evidence records supplied below.\n\n"
+        "OUTPUT SCHEMA:\n"
+        "{"
+        "\"syllabus_topic\": string,"
+        "\"syllabus_subtopic\": string,"
+        "\"syllabus_course\": string,"
+        "\"class_indices\": [integers],"
+        "\"past_paper_indices\": [integers],"
+        "\"topic_explanation\": string"
+        "}\n\n"
+        "RULES:\n"
+        "1. syllabus_topic must be the most specific syllabus topic supported by the supplied syllabus context and class evidence. "
+        "Do not invent numeric syllabus codes. If a structured topic list is supplied, choose from those exact topic titles. "
+        "2. syllabus_subtopic can be a narrower concept phrase grounded in the evidence. "
+        "3. class_indices should contain only the strongest relevant class evidence records, usually 1-6. "
+        "4. past_paper_indices should contain only genuinely related exam questions, usually 0-8. "
+        "5. topic_explanation should be one concise sentence explaining the mapping."
+    )
+    user = (
+        f"STUDENT QUERY:\n{query}\n\n"
+        f"SYLLABUS NAMES:\n{syllabus_names_text}\n\n"
+        f"STRUCTURED SYLLABUS TOPICS (if available):\n{structured_text}\n\n"
+        f"CLASS EVIDENCE:\n{class_text or '[none]'}\n\n"
+        f"PAST PAPER CANDIDATES:\n{pp_text or '[none]'}"
+    )
+
+    try:
+        raw = await llm(
+            [{"role": "system", "content": system}, {"role": "user", "content": user}],
+            max_tokens=1200,
+            temperature=0.0,
+        )
+        txt = (raw or "").strip()
+        start = txt.find("{")
+        end = txt.rfind("}")
+        parsed = json.loads(txt[start:end + 1]) if start != -1 and end != -1 else {}
+    except (LLMConfigError, LLMUpstreamError) as e:
+        return JSONResponse({"error": str(e)}, status_code=503)
+    except Exception:
+        parsed = {}
+
+    def valid_indices(values, limit, size):
+        out = []
+        for v in values if isinstance(values, list) else []:
+            try:
+                i = int(v)
+            except (TypeError, ValueError):
+                continue
+            if 0 <= i < size and i not in out:
+                out.append(i)
+            if len(out) >= limit:
+                break
+        return out
+
+    class_indices = valid_indices(parsed.get("class_indices"), 8, len(class_evidence))
+    pp_indices = valid_indices(parsed.get("past_paper_indices"), 10, len(pp_candidates))
+
+    # If the model returned no selections, retain the highest ranked evidence instead of blanking the page.
+    if not class_indices:
+        class_indices = list(range(min(3, len(class_evidence))))
+    if not pp_indices:
+        pp_indices = list(range(min(5, len(pp_candidates))))
+
+    classes = []
+    for i in class_indices:
+        c = class_evidence[i]
+        classes.append({
+            "recording_id": c["recording_id"],
+            "title": c["title"],
+            "course": c["course"],
+            "date": c["date"],
+            "timestamp": c["timestamp"],
+            "evidence": c["text"],
+        })
+
+    past_papers = []
+    for i in pp_indices:
+        p = pp_candidates[i]
+        past_papers.append({
+            "course": p["course"],
+            "year": p["year"],
+            "series": p["series"],
+            "paper": p["paper"],
+            "question": p["question"],
+            "question_type": p["question_type"],
+        })
+
+    topic = str(parsed.get("syllabus_topic") or parsed.get("topic") or "Related syllabus topic").strip()
+    subtopic = str(parsed.get("syllabus_subtopic") or "").strip()
+    syllabus_course = str(parsed.get("syllabus_course") or (course_names[0] if len(course_names) == 1 else "")).strip()
+
+    return {
+        "query": query,
+        "syllabus_topic": topic,
+        "syllabus_subtopic": subtopic,
+        "syllabus_course": syllabus_course,
+        "topic_explanation": str(parsed.get("topic_explanation") or "").strip(),
+        "syllabus_reference": syllabus_context,
+        "classes": classes,
+        "past_papers": past_papers,
+    }
+
+
 @app.post("/api/student/pastpaper/solve")
 async def student_pp_solve(
     token: str = Form(...),

@@ -5,6 +5,45 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>NG-ClassMate · Classes made easier</title>
 <link rel="stylesheet" href="./style.css?v=3" />
+<style>
+  /* Syllabus Map search layout: keep the search card full-width and prevent
+     the concept input from collapsing because of the global setting-card width. */
+  #studentSyllabusMapPane .syllabus-search-card {
+    width: 100%;
+    max-width: none;
+    box-sizing: border-box;
+  }
+  #studentSyllabusMapPane .syllabus-search-grid {
+    display: grid;
+    grid-template-columns: 220px minmax(0, 1fr) 160px;
+    gap: 12px;
+    align-items: end;
+  }
+  #studentSyllabusMapPane #smQueryInput {
+    min-width: 0;
+    box-sizing: border-box;
+  }
+  #studentSyllabusMapPane #smSearchBtn {
+    width: 100%;
+    box-sizing: border-box;
+  }
+  @media (max-width: 900px) {
+    #studentSyllabusMapPane .syllabus-search-grid {
+      grid-template-columns: 1fr 1fr;
+    }
+    #studentSyllabusMapPane .syllabus-search-grid #smSearchBtn {
+      grid-column: 1 / -1;
+    }
+  }
+  @media (max-width: 620px) {
+    #studentSyllabusMapPane .syllabus-search-grid {
+      grid-template-columns: 1fr;
+    }
+    #studentSyllabusMapPane .syllabus-search-grid #smSearchBtn {
+      grid-column: auto;
+    }
+  }
+</style>
 </head>
 <body>
 <div id="app">
@@ -250,8 +289,8 @@
           <p class="meta">Ask about a specific concept. ClassMate will map it to the relevant syllabus topic, show the classes where it appears, and list related past-paper questions.</p>
         </div>
 
-        <div class="setting-card" style="background: var(--panel); border: 1.5px solid var(--line); border-radius: 14px; padding: 18px; box-shadow: var(--shadow-sm); margin-bottom: 18px;">
-          <div style="display: grid; grid-template-columns: 220px 1fr auto; gap: 10px; align-items: end;">
+        <div class="setting-card syllabus-search-card" style="background: var(--panel); border: 1.5px solid var(--line); border-radius: 14px; padding: 18px; box-shadow: var(--shadow-sm); margin-bottom: 18px; width:100%; max-width:none; box-sizing:border-box;">
+          <div class="syllabus-search-grid">
             <label class="fld" style="display:block;">
               <span style="font-size: 12px; font-weight: 800; margin-bottom: 5px; display:block;">Course</span>
               <select id="smCourseSelect" style="width:100%; padding:10px 12px; border-radius:9px; border:1.5px solid var(--line); background:var(--bg); color:var(--text);">

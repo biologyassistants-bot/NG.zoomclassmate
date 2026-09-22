@@ -3128,13 +3128,76 @@ async def _topic_embedding(course, topic):
 
 
 async def _select_syllabus_topic(query, topics, note_evidence):
+    """Select one authoritative syllabus topic with deterministic anchors first.
+
+    The previous implementation relied too heavily on an LLM confidence gate, which could
+    return no topic even for an exact syllabus phrase. This version uses exact/phrase/keyword
+    matches as hard evidence, then uses embeddings + an LLM only to resolve ambiguity.
+    """
     if not topics:
         return None, "low", []
+
+    q = (query or "").strip().lower()
+    q_tokens = set(_syllabus_map_tokens(query))
+
+    def norm_phrase(x):
+        return re.sub(r"[^a-z0-9]+", " ", str(x or "").lower()).strip()
+
+    def phrase_hits(qtext, text):
+        qn = norm_phrase(qtext)
+        tn = norm_phrase(text)
+        if not qn or not tn:
+            return 0
+        return 1 if qn in tn else 0
+
+    # Deterministic lexical scoring. Exact title/path hits get a strong bonus.
+    deterministic = []
+    for idx, topic in enumerate(topics):
+        title = str(topic.get("title") or "")
+        path = str(topic.get("path") or title)
+        desc = str(topic.get("description") or "")
+        kws = " ".join(topic.get("keywords") or [])
+        text = " | ".join([path, desc, kws])
+        title_tokens = set(_syllabus_map_tokens(title))
+        path_tokens = set(_syllabus_map_tokens(path))
+        kw_tokens = set(_syllabus_map_tokens(kws))
+        overlap_title = len(q_tokens & title_tokens)
+        overlap_path = len(q_tokens & path_tokens)
+        overlap_kw = len(q_tokens & kw_tokens)
+        exact_title = phrase_hits(query, title)
+        exact_path = phrase_hits(query, path)
+        lexical = _syllabus_map_lexical_score(query, text)
+        depth = int(topic.get("level") or path.count("→") + 1)
+        # Favor the most specific matching child topic over a generic parent.
+        depth_bonus = min(depth, 6) * 0.025
+        score = (
+            exact_title * 3.0 +
+            exact_path * 2.5 +
+            min(overlap_title, 5) * 0.45 +
+            min(overlap_path, 7) * 0.22 +
+            min(overlap_kw, 7) * 0.14 +
+            min(lexical, 8) * 0.06 +
+            depth_bonus
+        )
+        deterministic.append((score, idx, topic, exact_title, exact_path, overlap_title, overlap_path, overlap_kw))
+
+    deterministic.sort(key=lambda x: x[0], reverse=True)
+
+    # Strong exact syllabus match: do not ask an LLM to veto a literal official title.
+    top_d = deterministic[0]
+    if top_d[3] or top_d[4] or top_d[5] >= 2:
+        # If two different topics share the exact same term, use notes to disambiguate.
+        tied = [x for x in deterministic[:8] if abs(x[0] - top_d[0]) < 0.35]
+        if len(tied) == 1:
+            t = top_d[2]
+            return t, "high", [{"index": i, "path": x[2].get("path"), "title": x[2].get("title"), "semantic_score": 0.0} for i, x in enumerate(deterministic[:10])]
+
+    # Embedding ranking is secondary evidence.
+    q_emb = None
     try:
         q_emb = (await _embedding_batch([query]))[0]
     except Exception as exc:
         print(f"[syllabus-map] topic embedding failed: {exc}")
-        q_emb = None
 
     topic_texts = []
     for topic in topics:
@@ -3143,80 +3206,87 @@ async def _select_syllabus_topic(query, topics, note_evidence):
             topic.get("description") or "",
             " ".join(topic.get("keywords") or []),
         ]).strip())
-    topic_embs = []
-    if q_emb is not None:
+
+    # Only embed the strongest lexical candidates to reduce cost and keep matching focused.
+    candidate_indices = [x[1] for x in deterministic[:40]]
+    topic_embs = {}
+    if q_emb is not None and candidate_indices:
         try:
-            topic_embs = await _embedding_batch(topic_texts)
+            embs = await _embedding_batch([topic_texts[i] for i in candidate_indices])
+            for i, emb in zip(candidate_indices, embs):
+                topic_embs[i] = emb
         except Exception as exc:
             print(f"[syllabus-map] topic batch embedding failed: {exc}")
-            topic_embs = []
 
     ranked = []
-    for idx, topic in enumerate(topics):
-        lexical = _syllabus_map_lexical_score(query, topic_texts[idx])
-        sem = 0.0
-        if idx < len(topic_embs) and topic_embs[idx]:
-            sem = cosine_similarity(q_emb, topic_embs[idx])
+    for base_score, idx, topic, *rest in deterministic[:40]:
+        sem = cosine_similarity(q_emb, topic_embs[idx]) if q_emb is not None and topic_embs.get(idx) else 0.0
         note_bonus = 0.0
         topic_tokens = set(_syllabus_map_tokens(topic_texts[idx]))
-        for n in note_evidence[:8]:
+        for n in note_evidence[:12]:
             nt = set(_syllabus_map_tokens(n.get("text") or ""))
             overlap = len(topic_tokens & nt)
             if overlap:
-                note_bonus = max(note_bonus, min(overlap, 5) * 0.035)
-        total = sem * 0.72 + min(lexical, 5) * 0.05 + note_bonus
-        ranked.append((total, sem, topic))
+                note_bonus = max(note_bonus, min(overlap, 5) * 0.04)
+        total = base_score + sem * 0.55 + note_bonus
+        ranked.append((total, sem, topic, idx))
     ranked.sort(key=lambda x: x[0], reverse=True)
-    top = [x[2] for x in ranked[:10]]
     if not ranked:
         return None, "low", []
 
-    top_score = ranked[0][0]
-    second = ranked[1][0] if len(ranked) > 1 else 0.0
-    margin = top_score - second
-    cand_payload = [
-        {
+    # Prepare candidates for the LLM only when ambiguity remains.
+    top = ranked[:12]
+    cand_payload = []
+    for i, row in enumerate(top):
+        cand_payload.append({
             "index": i,
-            "course": t.get("course"),
-            "id": t.get("id"),
-            "path": t.get("path"),
-            "title": t.get("title"),
-            "description": t.get("description"),
-            "keywords": t.get("keywords"),
-            "semantic_score": round(ranked[i][1], 4),
-        }
-        for i, t in enumerate(top)
-    ]
+            "course": row[2].get("course"),
+            "id": row[2].get("id"),
+            "path": row[2].get("path"),
+            "title": row[2].get("title"),
+            "description": row[2].get("description"),
+            "keywords": row[2].get("keywords"),
+            "semantic_score": round(row[1], 4),
+            "deterministic_score": round(row[0], 4),
+        })
+
+    # If the top topic is clearly ahead and has meaningful evidence, return it directly.
+    margin = top[0][0] - (top[1][0] if len(top) > 1 else 0.0)
+    if (top[0][0] >= 1.15 and margin >= 0.22) or top[0][1] >= 0.67:
+        return top[0][2], "high", cand_payload
+
     notes = [
-        {"course": n.get("course"), "recording": n.get("title"), "note": n.get("note_title"), "text": n.get("text")[:600]}
-        for n in note_evidence[:8]
+        {"course": n.get("course"), "recording": n.get("title"), "note": n.get("note_title"), "text": str(n.get("text") or "")[:800]}
+        for n in note_evidence[:10]
     ]
     system = (
-        "Choose the single syllabus topic that best matches the student's exact meaning. "
-        "You are NOT allowed to choose a topic merely because one word overlaps. Use the topic hierarchy and teacher-note context. "
-        "If the query is ambiguous and the evidence does not clearly distinguish the meanings, return topic_index=-1 and confidence=low. "
-        "Return STRICT JSON: {\"topic_index\":integer,\"confidence\":\"high|medium|low\",\"reason\":string}."
+        "Choose exactly one official syllabus topic for the student's meaning. "
+        "Use the hierarchy, not a shared keyword alone. Prefer a specific child topic over a generic parent. "
+        "If the student's wording exactly names a syllabus concept, select that topic. "
+        "Return STRICT JSON: {\"topic_index\":integer,\"confidence\":\"high|medium|low\"}."
     )
     user = json.dumps({"query": query, "candidates": cand_payload, "teacher_note_context": notes}, ensure_ascii=False)
+    parsed = {}
     try:
         raw = await llm(
             [{"role": "system", "content": system}, {"role": "user", "content": user}],
-            max_tokens=500,
+            max_tokens=400,
             temperature=0.0,
         )
         txt = (raw or "").strip(); a, b = txt.find("{"), txt.rfind("}")
         parsed = json.loads(txt[a:b + 1]) if a != -1 and b != -1 else {}
     except Exception as exc:
         print(f"[syllabus-map] topic judge failed: {exc}")
-        parsed = {}
 
     idx = int(parsed.get("topic_index", -1)) if str(parsed.get("topic_index", "-1")).lstrip("-").isdigit() else -1
     conf = str(parsed.get("confidence") or "low").lower()
-    if idx < 0 or idx >= len(top):
-        return None, "low", cand_payload
-    if ranked[0][1] < 0.40 and margin < 0.055:
-        return None, "low", cand_payload
-    return top[idx], conf, cand_payload
+    if 0 <= idx < len(top):
+        return top[idx][2], conf if conf in {"high", "medium", "low"} else "medium", cand_payload
+
+    # Final deterministic fallback: if there is enough lexical/semantic evidence, keep it.
+    if top[0][0] >= 0.85 or top[0][1] >= 0.58:
+        return top[0][2], "medium", cand_payload
+    return None, "low", cand_payload
 
 
 async def _syllabus_map_note_context_for_topic(query, topic, recordings, allowed_courses, max_items=10):
@@ -3283,13 +3353,14 @@ async def _syllabus_map_recording_evidence(query, topic, recordings, allowed_cou
             if q_emb is not None and i < len(rec_embs):
                 sem = cosine_similarity(q_emb, rec_embs[i])
             title_bonus = _syllabus_map_lexical_score(topic.get("path") or topic.get("title") or "", (rec.get("display_title") or rec.get("topic") or "")) * 0.08
-            # Strict threshold: semantic similarity must be accompanied by at least one topic anchor,
-            # unless the recording title itself is a strong topic match.
-            if sem < 0.48:
+            # The syllabus topic has already been selected authoritatively. Require either
+            # meaningful semantic support or strong topic anchors; do not require both in
+            # every case because lecture wording often differs from the syllabus wording.
+            if sem < 0.42 and lex < 2 and title_bonus <= 0.08:
                 continue
-            if lex < 1 and title_bonus <= 0:
+            if lex < 1 and sem < 0.52 and title_bonus <= 0.16:
                 continue
-            score = sem * 0.8 + min(lex, 4) * 0.08 + title_bonus
+            score = sem * 0.78 + min(lex, 5) * 0.10 + title_bonus
             ranked.append((score, sem, rec, i, text))
     ranked.sort(key=lambda x: x[0], reverse=True)
     out = []
@@ -3490,6 +3561,21 @@ async def student_syllabus_map(body: dict):
 
     class_indices=valid(parsed.get("class_indices"), len(class_evidence), 8)
     pp_indices=valid(parsed.get("past_paper_indices"), len(pp_candidates), 8)
+
+    # If the final LLM filter is overly conservative or unavailable, retain only
+    # high-confidence deterministic candidates rather than returning nothing.
+    if not class_indices and class_evidence:
+        strong = [
+            i for i, c in enumerate(class_evidence[:16])
+            if float(c.get("semantic_score") or 0) >= 0.55
+        ]
+        class_indices = strong[:8]
+    if not pp_indices and pp_candidates:
+        strong_pp = [
+            i for i, p in enumerate(pp_candidates[:16])
+            if float(p.get("score") or 0) >= 0.50
+        ]
+        pp_indices = strong_pp[:8]
 
     grouped={}; order=[]
     for i in class_indices:

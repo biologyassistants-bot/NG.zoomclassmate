@@ -2910,14 +2910,58 @@ if (el("saveSyllabusBtn")) {
   });
 }
 
+// Build / update the authoritative structured syllabus map from an official syllabus file.
+if (el("buildSyllabusMapBtn")) {
+  el("buildSyllabusMapBtn").addEventListener("click", async () => {
+    const course = el("tppCourseSelect")?.value || "";
+    const syllabus = el("tppSyllabusCode")?.value || "";
+    const fileInput = el("tppSyllabusFile");
+    const status = el("syllabusMapBuildStatus");
+    const btn = el("buildSyllabusMapBtn");
+    if (!course) { toast("Please select a course first.", "info"); return; }
+    if (!fileInput?.files?.length) { toast("Please choose the official syllabus file.", "info"); return; }
+    const fd = new FormData();
+    fd.append("passcode", state.passcode || localStorage.getItem("ng_teacherPasscode") || "");
+    fd.append("course", course);
+    fd.append("syllabus", syllabus);
+    fd.append("file", fileInput.files[0]);
+    const old = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = "⏳ Building map…";
+    if (status) status.textContent = "Reading the official syllabus and building an exact topic hierarchy…";
+    try {
+      const res = await fetch(`${API}/api/teacher/syllabus-map/upload`, { method: "POST", body: fd });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Could not build syllabus map.");
+      if (status) status.innerHTML = `<span style="color:var(--ok,#0ca678);font-weight:800;">✓ ${escapeHtml(data.topics_count || 0)} topics indexed from ${escapeHtml(data.source_filename || "the syllabus")}.</span>`;
+      toast("Syllabus Map data updated successfully.", "success", 4000);
+      await refreshPastPaperHub();
+    } catch (e) {
+      if (status) status.textContent = e.message || "Could not build syllabus map.";
+      toast(e.message || "Could not build syllabus map.", "error");
+    } finally {
+      btn.disabled = false;
+      btn.textContent = old;
+    }
+  });
+}
+
 // Automatically display the existing saved syllabus when switching courses
 if (el("tppCourseSelect")) {
-  el("tppCourseSelect").addEventListener("change", () => {
+  el("tppCourseSelect").addEventListener("change", async () => {
     const selectedCourse = el("tppCourseSelect").value;
     if (selectedCourse && teacherSyllabiCache[selectedCourse]) {
       el("tppSyllabusCode").value = teacherSyllabiCache[selectedCourse];
       toast(`Loaded current mapping: ${teacherSyllabiCache[selectedCourse]}`, "info", 2500);
     }
+    try {
+      const passcode = state.passcode || localStorage.getItem("ng_teacherPasscode") || "";
+      const res = await fetch(`${API}/api/teacher/pastpaper/config`, { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({passcode}) });
+      const cfg = await res.json();
+      const m = (cfg.structured_syllabi || {})[selectedCourse];
+      const smStatus = el("syllabusMapBuildStatus");
+      if (smStatus) smStatus.innerHTML = m ? `<span style="color:var(--ok,#0ca678);font-weight:800;">✓ ${escapeHtml(m.topics_count || 0)} topics indexed</span>${m.source_filename ? ` · ${escapeHtml(m.source_filename)}` : ""}` : "No structured syllabus map uploaded for this course yet.";
+    } catch(e) {}
   });
 }
 
@@ -3113,6 +3157,13 @@ async function refreshPastPaperHub() {
   const allCourses = Array.from(courseSet).sort((a,b) => a.localeCompare(b));
   const ppDocs = Array.isArray(ppConfig.pp_library) ? ppConfig.pp_library : [];
   if (ppConfig.syllabi && typeof ppConfig.syllabi === "object") teacherSyllabiCache = ppConfig.syllabi;
+  const structuredSyllabi = ppConfig.structured_syllabi || {};
+  const smCourse = document.getElementById("tppCourseSelect")?.value || "";
+  const smStatus = document.getElementById("syllabusMapBuildStatus");
+  if (smStatus && smCourse && structuredSyllabi[smCourse]) {
+    const m = structuredSyllabi[smCourse];
+    smStatus.innerHTML = `<span style="color:var(--ok,#0ca678);font-weight:800;">✓ ${escapeHtml(m.topics_count || 0)} topics indexed</span>${m.source_filename ? ` · ${escapeHtml(m.source_filename)}` : ""}`;
+  }
 
   // Teacher course selectors only. Student course selection comes from the authenticated session.
   ["tppCourseSelect","bulkCourseSelect","tqCourseSelect","docCourseSelect"].forEach(id => {

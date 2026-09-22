@@ -21,7 +21,7 @@ let currentStudyPlan = null;
 let teacherStudentsCache = [];
 
 function el(id) { return document.getElementById(id); }
-function escapeHtml(s) { return (s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;"); }
+function escapeHtml(s) { return String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;"); }
 
 function show(sectionId) {
   ["landing", "gate", "teacherGate", "main", "teacher"].forEach(s => {

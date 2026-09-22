@@ -67,6 +67,7 @@
         <button id="tabStudentTutor" class="tab">AI Tutor</button>
         <button id="tabStudentPlanner" class="tab">Study Planner</button>
         <button id="tabStudentPastPapers" class="tab">📝 Past Papers</button>
+        <button id="tabStudentSyllabusMap" class="tab">🧭 Syllabus Map</button>
         <button id="tabStudentAlerts" class="tab">🔔 Alerts <span id="navAlertBadge" class="badge-count hidden" style="background: #e03131; color: #fff; font-size: 10px; padding: 2px 7px; border-radius: 10px; margin-left: 4px; font-weight: 800;">0</span></button>
         <button class="link" id="studentSignOut" style="margin-left: 12px;">Sign out</button>
       </div>
@@ -241,6 +242,41 @@
     </div>
     
     <!-- Pane 5: Alerts & Reminders -->
+    <!-- Pane 5: Syllabus Map -->
+    <div id="studentSyllabusMapPane" class="student-pane hidden" style="padding: 26px 30px; overflow-y: auto;">
+      <div style="max-width: 1180px; margin: 0 auto;">
+        <div class="pane-head" style="margin-bottom: 20px;">
+          <h2 style="font-size: 26px; margin-bottom: 7px;">🧭 Syllabus Map</h2>
+          <p class="meta">Ask about a specific concept. ClassMate will map it to the relevant syllabus topic, show the classes where it appears, and list related past-paper questions.</p>
+        </div>
+
+        <div class="setting-card" style="background: var(--panel); border: 1.5px solid var(--line); border-radius: 14px; padding: 18px; box-shadow: var(--shadow-sm); margin-bottom: 18px;">
+          <div style="display: grid; grid-template-columns: 220px 1fr auto; gap: 10px; align-items: end;">
+            <label class="fld" style="display:block;">
+              <span style="font-size: 12px; font-weight: 800; margin-bottom: 5px; display:block;">Course</span>
+              <select id="smCourseSelect" style="width:100%; padding:10px 12px; border-radius:9px; border:1.5px solid var(--line); background:var(--bg); color:var(--text);">
+                <option value="">All courses</option>
+              </select>
+            </label>
+            <label class="fld" style="display:block;">
+              <span style="font-size: 12px; font-weight: 800; margin-bottom: 5px; display:block;">What do you want to find?</span>
+              <input id="smQueryInput" type="text" placeholder="e.g. competitive inhibition, osmosis, factors affecting enzyme activity…" autocomplete="off" style="width:100%; padding:11px 13px; border-radius:9px; border:1.5px solid var(--line); background:var(--bg); color:var(--text);" />
+            </label>
+            <button id="smSearchBtn" class="primary" style="min-width:145px;">Find in Syllabus</button>
+          </div>
+          <p class="meta" style="font-size:11.5px; margin-top:9px;">The search uses your available class recordings and the past-paper library for your enrolled course(s).</p>
+        </div>
+
+        <div id="smEmptyState" class="empty" style="padding: 70px 20px; background:var(--panel); border:1.5px dashed var(--line); border-radius:14px;">
+          <div class="empty-emoji">🧭</div>
+          <p>Enter a specific concept above to see its syllabus topic, related classes, and related past-paper questions.</p>
+        </div>
+
+        <div id="smResults" class="hidden"></div>
+      </div>
+    </div>
+
+
     <div id="studentAlertsPane" class="student-pane hidden" style="padding: 26px 30px; overflow-y: auto;">
       <div class="pane-head" style="margin-bottom: 20px;">
         <h2>🔔 Alerts & Study Reminders</h2>
@@ -334,14 +370,14 @@
     </div>
 
     <!-- 3. Past Paper Hub Pane -->
-    <div id="teacherPastPapers" class="teacher-pane hidden">
+    <div id="teacherPastPapers" class="teacher-pane hidden" style="width:100% !important; max-width:none !important; margin:0 !important; box-sizing:border-box;">
       <div class="pane-head">
         <h2>Past Paper Hub: Syllabus &amp; Dedicated Exam Bank</h2>
         <p class="meta">Manage official syllabus specifications, upload model answer documents, auto-extract whole exam packs, and organize past paper questions.</p>
       </div>
 
       <!-- Card A: Syllabus Mapping -->
-      <div class="setting-card" style="margin-bottom: 20px;">
+      <div class="setting-card" style="margin-bottom:20px; width:100%; max-width:none; box-sizing:border-box;">
         <h3>1. Course Syllabus Mapping</h3>
         <p class="meta" style="margin-bottom: 12px;">Ensure the AI solver grades against exact exam board standards.</p>
         <div style="display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-end;">
@@ -365,7 +401,7 @@
       </div>
 
       <!-- Card B: Upload Model Answer / Reference Document -->
-      <div class="setting-card" style="margin-bottom: 20px;">
+      <div class="setting-card" style="margin-bottom:20px; width:100%; max-width:none; box-sizing:border-box;">
         <h3>2. Upload Course Reference / Answer Document</h3>
         <p class="meta" style="margin-bottom: 12px;">Upload full solved exam documents or notes and tag them to a course so they link during bulk extraction.</p>
         
@@ -392,7 +428,7 @@
       </div>
 
       <!-- Card C: Bulk Upload Complete Exam (QP + MS + ER) -->
-      <div class="setting-card" style="margin-bottom: 20px;">
+      <div class="setting-card" style="margin-bottom:20px; width:100%; max-width:none; box-sizing:border-box;">
         <h3>3. Bulk Upload &amp; Auto-Extract Exam Questions</h3>
         <p class="meta" style="margin-bottom: 14px;">Upload Question Paper, Mark Scheme, and optional Examiner Report. AI will segment all questions automatically.</p>
 
@@ -582,26 +618,32 @@
 
   <!-- Modal 3: SRS Flashcards Modal -->
   <div id="flashcardModal" class="modal hidden">
-    <div class="modal-card" style="max-width: 550px;">
+    <div class="modal-card" style="max-width: 600px;">
       <div class="modal-head">
         <h2 id="fcHeader">🃏 Flashcard Review</h2>
-        <button id="closeFcModal" class="close">✕</button>
+        <button id="closeFcModal" class="close" type="button">✕</button>
       </div>
-      <div class="modal-body" style="text-align: center; padding: 20px 10px;">
-        <div id="fcCard" style="min-height: 180px; background: var(--panel2); border: 2px solid var(--line); border-radius: 14px; padding: 24px; display: flex; flex-direction: column; justify-content: center; align-items: center; cursor: pointer; transition: transform 0.2s;">
-          <div id="fcFrontText" style="font-size: 17px; font-weight: 700; color: var(--text);"></div>
+      <div class="modal-body" style="text-align: center; padding: 20px 16px;">
+        <div id="fcCard" style="min-height: 210px; background: var(--panel2); border: 2px solid var(--line); border-radius: 14px; padding: 28px; display: flex; flex-direction: column; justify-content: center; align-items: center; cursor: pointer; transition: transform 0.2s;">
+          <div id="fcFrontText" style="font-size: 17px; font-weight: 700; color: var(--text); width: 100%;"></div>
           <div id="fcBackText" class="hidden" style="font-size: 16px; color: var(--brand-d); margin-top: 16px; border-top: 1px dashed var(--line); padding-top: 16px; width: 100%;"></div>
         </div>
-        <p class="meta" style="margin-top: 10px; font-size: 12px;">Click card to reveal answer</p>
-        
-        <div id="fcRatingBtns" class="hidden" style="display: flex; gap: 10px; justify-content: center; margin-top: 18px;">
-          <button id="fcHardBtn" class="ghost" style="border-color: #f03e3e; color: #f03e3e;">🔴 Hard (1 day)</button>
-          <button id="fcGoodBtn" class="ghost" style="border-color: #f59f00; color: #f59f00;">🟡 Good (3 days)</button>
-          <button id="fcEasyBtn" class="ghost" style="border-color: #37b24d; color: #37b24d;">🟢 Easy (7 days)</button>
+        <p class="meta" style="margin: 10px 0 14px; font-size: 12px;">Click the card to reveal the answer</p>
+
+        <div id="fcRatingBtns" class="hidden" style="display: flex; gap: 10px; justify-content: center; margin: 14px 0; flex-wrap: wrap;">
+          <button id="fcHardBtn" type="button" class="ghost" style="border-color: #f03e3e; color: #f03e3e;">🔴 Hard</button>
+          <button id="fcGoodBtn" type="button" class="ghost" style="border-color: #f59f00; color: #f59f00;">🟡 Good</button>
+          <button id="fcEasyBtn" type="button" class="ghost" style="border-color: #37b24d; color: #37b24d;">🟢 Easy</button>
+        </div>
+
+        <div style="display:flex; justify-content:center; gap:8px; margin-top:10px;">
+          <button id="fcPrevBtn" type="button" class="ghost-sm">← Previous</button>
+          <button id="fcNextBtn" type="button" class="ghost-sm">Next →</button>
         </div>
       </div>
-      <div class="modal-foot" style="text-align: center; color: var(--meta); font-size: 13px;">
-        <span id="fcProgress">Card 1 of 5</span>
+      <div class="modal-foot" style="display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap;">
+        <span id="fcProgress" class="meta">Card 0 of 0</span>
+        <button id="genFreshCardsBtn" type="button" class="primary" style="padding:8px 14px; font-size:12.5px;">✨ Generate New Flashcards</button>
       </div>
     </div>
   </div>
@@ -687,6 +729,6 @@
   }, 2500);
 })();
 </script>
-<script src="./app.js?v=283" onerror="(function(){var e=document.getElementById('toastMsg');var t=document.getElementById('toast');if(e&&t){e.textContent='Application script failed to load. Please deploy app.js beside index.html.';t.classList.remove('hidden');}})();"></script>
+<script src="./app.js?v=293" onerror="(function(){var e=document.getElementById('toastMsg');var t=document.getElementById('toast');if(e&&t){e.textContent='Application script failed to load. Please deploy app.js beside index.html.';t.classList.remove('hidden');}})();"></script>
 </body>
 </html>

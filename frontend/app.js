@@ -1635,44 +1635,75 @@ if(el("edGenPw")) {
   });
 }
 
-if(el("edSave")) {
-  el("edSave").addEventListener("click", async () => {
+const studentSaveBtn = el("saveStudentEd") || el("edSave");
+if(studentSaveBtn) {
+  studentSaveBtn.addEventListener("click", async (e) => {
+    e.preventDefault();
     if (!editingStudent) return;
+
+    const passcode = state.passcode || localStorage.getItem("ng_teacherPasscode") || "";
     const payload = {
-      passcode: state.passcode,
+      passcode,
       id: editingStudent.id,
       name: el("edName") ? el("edName").value.trim() : "",
       email: el("edEmail") ? el("edEmail").value.trim() : "",
-      courses: editCourses,
+      courses: Array.isArray(editCourses) ? [...editCourses] : [],
     };
+
     const np = el("edPassword") ? el("edPassword").value.trim() : "";
     if (np) payload.new_password = np;
-    el("edSave").disabled = true;
+
+    studentSaveBtn.disabled = true;
+    const originalText = studentSaveBtn.textContent;
+    studentSaveBtn.textContent = "Saving…";
+
+    const stat = el("edStatus");
+    if (stat) {
+      stat.textContent = "";
+      stat.className = "ed-status";
+    }
+
     try {
       const res = await fetch(`${API}/api/teacher/students/update`, {
-        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload)
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
       });
-      const data = await res.json();
-      if (res.ok) {
-        let msg = "Student updated.";
-        if (np) msg += " New password set — they'll need to log in again.";
-        toast(msg, "success", 5000);
-        closeStudentEditor();
-        loadStudents();
-      } else {
-        const stat = el("edStatus");
-        if(stat) {
-          stat.textContent = data.error || "Could not save.";
-          stat.className = "ed-status err";
-        }
+      const data = await res.json().catch(() => ({}));
+
+      if (!res.ok) {
+        throw new Error(data.error || `Save failed (HTTP ${res.status})`);
       }
+
+      const updated = data.student || {};
+      const idx = teacherStudentsCache.findIndex(s => s.id === editingStudent.id);
+      if (idx >= 0) {
+        teacherStudentsCache[idx] = {
+          ...teacherStudentsCache[idx],
+          id: updated.id || teacherStudentsCache[idx].id,
+          name: updated.name ?? payload.name,
+          email: updated.email ?? payload.email,
+          courses: Array.isArray(updated.courses) ? updated.courses : payload.courses,
+          has_password: updated.has_password ?? teacherStudentsCache[idx].has_password
+        };
+      }
+
+      let msg = "Student updated successfully.";
+      if (np) msg += " New password set — the student will need to log in again.";
+      toast(msg, "success", 5000);
+      closeStudentEditor();
+      await loadStudents();
     } catch (e) {
-      const stat = el("edStatus");
-      if(stat) {
-        stat.textContent = "Network error while saving."; 
+      if (stat) {
+        stat.textContent = e.message || "Could not save changes.";
         stat.className = "ed-status err";
+      } else {
+        toast(e.message || "Could not save changes.", "error");
       }
-    } finally { el("edSave").disabled = false; }
+    } finally {
+      studentSaveBtn.disabled = false;
+      studentSaveBtn.textContent = originalText || "Save changes";
+    }
   });
 }
 

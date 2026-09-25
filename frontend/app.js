@@ -642,36 +642,100 @@ if(el("clearChatBtn")) {
   });
 }
 
-if(el("askForm")) {
-  el("askForm").addEventListener("submit", async e => {
-    e.preventDefault();
-    const qInput = el("questionInput");
-    if(!qInput) return;
-    const q = qInput.value.trim();
-    if (!q || !state.current) return;
-    qInput.value = "";
-    if(el("askBtn")) el("askBtn").disabled = true;
-    addUser(q, true); 
-    addTyping();
-    try {
-      const res = await fetch(`${API}/api/ask`, {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ recording_id: state.current.id, question: q, language: "English", token: state.token })
-      });
-      const data = await res.json();
-      removeTyping();
-      if (data.error) addBot("Sorry, something went wrong: " + data.error, true);
-      else {
-        addBot(data.answer, true);
-        studentStats.questions++;
-        saveStudentStats();
-        await saveServerProfile();
-      }
-    } catch (err) { removeTyping(); addBot("Sorry, I couldn't reach the server. Please try again.", true); }
-    if(el("askBtn")) el("askBtn").disabled = false; 
+let tutorAskInFlight = false;
+
+async function sendTutorQuestion(event) {
+  if (event && event.preventDefault) event.preventDefault();
+  if (tutorAskInFlight) return;
+
+  const qInput = el("questionInput");
+  const askBtn = el("askBtn");
+  if (!qInput) return;
+
+  const q = (qInput.value || "").trim();
+  if (!q) {
+    addBot("Please enter a question.", false);
     qInput.focus();
-  });
+    return;
+  }
+  if (!state.current) {
+    addBot("Please select a class recording first.", false);
+    return;
+  }
+  if (!state.token) {
+    addBot("Your student session has expired. Please sign in again.", false);
+    return;
+  }
+
+  tutorAskInFlight = true;
+  window.__NGClassMateAskBound = true;
+  qInput.value = "";
+  if (askBtn) {
+    askBtn.disabled = true;
+    askBtn.textContent = "Asking…";
+  }
+  addUser(q, true);
+  addTyping();
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 120000);
+
+  try {
+    const res = await fetch(`${API}/api/ask`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Accept": "application/json" },
+      body: JSON.stringify({
+        recording_id: state.current.id,
+        question: q,
+        language: "English",
+        token: state.token
+      }),
+      signal: controller.signal
+    });
+
+    let data = {};
+    try {
+      data = await res.json();
+    } catch (_) {
+      data = { error: `Server returned HTTP ${res.status}.` };
+    }
+
+    removeTyping();
+    if (!res.ok || data.error) {
+      addBot("Sorry, something went wrong: " + (data.error || `HTTP ${res.status}`), true);
+    } else {
+      addBot(data.answer || "I couldn't generate an answer.", true);
+      studentStats.questions++;
+      saveStudentStats();
+      await saveServerProfile();
+    }
+  } catch (err) {
+    removeTyping();
+    if (err && err.name === "AbortError") {
+      addBot("The request took too long. Please try again.", true);
+    } else {
+      addBot("I couldn't reach the ClassMate server. Please try again.", true);
+    }
+  } finally {
+    clearTimeout(timeoutId);
+    tutorAskInFlight = false;
+    if (askBtn) {
+      askBtn.disabled = false;
+      askBtn.textContent = "Ask";
+    }
+    qInput.focus();
+  }
 }
+
+if (el("askForm")) {
+  el("askForm").addEventListener("submit", sendTutorQuestion);
+}
+if (el("askBtn")) {
+  el("askBtn").type = "button";
+  el("askBtn").addEventListener("click", sendTutorQuestion);
+}
+window.__NGClassMateSendTutorQuestion = sendTutorQuestion;
+window.__NGClassMateAskBound = true;
 
 // ---------- quiz ----------
 let quizData = null;

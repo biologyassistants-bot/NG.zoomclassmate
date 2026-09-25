@@ -496,26 +496,37 @@ def lexical_retrieve_indices(rec, query, k=15, window=1):
 
 
 async def retrieve(rec, query, k=15, window=1):
-    """Find relevant transcript segments with semantic search and a safe local fallback."""
+    """Robust transcript retrieval for AI Tutor. Prefer fast local matching and use
+    semantic embeddings opportunistically with an 8-second timeout so a slow embedding
+    service can never make the Ask button appear stuck."""
     segs = rec.get("segments", []) or []
     if not segs:
         return []
-    try:
+
+    lexical = lexical_retrieve_indices(rec, query, k=k, window=window)
+
+    async def _semantic():
         doc_embeddings = await build_index_async(rec)
         q_embedding = await get_embedding(query)
         scores = [cosine_similarity(q_embedding, doc_emb) for doc_emb in doc_embeddings]
         ranked = sorted(range(len(segs)), key=lambda i: scores[i], reverse=True)
         top = [i for i in ranked if scores[i] > 0.3][:k]
-        if top:
-            chosen = set()
-            for i in top:
-                for j in range(max(0, i - window), min(len(segs), i + window + 1)):
-                    chosen.add(j)
-            return sorted(chosen)
-    except Exception as e:
-        print(f"[retrieve] semantic search unavailable, using lexical fallback: {e}")
-    return lexical_retrieve_indices(rec, query, k=k, window=window)
+        if not top:
+            return []
+        chosen = set()
+        for i in top:
+            for j in range(max(0, i - window), min(len(segs), i + window + 1)):
+                chosen.add(j)
+        return sorted(chosen)
 
+    try:
+        semantic = await asyncio.wait_for(_semantic(), timeout=8.0)
+        if semantic:
+            return semantic
+    except Exception as e:
+        print(f"[retrieve] semantic search unavailable/slow; using local retrieval: {e}")
+
+    return lexical
 
 # ---------- teacher notes: extraction + retrieval ----------
 def extract_text_from_upload(data: bytes, filename: str) -> str:

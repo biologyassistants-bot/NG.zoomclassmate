@@ -799,26 +799,23 @@
   }, 2500);
 })();
 </script>
-<script src="./app.js?v=300" onerror="(function(){var e=document.getElementById('toastMsg');var t=document.getElementById('toast');if(e&&t){e.textContent='Application script failed to load. Please deploy app.js beside index.html.';t.classList.remove('hidden');}})();"></script>
+<script src="./app.js?v=301" onerror="(function(){var e=document.getElementById('toastMsg');var t=document.getElementById('toast');if(e&&t){e.textContent='Application script failed to load. Please deploy app.js beside index.html.';t.classList.remove('hidden');}})();"></script>
 <script>
 (function(){
   function bind(){
-    if(window.__NGClassMateAskBound || window.__NGClassMateAskFallbackBound) return;
+    if(window.__NGClassMateAskFallbackBound) return;
     var form=document.getElementById("askForm");
     var btn=document.getElementById("askBtn");
     if(!form && !btn) return;
+    if(typeof window.__NGClassMateEarlyAsk !== "function") return;
     window.__NGClassMateAskFallbackBound=true;
-    function go(e){
-      if(typeof window.__NGClassMateSendTutorQuestion === "function") {
-        window.__NGClassMateSendTutorQuestion(e);
-      }
-    }
-    if(form) form.addEventListener("submit",go);
-    if(btn) btn.addEventListener("click",go);
+    if(form) form.addEventListener("submit", window.__NGClassMateEarlyAsk);
+    if(btn){ btn.type="button"; btn.addEventListener("click", window.__NGClassMateEarlyAsk); }
   }
-  if(document.readyState==="loading") document.addEventListener("DOMContentLoaded",bind);
+  if(document.readyState==="loading") document.addEventListener("DOMContentLoaded",bind,{once:true});
   else bind();
 })();
+
 </script>
 </body>
 </html>

@@ -460,28 +460,61 @@ async def build_index_async(rec):
     return embeddings
 
 
-async def retrieve(rec, query, k=15, window=1):
-    """Find the most relevant transcript segments using semantic similarity."""
-    segs = rec.get("segments", [])
-    if not segs: 
+def lexical_retrieve_indices(rec, query, k=15, window=1):
+    """Fast local fallback when embedding search is unavailable or fails."""
+    segs = rec.get("segments", []) or []
+    if not segs:
         return []
-    
-    doc_embeddings = await build_index_async(rec)
-    q_embedding = await get_embedding(query)
-    
-    scores = [cosine_similarity(q_embedding, doc_emb) for doc_emb in doc_embeddings]
-    ranked = sorted(range(len(segs)), key=lambda i: scores[i], reverse=True)
-    top = [i for i in ranked if scores[i] > 0.3][:k] 
-    
+    q_tokens = [w for w in tokenize(query) if len(w) > 2]
+    if not q_tokens:
+        return list(range(min(k, len(segs))))
+    q = Counter(q_tokens)
+    scored = []
+    for i, seg in enumerate(segs):
+        text = tokenize(seg.get("text", ""))
+        if not text:
+            continue
+        tf = Counter(text)
+        overlap = sum(min(q[w], tf.get(w, 0)) for w in q)
+        if overlap:
+            # Reward multi-word coverage and exact phrase occurrence.
+            phrase_bonus = 0.0
+            raw = str(seg.get("text", "")).lower()
+            q_raw = str(query or "").strip().lower()
+            if q_raw and len(q_raw) > 4 and q_raw in raw:
+                phrase_bonus = 3.0
+            scored.append((overlap + phrase_bonus, i))
+    scored.sort(key=lambda x: (-x[0], x[1]))
+    top = [i for _, i in scored[:k]]
     if not top:
-        step = max(1, len(segs) // 30)
-        top = list(range(0, len(segs), step))[:30]
-        
+        return []
     chosen = set()
     for i in top:
         for j in range(max(0, i - window), min(len(segs), i + window + 1)):
             chosen.add(j)
     return sorted(chosen)
+
+
+async def retrieve(rec, query, k=15, window=1):
+    """Find relevant transcript segments with semantic search and a safe local fallback."""
+    segs = rec.get("segments", []) or []
+    if not segs:
+        return []
+    try:
+        doc_embeddings = await build_index_async(rec)
+        q_embedding = await get_embedding(query)
+        scores = [cosine_similarity(q_embedding, doc_emb) for doc_emb in doc_embeddings]
+        ranked = sorted(range(len(segs)), key=lambda i: scores[i], reverse=True)
+        top = [i for i in ranked if scores[i] > 0.3][:k]
+        if top:
+            chosen = set()
+            for i in top:
+                for j in range(max(0, i - window), min(len(segs), i + window + 1)):
+                    chosen.add(j)
+            return sorted(chosen)
+    except Exception as e:
+        print(f"[retrieve] semantic search unavailable, using lexical fallback: {e}")
+    return lexical_retrieve_indices(rec, query, k=k, window=window)
 
 
 # ---------- teacher notes: extraction + retrieval ----------

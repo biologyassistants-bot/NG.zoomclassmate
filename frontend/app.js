@@ -11,6 +11,155 @@ let state = {
   courseSyllabi: {}
 };
 
+// Expose the live state object so the emergency Ask handler in index.html can
+// still work even if a later script section throws during page initialization.
+window.__NGClassMateState = state;
+window.__NGClassMateAppLoaded = true;
+
+(function bindTutorAskImmediately() {
+  let inFlight = false;
+
+  function addLocalMessage(text, role) {
+    const chat = document.getElementById("chat");
+    if (!chat) return;
+    const d = document.createElement("div");
+    d.className = role === "user" ? "msg user" : "msg bot";
+    d.textContent = text;
+    chat.appendChild(d);
+    chat.scrollTop = chat.scrollHeight;
+  }
+
+  function addTypingLocal() {
+    const chat = document.getElementById("chat");
+    if (!chat || document.getElementById("typing")) return;
+    const d = document.createElement("div");
+    d.id = "typing";
+    d.className = "typing";
+    d.textContent = "ClassMate is reading the recording…";
+    chat.appendChild(d);
+    chat.scrollTop = chat.scrollHeight;
+  }
+
+  function removeTypingLocal() {
+    const d = document.getElementById("typing");
+    if (d) d.remove();
+  }
+
+  async function run(e) {
+    if (e && e.preventDefault) e.preventDefault();
+    if (inFlight) return false;
+
+    const input = document.getElementById("questionInput");
+    const button = document.getElementById("askBtn");
+    if (!input) return false;
+
+    const q = (input.value || "").trim();
+    if (!q) {
+      addLocalMessage("Please enter a question.", "bot");
+      input.focus();
+      return false;
+    }
+
+    const liveState = window.__NGClassMateState;
+    const current = liveState && liveState.current;
+    const token = liveState && liveState.token;
+
+    if (!current || !current.id) {
+      addLocalMessage("Please select a class recording first.", "bot");
+      return false;
+    }
+    if (!token) {
+      addLocalMessage("Your student session has expired. Please sign in again.", "bot");
+      return false;
+    }
+
+    inFlight = true;
+    input.value = "";
+    if (button) {
+      button.disabled = true;
+      button.textContent = "Asking…";
+    }
+    addLocalMessage(q, "user");
+    addTypingLocal();
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 120000);
+
+    try {
+      const res = await fetch("/api/ask", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Accept": "application/json" },
+        body: JSON.stringify({
+          recording_id: current.id,
+          question: q,
+          language: "English",
+          token: token
+        }),
+        signal: controller.signal
+      });
+
+      let data = {};
+      try { data = await res.json(); }
+      catch (_) { data = { error: `Server returned HTTP ${res.status}.` }; }
+
+      removeTypingLocal();
+      if (!res.ok || data.error) {
+        addLocalMessage(`Sorry, something went wrong: ${data.error || `HTTP ${res.status}`}`, "bot");
+      } else {
+        addLocalMessage(data.answer || "I couldn't generate an answer.", "bot");
+        if (liveState) {
+          liveState.chatHistory = liveState.chatHistory || {};
+          liveState.chatHistory[current.id] = liveState.chatHistory[current.id] || [];
+          liveState.chatHistory[current.id].push({ role: "user", text: q });
+          liveState.chatHistory[current.id].push({ role: "bot", text: data.answer || "" });
+        }
+        try {
+          if (typeof studentStats !== "undefined") {
+            studentStats.questions++;
+            if (typeof saveStudentStats === "function") saveStudentStats();
+          }
+          if (typeof saveServerProfile === "function") await saveServerProfile();
+        } catch (_) {}
+      }
+    } catch (err) {
+      removeTypingLocal();
+      addLocalMessage(
+        err && err.name === "AbortError"
+          ? "The request took too long. Please try again."
+          : "I couldn't reach the ClassMate server. Please try again.",
+        "bot"
+      );
+    } finally {
+      clearTimeout(timer);
+      inFlight = false;
+      if (button) {
+        button.disabled = false;
+        button.textContent = "Ask";
+      }
+      input.focus();
+    }
+    return false;
+  }
+
+  window.__NGClassMateEarlyAsk = run;
+
+  function bind() {
+    const form = document.getElementById("askForm");
+    const button = document.getElementById("askBtn");
+    if (!form && !button) return;
+    if (window.__NGClassMateAskBound) return;
+    if (form) form.addEventListener("submit", run);
+    if (button) {
+      button.type = "button";
+      button.addEventListener("click", run);
+    }
+    window.__NGClassMateAskBound = true;
+  }
+
+  bind();
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", bind, { once: true });
+})();
+
 // Local tracking for student dashboard stats
 let studentStats = JSON.parse(localStorage.getItem('studentStats_NGClassMate') || '{"questions":0, "quizzes":0}');
 
@@ -581,6 +730,7 @@ document.addEventListener("change", e => { if (e.target.id === "studentCourseFil
 
 function selectRecording(r) {
   state.current = r;
+  window.__NGClassMateState = state;
   applyStudentFilters();
   if(el("emptyState")) el("emptyState").classList.add("hidden");
   if(el("workspace")) el("workspace").classList.remove("hidden");
@@ -727,15 +877,15 @@ async function sendTutorQuestion(event) {
   }
 }
 
-if (el("askForm")) {
-  el("askForm").addEventListener("submit", sendTutorQuestion);
-}
-if (el("askBtn")) {
-  el("askBtn").type = "button";
-  el("askBtn").addEventListener("click", sendTutorQuestion);
-}
 window.__NGClassMateSendTutorQuestion = sendTutorQuestion;
-window.__NGClassMateAskBound = true;
+if (!window.__NGClassMateAskBound) {
+  if (el("askForm")) el("askForm").addEventListener("submit", sendTutorQuestion);
+  if (el("askBtn")) {
+    el("askBtn").type = "button";
+    el("askBtn").addEventListener("click", sendTutorQuestion);
+  }
+  window.__NGClassMateAskBound = true;
+}
 
 // ---------- quiz ----------
 let quizData = null;

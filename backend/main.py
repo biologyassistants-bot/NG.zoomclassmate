@@ -262,6 +262,27 @@ def load_recordings():
 RECORDINGS = load_recordings()
 REC_BY_ID = {r["id"]: r for r in RECORDINGS}
 
+# Avoid retaining transient embedding arrays on global recording objects.
+def _memory_log(label):
+    try:
+        rss_kb = None
+        try:
+            with open("/proc/self/status", "r", encoding="utf-8") as f:
+                for line in f:
+                    if line.startswith("VmRSS:"):
+                        rss_kb = float(line.split()[1])
+                        break
+        except Exception:
+            pass
+        if rss_kb is None:
+            import resource
+            rss_kb = float(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
+        print(f"[memory] {label}: rss={rss_kb / 1024:.1f} MB")
+    except Exception:
+        pass
+
+_memory_log("startup after recordings load")
+
 
 app = FastAPI(title="ClassMate API")
 app.add_middleware(
@@ -430,34 +451,46 @@ def cosine_similarity(v1, v2):
     return dot / mag if mag else 0.0
 
 
-async def build_index_async(rec):
-    """Fetch embeddings for the entire transcript and cache them in-memory only."""
-    if "embeddings" in rec and rec["embeddings"]:
-        return rec["embeddings"]
-        
-    segs = rec.get("segments", [])
-    texts = [s.get("text", "") for s in segs]
-    if not texts:
+async def build_index_async(rec, candidate_indices=None):
+    """Return embeddings only for a bounded set of transcript segments.
+
+    IMPORTANT: embeddings are intentionally NOT stored on the recording object.
+    Caching an entire transcript's embeddings in RECORDINGS caused multi-GB RAM
+    growth on Render for long/multiple recordings.
+    """
+    segs = rec.get("segments", []) or []
+    if not segs:
         return []
-    
+
+    if candidate_indices is None:
+        candidate_indices = list(range(min(len(segs), 120)))
+    candidate_indices = [int(i) for i in candidate_indices if 0 <= int(i) < len(segs)]
+    if not candidate_indices:
+        return []
+
+    texts = [str(segs[i].get("text", "") or "") for i in candidate_indices]
+    if not any(texts):
+        return []
+
     import httpx
-    embeddings = []
-    batch_size = 500
-    
-    async with httpx.AsyncClient(timeout=60) as client:
-        for i in range(0, len(texts), batch_size):
-            batch = texts[i:i + batch_size]
+    embeddings = [None] * len(candidate_indices)
+    timeout = httpx.Timeout(60.0, connect=10.0)
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        batch_size = 80
+        for pos in range(0, len(texts), batch_size):
+            batch = texts[pos:pos + batch_size]
             resp = await client.post(
                 f"{OPENAI_BASE_URL}/embeddings",
                 headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
                 json={"input": batch, "model": "text-embedding-3-small"}
             )
             resp.raise_for_status()
-            data = resp.json().get("data", [])
-            embeddings.extend([d["embedding"] for d in sorted(data, key=lambda x: x["index"])])
-            
-    rec["embeddings"] = embeddings
-    return embeddings
+            data = sorted(resp.json().get("data", []) or [], key=lambda x: x.get("index", 0))
+            for j, item in enumerate(data):
+                if pos + j < len(embeddings):
+                    embeddings[pos + j] = item.get("embedding") or []
+
+    return list(zip(candidate_indices, embeddings))
 
 
 def lexical_retrieve_indices(rec, query, k=15, window=1):
@@ -496,37 +529,39 @@ def lexical_retrieve_indices(rec, query, k=15, window=1):
 
 
 async def retrieve(rec, query, k=15, window=1):
-    """Robust transcript retrieval for AI Tutor. Prefer fast local matching and use
-    semantic embeddings opportunistically with an 8-second timeout so a slow embedding
-    service can never make the Ask button appear stuck."""
+    """Robust, memory-bounded transcript retrieval for AI Tutor.
+
+    Local lexical ranking is used first. Semantic embeddings are calculated only for
+    a small candidate set and are never retained on the recording object.
+    """
     segs = rec.get("segments", []) or []
     if not segs:
         return []
 
     lexical = lexical_retrieve_indices(rec, query, k=k, window=window)
+    candidate_rank = lexical_retrieve_indices(rec, query, k=min(max(k * 8, 60), 160), window=0)
+    if not candidate_rank or not OPENAI_API_KEY:
+        return lexical
 
-    async def _semantic():
-        doc_embeddings = await build_index_async(rec)
-        q_embedding = await get_embedding(query)
-        scores = [cosine_similarity(q_embedding, doc_emb) for doc_emb in doc_embeddings]
-        ranked = sorted(range(len(segs)), key=lambda i: scores[i], reverse=True)
-        top = [i for i in ranked if scores[i] > 0.3][:k]
+    try:
+        q_embedding = await asyncio.wait_for(get_embedding(query), timeout=8.0)
+        pairs = await asyncio.wait_for(build_index_async(rec, candidate_rank), timeout=8.0)
+        scored = []
+        for idx, emb in pairs:
+            if emb:
+                scored.append((cosine_similarity(q_embedding, emb), idx))
+        scored.sort(key=lambda x: x[0], reverse=True)
+        top = [i for score, i in scored if score > 0.30][:k]
         if not top:
-            return []
+            return lexical
         chosen = set()
         for i in top:
             for j in range(max(0, i - window), min(len(segs), i + window + 1)):
                 chosen.add(j)
         return sorted(chosen)
-
-    try:
-        semantic = await asyncio.wait_for(_semantic(), timeout=8.0)
-        if semantic:
-            return semantic
     except Exception as e:
         print(f"[retrieve] semantic search unavailable/slow; using local retrieval: {e}")
-
-    return lexical
+        return lexical
 
 # ---------- teacher notes: extraction + retrieval ----------
 def extract_text_from_upload(data: bytes, filename: str) -> str:
@@ -1765,6 +1800,7 @@ class AskBody(BaseModel):
 
 @app.post("/api/ask")
 async def ask(body: AskBody):
+    _memory_log("ask start")
     sess = valid_session(body.token)
     if not sess:
         return JSONResponse({"error": "Your session has expired. Please log in again."}, status_code=401)
@@ -1773,6 +1809,7 @@ async def ask(body: AskBody):
         return JSONResponse({"error": "Recording not found"}, status_code=404)
     
     idx = await retrieve(rec, body.question)
+    _memory_log(f"ask after retrieval; segments={len(idx)}")
     ctx = context_from_indices(rec, idx, max_chars=18000)
     notes_ctx = notes_context(rec, body.question)
     
@@ -1823,6 +1860,7 @@ async def ask(body: AskBody):
             [{"role": "system", "content": system}, {"role": "user", "content": user}],
             max_tokens=1000,
         )
+        _memory_log("ask after llm")
     except (LLMConfigError, LLMUpstreamError) as e:
         return JSONResponse({"error": str(e)}, status_code=503)
     
@@ -3145,7 +3183,7 @@ async def _embedding_batch(texts):
     if not OPENAI_API_KEY:
         raise LLMConfigError("The AI features are not configured on this server. Set OPENAI_API_KEY.")
     import httpx
-    async with httpx.AsyncClient(timeout=90, connect=15) as client:
+    async with httpx.AsyncClient(timeout=httpx.Timeout(90.0, connect=15.0)) as client:
         resp = await client.post(
             f"{OPENAI_BASE_URL}/embeddings",
             headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
@@ -3367,11 +3405,16 @@ async def _syllabus_map_recording_evidence(query, topic, recordings, allowed_cou
         topic.get("description") or "",
         " ".join(topic.get("keywords") or []),
     ]).strip()
-    topic_tokens = set(_syllabus_map_tokens(" ".join([topic.get("title") or "", " ".join(topic.get("keywords") or [])])))
+    topic_query = " ".join([
+        topic.get("title") or "",
+        topic.get("path") or "",
+        " ".join(topic.get("keywords") or []),
+    ]).strip()
     try:
-        q_emb = await get_embedding(context)
+        q_emb = await get_embedding(context) if OPENAI_API_KEY else None
     except Exception:
         q_emb = None
+
     ranked = []
     for rec in recordings:
         unit = (rec.get("unit") or "Unassigned").strip()
@@ -3382,30 +3425,40 @@ async def _syllabus_map_recording_evidence(query, topic, recordings, allowed_cou
         segs = rec.get("segments") or []
         if not segs:
             continue
-        rec_embs = []
+
+        # Score all segments locally, then embed only the strongest few. This avoids
+        # loading embeddings for an entire course/recording into RAM.
+        candidate_indices = lexical_retrieve_indices(rec, topic_query or context, k=40, window=0)
+        if not candidate_indices:
+            continue
+
+        semantic_by_index = {}
         if q_emb is not None:
             try:
-                rec_embs = await build_index_async(rec)
-            except Exception:
-                rec_embs = []
-        for i, seg in enumerate(segs):
-            text = str(seg.get("text") or "").strip()
+                pairs = await build_index_async(rec, candidate_indices)
+                for idx, emb in pairs:
+                    if emb:
+                        semantic_by_index[idx] = cosine_similarity(q_emb, emb)
+            except Exception as exc:
+                print(f"[syllabus-map] recording embedding failed: {exc}")
+
+        for i in candidate_indices:
+            text = str(segs[i].get("text") or "").strip()
             if not text:
                 continue
-            lex = _syllabus_map_lexical_score(topic_tokens, text)
-            sem = 0.0
-            if q_emb is not None and i < len(rec_embs):
-                sem = cosine_similarity(q_emb, rec_embs[i])
-            title_bonus = _syllabus_map_lexical_score(topic.get("path") or topic.get("title") or "", (rec.get("display_title") or rec.get("topic") or "")) * 0.08
-            # The syllabus topic has already been selected authoritatively. Require either
-            # meaningful semantic support or strong topic anchors; do not require both in
-            # every case because lecture wording often differs from the syllabus wording.
+            lex = _syllabus_map_lexical_score(topic_query or context, text)
+            sem = float(semantic_by_index.get(i, 0.0))
+            title_bonus = _syllabus_map_lexical_score(
+                topic.get("path") or topic.get("title") or "",
+                (rec.get("display_title") or rec.get("topic") or "")
+            ) * 0.08
             if sem < 0.42 and lex < 2 and title_bonus <= 0.08:
                 continue
             if lex < 1 and sem < 0.52 and title_bonus <= 0.16:
                 continue
             score = sem * 0.78 + min(lex, 5) * 0.10 + title_bonus
             ranked.append((score, sem, rec, i, text))
+
     ranked.sort(key=lambda x: x[0], reverse=True)
     out = []
     seen = set()
@@ -3490,6 +3543,7 @@ async def _syllabus_map_pastpaper_candidates(query, topic, sols, allowed_courses
 
 @app.post("/api/student/syllabus-map")
 async def student_syllabus_map(body: dict):
+    _memory_log("syllabus-map start")
     token = str(body.get("token") or "")
     query = str(body.get("query") or "").strip()
     requested_course = str(body.get("course") or "").strip()
@@ -3553,7 +3607,9 @@ async def student_syllabus_map(body: dict):
         }
 
     note_evidence = await _syllabus_map_note_context_for_topic(query, topic, eligible_recordings, allowed_courses, max_items=12)
+    _memory_log("syllabus-map after topic selection")
     class_evidence = await _syllabus_map_recording_evidence(query, topic, eligible_recordings, allowed_courses, note_evidence, max_recordings=14)
+    _memory_log(f"syllabus-map after recording evidence; classes={len(class_evidence)}")
     class_evidence.sort(key=lambda x: x.get("semantic_score", 0), reverse=True)
     pp_candidates = await _syllabus_map_pastpaper_candidates(query, topic, load_pp_json(PAST_PAPER_SOLUTIONS_PATH), allowed_courses, max_items=24)
 

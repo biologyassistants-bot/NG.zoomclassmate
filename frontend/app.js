@@ -2661,19 +2661,19 @@ async function runSyllabusMapSearch() {
 
   const query = input.value.trim();
   if (query.length < 2) {
-    toast("Enter a specific concept or question to search.", "info");
+    toast("Describe what you are trying to understand or find.", "info");
     input.focus();
     return;
   }
 
-  const oldText = btn ? btn.innerText : "Find in Syllabus";
+  const oldText = btn ? btn.innerText : "Find from Teacher Notes";
   if (btn) {
     btn.disabled = true;
     btn.innerText = "⏳ Mapping…";
   }
   if (empty) empty.classList.add("hidden");
   results.classList.remove("hidden");
-  results.innerHTML = '<div class="typing" style="padding: 30px; text-align:center;">Searching the syllabus, teacher notes, classes and past-paper library <span class="dot">●</span><span class="dot">●</span><span class="dot">●</span></div>';
+  results.innerHTML = '<div class="typing" style="padding: 30px; text-align:center;">Reading teacher notes and finding the most relevant class parts and past-paper questions <span class="dot">●</span><span class="dot">●</span><span class="dot">●</span></div>';
 
   try {
     const res = await fetch(`${API}/api/student/syllabus-map`, {
@@ -2699,47 +2699,50 @@ function renderSyllabusMapResults(data) {
   if (!results) return;
   const classes = Array.isArray(data.classes) ? data.classes : [];
   const papers = Array.isArray(data.past_papers) ? data.past_papers : [];
+  const noteSources = Array.isArray(data.note_sources) ? data.note_sources : [];
 
-  if (!data.syllabus_topic && !classes.length && !papers.length) {
+  if (!classes.length && !papers.length) {
     results.innerHTML = `
       <div class="setting-card" style="background:var(--panel); border:1.5px solid var(--line); border-radius:14px; padding:24px; text-align:center;">
         <div style="font-size:28px; margin-bottom:8px;">🔎</div>
-        <h3 style="margin-bottom:6px;">No close match found</h3>
-        <p class="meta" style="margin:0;">${escapeHtml(data.message || "Try a more specific concept or use a key biological term.")}</p>
+        <h3 style="margin-bottom:6px;">No confident context match</h3>
+        <p class="meta" style="margin:0;">${escapeHtml(data.message || "I could not find a confident match in the teacher's notes. Try describing the idea in a full sentence.")}</p>
       </div>`;
     return;
   }
 
-  const topic = escapeHtml(data.syllabus_topic || "Related syllabus topic");
-  const subtopic = data.syllabus_subtopic ? `<div style="font-size:13px; font-weight:700; margin-top:5px; color:var(--brand-d);">${escapeHtml(data.syllabus_subtopic)}</div>` : "";
-  const course = data.syllabus_course ? `<span class="course-chip" style="display:inline-flex; margin-top:10px; font-size:11px;">${escapeHtml(data.syllabus_course)}</span>` : "";
-  const expl = data.topic_explanation ? `<p class="meta" style="margin:10px 0 0;">${escapeHtml(data.topic_explanation)}</p>` : "";
+  const summary = escapeHtml(data.context_summary || "The teacher notes were used to understand the context of your question.");
+  const noteHtml = noteSources.length
+    ? `<div style="margin-top:11px; display:flex; flex-wrap:wrap; gap:7px; align-items:center;"><span class="meta" style="font-weight:800;">Teacher notes used:</span>${noteSources.slice(0,6).map(n => `<span class="course-chip" style="font-size:11px;">${escapeHtml(n.note_title || "Teacher notes")}</span>`).join("")}</div>`
+    : "";
 
   let html = `
     <div style="background:linear-gradient(135deg, rgba(11,191,191,.08), rgba(12,166,120,.08)); border:1.5px solid var(--brand); border-radius:14px; padding:18px; margin-bottom:16px;">
-      <div style="font-size:12px; font-weight:800; color:var(--brand-d); text-transform:uppercase; letter-spacing:.04em;">📚 Syllabus Topic</div>
-      <div style="font-size:20px; font-weight:900; margin-top:6px;">${topic}</div>
-      ${subtopic}${course}${expl}
+      <div style="font-size:12px; font-weight:800; color:var(--brand-d); text-transform:uppercase; letter-spacing:.04em;">🎯 AI context match</div>
+      <div style="font-size:18px; font-weight:900; margin-top:6px; line-height:1.35;">${summary}</div>
+      ${noteHtml}
     </div>`;
 
   html += `<div style="display:grid; grid-template-columns: minmax(0,1.05fr) minmax(0,.95fr); gap:16px; align-items:start;">`;
 
   html += `<section style="background:var(--panel); border:1.5px solid var(--line); border-radius:14px; padding:16px;">`;
-  html += `<div style="font-size:15px; font-weight:900; margin-bottom:10px;">🎥 Related Classes <span class="meta">(${classes.length})</span></div>`;
+  html += `<div style="font-size:15px; font-weight:900; margin-bottom:10px;">🎥 Relevant Class Parts <span class="meta">(${classes.length})</span></div>`;
   if (!classes.length) {
-    html += `<p class="meta">No matching class was selected for this concept.</p>`;
+    html += `<p class="meta">No class part could be linked confidently from the teacher notes.</p>`;
   } else {
     classes.forEach(c => {
-      const timestamps = Array.isArray(c.timestamps) ? [...new Set(c.timestamps.filter(Boolean))] : (c.timestamp ? [c.timestamp] : []);
+      const timestamps = Array.isArray(c.timestamps) ? [...new Set(c.timestamps.filter(Boolean))] : [];
       const tsHtml = timestamps.length
         ? `<div style="display:flex; flex-direction:column; align-items:flex-end; gap:5px; flex:0 0 auto;">${timestamps.map(ts => `<span class="ts-chip" style="white-space:nowrap;">⏱ ${escapeHtml(ts)}</span>`).join("")}</div>`
-        : "";
+        : `<span class="meta" style="white-space:nowrap;">Open class</span>`;
+      const notes = Array.isArray(c.note_titles) ? c.note_titles : [];
       html += `
         <div style="padding:12px; border:1px solid var(--line); background:var(--panel2); border-radius:11px; margin-top:9px;">
           <div style="display:flex; justify-content:space-between; gap:14px; align-items:flex-start;">
             <div style="min-width:0;">
               <div style="font-weight:850;">${escapeHtml(c.title || "Class recording")}</div>
               <div class="meta" style="margin-top:3px;">${escapeHtml(c.course || "")} ${c.date ? `· ${escapeHtml(c.date)}` : ""}</div>
+              ${notes.length ? `<div class="meta" style="margin-top:5px;">Notes: ${escapeHtml(notes.join(", "))}</div>` : ""}
             </div>
             ${tsHtml}
           </div>
@@ -2752,7 +2755,7 @@ function renderSyllabusMapResults(data) {
   html += `<section style="background:var(--panel); border:1.5px solid var(--line); border-radius:14px; padding:16px;">`;
   html += `<div style="font-size:15px; font-weight:900; margin-bottom:10px;">📝 Related Past-Paper Questions <span class="meta">(${papers.length})</span></div>`;
   if (!papers.length) {
-    html += `<p class="meta">No related question was found in the current past-paper library.</p>`;
+    html += `<p class="meta">No sufficiently relevant past-paper question was found in the current library.</p>`;
   } else {
     papers.forEach(p => {
       const exam = [p.year, p.series, p.paper ? `Paper ${p.paper}` : ""].filter(Boolean).join(" · ");
@@ -3100,116 +3103,6 @@ async function loadTeacherPastPaperHub() {
   return refreshPastPaperHub();
 }
 
-// 1. Save Syllabus Mapping with Direct UI Feedback
-let teacherSyllabiCache = {};
-
-if (el("saveSyllabusBtn")) {
-  el("saveSyllabusBtn").addEventListener("click", async () => {
-    const course = el("tppCourseSelect").value;
-    const syllabus = el("tppSyllabusCode").value;
-    const btn = el("saveSyllabusBtn");
-
-    if (!course) {
-      toast("Please select a course first.", "info");
-      return;
-    }
-
-    const passcode = state.passcode || localStorage.getItem("ng_teacherPasscode") || "";
-    if (!passcode) {
-      toast("Session expired: please sign in again.", "error");
-      return;
-    }
-
-    const origText = btn.textContent;
-    btn.textContent = "Saving…";
-    btn.disabled = true;
-
-    try {
-      const res = await fetch(`${API}/api/teacher/pastpaper/config/save`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ passcode, course, syllabus })
-      });
-      const data = await res.json();
-
-      if (res.ok) {
-        btn.textContent = "Saved ✓";
-        btn.style.background = "var(--ok, #0ca678)";
-        toast(`Mapped "${course}" to ${syllabus} ✓`, "success", 4000);
-        teacherSyllabiCache[course] = syllabus;
-        setTimeout(() => {
-          btn.textContent = origText;
-          btn.style.background = "";
-          btn.disabled = false;
-        }, 2000);
-      } else {
-        btn.textContent = origText;
-        btn.disabled = false;
-        toast(data.error || "Failed to save mapping.", "error");
-      }
-    } catch (e) {
-      btn.textContent = origText;
-      btn.disabled = false;
-      toast("Network error saving syllabus.", "error");
-    }
-  });
-}
-
-// Build / update the authoritative structured syllabus map from an official syllabus file.
-if (el("buildSyllabusMapBtn")) {
-  el("buildSyllabusMapBtn").addEventListener("click", async () => {
-    const course = el("tppCourseSelect")?.value || "";
-    const syllabus = el("tppSyllabusCode")?.value || "";
-    const fileInput = el("tppSyllabusFile");
-    const status = el("syllabusMapBuildStatus");
-    const btn = el("buildSyllabusMapBtn");
-    if (!course) { toast("Please select a course first.", "info"); return; }
-    if (!fileInput?.files?.length) { toast("Please choose the official syllabus file.", "info"); return; }
-    const fd = new FormData();
-    fd.append("passcode", state.passcode || localStorage.getItem("ng_teacherPasscode") || "");
-    fd.append("course", course);
-    fd.append("syllabus", syllabus);
-    fd.append("file", fileInput.files[0]);
-    const old = btn.textContent;
-    btn.disabled = true;
-    btn.textContent = "⏳ Building map…";
-    if (status) status.textContent = "Reading the official syllabus and building an exact topic hierarchy…";
-    try {
-      const res = await fetch(`${API}/api/teacher/syllabus-map/upload`, { method: "POST", body: fd });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Could not build syllabus map.");
-      if (status) status.innerHTML = `<span style="color:var(--ok,#0ca678);font-weight:800;">✓ ${escapeHtml(data.topics_count || 0)} topics indexed from ${escapeHtml(data.source_filename || "the syllabus")}.</span>`;
-      toast("Syllabus Map data updated successfully.", "success", 4000);
-      await refreshPastPaperHub();
-    } catch (e) {
-      if (status) status.textContent = e.message || "Could not build syllabus map.";
-      toast(e.message || "Could not build syllabus map.", "error");
-    } finally {
-      btn.disabled = false;
-      btn.textContent = old;
-    }
-  });
-}
-
-// Automatically display the existing saved syllabus when switching courses
-if (el("tppCourseSelect")) {
-  el("tppCourseSelect").addEventListener("change", async () => {
-    const selectedCourse = el("tppCourseSelect").value;
-    if (selectedCourse && teacherSyllabiCache[selectedCourse]) {
-      el("tppSyllabusCode").value = teacherSyllabiCache[selectedCourse];
-      toast(`Loaded current mapping: ${teacherSyllabiCache[selectedCourse]}`, "info", 2500);
-    }
-    try {
-      const passcode = state.passcode || localStorage.getItem("ng_teacherPasscode") || "";
-      const res = await fetch(`${API}/api/teacher/pastpaper/config`, { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({passcode}) });
-      const cfg = await res.json();
-      const m = (cfg.structured_syllabi || {})[selectedCourse];
-      const smStatus = el("syllabusMapBuildStatus");
-      if (smStatus) smStatus.innerHTML = m ? `<span style="color:var(--ok,#0ca678);font-weight:800;">✓ ${escapeHtml(m.topics_count || 0)} topics indexed</span>${m.source_filename ? ` · ${escapeHtml(m.source_filename)}` : ""}` : "No structured syllabus map uploaded for this course yet.";
-    } catch(e) {}
-  });
-}
-
 // ==========================================
 // PAST PAPER CURATED QUESTION LIBRARY
 // ==========================================
@@ -3401,17 +3294,8 @@ async function refreshPastPaperHub() {
 
   const allCourses = Array.from(courseSet).sort((a,b) => a.localeCompare(b));
   const ppDocs = Array.isArray(ppConfig.pp_library) ? ppConfig.pp_library : [];
-  if (ppConfig.syllabi && typeof ppConfig.syllabi === "object") teacherSyllabiCache = ppConfig.syllabi;
-  const structuredSyllabi = ppConfig.structured_syllabi || {};
-  const smCourse = document.getElementById("tppCourseSelect")?.value || "";
-  const smStatus = document.getElementById("syllabusMapBuildStatus");
-  if (smStatus && smCourse && structuredSyllabi[smCourse]) {
-    const m = structuredSyllabi[smCourse];
-    smStatus.innerHTML = `<span style="color:var(--ok,#0ca678);font-weight:800;">✓ ${escapeHtml(m.topics_count || 0)} topics indexed</span>${m.source_filename ? ` · ${escapeHtml(m.source_filename)}` : ""}`;
-  }
-
   // Teacher course selectors only. Student course selection comes from the authenticated session.
-  ["tppCourseSelect","bulkCourseSelect","tqCourseSelect","docCourseSelect"].forEach(id => {
+  ["bulkCourseSelect","tqCourseSelect","docCourseSelect"].forEach(id => {
     const select = document.getElementById(id);
     if (!select) return;
     const current = select.value;

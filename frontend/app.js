@@ -2262,7 +2262,8 @@ function renderTeacherRecordings(list) {
     const isWebinar = (r.source || "meeting") === "webinar";
     const badge = `<span class="type-badge ${isWebinar ? "webinar" : "meeting"}">${isWebinar ? "📢 Webinar" : "🎥 Meeting"}</span>`;
     const noTranscript = !r.segments;
-    const btnLabel = noTranscript ? "Generate transcript" : "Re-transcribe";
+    const zoomPending = noTranscript && r.transcript_status === "pending";
+    const btnLabel = zoomPending ? "Waiting for Zoom transcript…" : (noTranscript ? "Generate transcript" : "Re-transcribe");
     const topicsHtml = (r.topics && r.topics.length)
       ? `<div class="rec-topics">${r.topics.map(t => `<span class="topic-tag">${escapeHtml(t)}</span>`).join("")}</div>` : "";
     const summaryHtml = r.summary ? `<div class="rec-summary">${escapeHtml(r.summary)}</div>` : "";
@@ -2272,10 +2273,10 @@ function renderTeacherRecordings(list) {
         <input class="title-in" value="${escapeHtml(r.title)}" />
         <div class="orig">${badge}Original: ${escapeHtml(r.original_title)} · ${escapeHtml(r.date || "")} · <span class="seg-count">${r.segments}</span> lines</div>
         <div class="transcribe-wrap">
-          <button class="transcribe-btn ${noTranscript ? "needs" : ""}">${btnLabel}</button>
+          <button class="transcribe-btn ${noTranscript ? "needs" : ""}" ${zoomPending ? "disabled" : ""}>${btnLabel}</button>
           <button class="summary-btn ghost-sm" ${noTranscript ? "disabled title='Transcribe first'" : ""}>${summaryLabel}</button>
           <button class="delete-btn danger-btn">🗑️ Delete</button>
-          <span class="transcribe-status"></span>
+          <span class="transcribe-status">${zoomPending ? "Zoom is processing the transcript automatically…" : ""}</span>
         </div>
         ${summaryHtml}
         ${topicsHtml}

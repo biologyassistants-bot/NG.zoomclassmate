@@ -2814,12 +2814,14 @@ PAST_PAPER_CONFIG_PATH = os.path.join(DATA_DIR, "past_paper_config.json")
 PAST_PAPER_SOLUTIONS_PATH = os.path.join(DATA_DIR, "past_paper_solutions.json")
 PAST_PAPER_LIB_PATH = os.path.join(DATA_DIR, "pastpaper_library.json")
 
-# Authoritative structured syllabus maps used by the Syllabus Map feature.
-# Each course can have one teacher-uploaded official syllabus source parsed into
-# exact topic/subtopic headings. Student mapping is anchored to this structure
-# before recordings or past papers are searched.
-SYLLABUS_MAP_PATH = os.path.join(DATA_DIR, "syllabus_map.json")
-_SYLLABUS_TOPIC_EMBED_CACHE = {}
+# Syllabus Map is note-first. Legacy structured-syllabus files are no longer used.
+LEGACY_SYLLABUS_MAP_PATH = os.path.join(DATA_DIR, "syllabus_map.json")
+try:
+    if os.path.exists(LEGACY_SYLLABUS_MAP_PATH):
+        os.remove(LEGACY_SYLLABUS_MAP_PATH)
+        print("[syllabus-map] removed legacy official syllabus map file")
+except Exception as _e:
+    print(f"[syllabus-map] could not remove legacy syllabus map file: {_e}")
 
 
 # Legacy document-library filenames used by earlier builds.
@@ -2995,389 +2997,61 @@ def student_pp_meta(body: RecListBody):
 # --- Student Solver Endpoint ---
 # ============================================================================
 
-# --- Student Syllabus Map ---
-# This module deliberately uses a two-stage process:
-# 1) resolve the student's intended biological context from the syllabus + teacher notes;
-# 2) search transcripts/past papers using that resolved context, then apply strict evidence selection.
-# This prevents ambiguous keywords such as "translocation" from matching unrelated meanings.
+# --- Student Syllabus Map -----------------------------------------------------
+# Note-first academic guidance. There is intentionally NO official-syllabus file,
+# exact syllabus heading match, or word-only topic mapping in this module.
+# The AI first finds teacher-note context semantically, then uses those matched
+# notes to connect the student to the relevant class recording(s) and past-paper
+# questions. Ambiguous shared words are rejected by the final context judge.
 
-def load_syllabus_maps():
-    data = load_pp_json(SYLLABUS_MAP_PATH)
-    return data if isinstance(data, dict) else {}
-
-
-def save_syllabus_maps(data):
-    save_pp_json(SYLLABUS_MAP_PATH, data if isinstance(data, dict) else {})
+SYLLABUS_MAP_MAX_NOTE_CHUNKS = 260
+SYLLABUS_MAP_MAX_PAPER_CANDIDATES = 180
 
 
-def _syllabus_map_tokens(text):
-    stop = {
-        "the", "a", "an", "and", "or", "of", "to", "in", "is", "are", "was", "were", "be", "been",
-        "for", "on", "at", "by", "with", "about", "from", "as", "do", "does", "did", "can", "could",
-        "would", "should", "will", "may", "might", "not", "no", "yes", "please", "tell", "me", "my",
-        "your", "our", "their", "his", "her", "its", "explain", "where", "what", "how", "why", "when",
-        "which", "find", "show", "study", "class", "topic", "part", "lesson", "section", "related",
-        "covered", "cover", "inside", "about", "this", "that", "these", "those"
-    }
-    return [w for w in tokenize(text) if len(w) > 2 and w not in stop]
+async def _semantic_rank_texts(query, items, max_items, text_key="text"):
+    """Semantic rank a bounded list without persisting embeddings in memory/disk."""
+    if not items or not OPENAI_API_KEY:
+        return []
+    query = str(query or "").strip()
+    if not query:
+        return []
+    try:
+        q_emb = await asyncio.wait_for(get_embedding(query), timeout=20.0)
+    except Exception as exc:
+        print(f"[syllabus-map] query embedding failed: {exc}")
+        return []
 
-
-def _syllabus_map_lexical_score(query, text):
-    q = set(_syllabus_map_tokens(query) if isinstance(query, str) else query)
-    t = set(_syllabus_map_tokens(text))
-    if not q or not t:
-        return 0.0
-    overlap = len(q & t)
-    return overlap + (overlap / max(1, len(q))) * 2.0
-
-
-def _flatten_syllabus_topics(course, data):
-    """Flatten teacher-uploaded syllabus hierarchy while preserving exact labels."""
-    out = []
-    if not isinstance(data, dict):
-        return out
-
-    def walk(nodes, parent_path=""):
-        for node in nodes or []:
-            if not isinstance(node, dict):
+    scored = []
+    batch_size = 48
+    texts = [str(item.get(text_key) or "")[:5000] for item in items]
+    for pos in range(0, len(texts), batch_size):
+        batch_items = items[pos:pos + batch_size]
+        batch_texts = texts[pos:pos + batch_size]
+        try:
+            embs = await asyncio.wait_for(_embedding_batch(batch_texts), timeout=45.0)
+        except Exception as exc:
+            print(f"[syllabus-map] candidate embedding failed: {exc}")
+            continue
+        for j, emb in enumerate(embs):
+            if not emb or j >= len(batch_items):
                 continue
-            topic_id = str(node.get("id") or node.get("code") or "").strip()
-            title = str(node.get("title") or node.get("name") or "").strip()
-            desc = str(node.get("description") or "").strip()
-            keywords = [str(x).strip() for x in (node.get("keywords") or []) if str(x).strip()]
-            if title:
-                path = f"{parent_path} → {title}" if parent_path else title
-                out.append({
-                    "course": course,
-                    "id": topic_id,
-                    "title": title,
-                    "description": desc[:1200],
-                    "keywords": keywords[:30],
-                    "path": path,
-                    "level": int(node.get("level") or (path.count("→") + 1)),
-                })
-                walk(node.get("children") or node.get("subtopics") or [], path)
+            score = cosine_similarity(q_emb, emb)
+            scored.append((float(score), pos + j))
 
-    walk(data.get("topics") or data.get("outline") or [])
+    scored.sort(key=lambda x: x[0], reverse=True)
+    out = []
+    for score, idx in scored[:max_items]:
+        row = dict(items[idx])
+        row["semantic_score"] = score
+        out.append(row)
     return out
 
 
-def _syllabus_heading_candidates(text):
-    """Extract likely numbered syllabus headings directly from source text."""
-    lines = [re.sub(r"\s+", " ", x).strip() for x in re.sub(r"\r\n?", "\n", text or "").split("\n")]
-    rows = []
-    seen = set()
-    heading_re = re.compile(r"^(\d+(?:\.\d+){0,3}[A-Za-z]?)\s+(.{3,180})$")
-    for i, line in enumerate(lines):
-        if not line or len(line) > 220:
-            continue
-        m = heading_re.match(line)
-        if not m:
-            continue
-        code, title = m.group(1), m.group(2).strip(" .:-")
-        # Avoid obvious page/mark references and sentences.
-        if len(title.split()) > 24:
-            continue
-        key = code.lower() + "|" + title.lower()
-        if key in seen:
-            continue
-        seen.add(key)
-        rows.append({"code": code, "title": title})
-    return rows[:1200]
-
-
-async def _build_structured_syllabus(course, syllabus_name, source_text, filename):
-    candidates = _syllabus_heading_candidates(source_text)
-    if not candidates:
-        # Still allow a source without numbered headings, but give the model the source directly.
-        candidates = [{"code": "", "title": x[:180]} for x in re.split(r"\n+", source_text or "") if x.strip()][:400]
-
-    # Preserve the source; the model is instructed to copy titles rather than inventing them.
-    compact_source = re.sub(r"\s+", " ", source_text or "").strip()
-    compact_source = compact_source[:70000]
-    prompt = {
-        "course": course,
-        "syllabus": syllabus_name,
-        "candidate_headings": candidates,
-        "source_text": compact_source,
-    }
-    system = (
-        "You extract an official Biology syllabus into a structured hierarchy. "
-        "Use ONLY the supplied source. Do not invent, merge, rename, or paraphrase official topic titles. "
-        "Copy headings as written whenever possible. Preserve numbering/codes. "
-        "Build a hierarchy from the numbering; if numbering is missing, use the document's visible order. "
-        "Descriptions must be concise and based only on source text. Keywords must be short biological terms that are explicitly present in the source. "
-        "Return STRICT JSON: {\"topics\":[{\"id\":string,\"title\":string,\"description\":string,\"keywords\":string[],\"children\":[...]}]}."
-    )
-    raw = await llm(
-        [{"role": "system", "content": system},
-         {"role": "user", "content": json.dumps(prompt, ensure_ascii=False)}],
-        max_tokens=6000,
-        temperature=0.0,
-    )
-    txt = (raw or "").strip()
-    a, b = txt.find("{"), txt.rfind("}")
-    if a == -1 or b == -1:
-        raise ValueError("The syllabus parser did not return valid JSON.")
-    data = json.loads(txt[a:b + 1])
-    topics = data.get("topics") if isinstance(data, dict) else None
-    if not isinstance(topics, list) or not topics:
-        raise ValueError("No syllabus topics were extracted from the uploaded document.")
-    return {
-        "course": course,
-        "syllabus": syllabus_name,
-        "source_filename": filename,
-        "uploaded_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-        "source_chars": len(source_text or ""),
-        "topics": topics,
-    }
-
-
-@app.post("/api/teacher/syllabus-map/upload")
-async def teacher_syllabus_map_upload(
-    passcode: str = Form(...),
-    course: str = Form(...),
-    syllabus: str = Form(""),
-    file: UploadFile = File(...),
-):
-    if not check_teacher(passcode):
-        return JSONResponse({"error": "Unauthorized passcode."}, status_code=401)
-    course = (course or "").strip()
-    if not course:
-        return JSONResponse({"error": "Please select a course."}, status_code=400)
-    filename = (file.filename or "syllabus.pdf").strip()
-    ext = filename.lower().rsplit(".", 1)[-1] if "." in filename else ""
-    if ext not in {"pdf", "docx", "txt", "md"}:
-        return JSONResponse({"error": "Please upload a PDF, DOCX, TXT or MD syllabus file."}, status_code=400)
-    data = await file.read()
-    if len(data) > 25 * 1024 * 1024:
-        return JSONResponse({"error": "Syllabus file is too large (25 MB maximum)."}, status_code=400)
-    try:
-        source_text = extract_text_from_upload(data, filename)
-        if len(source_text.strip()) < 200:
-            return JSONResponse({"error": "The uploaded syllabus could not be read as text."}, status_code=422)
-        built = await _build_structured_syllabus(course, syllabus or course, source_text, filename)
-        store = load_syllabus_maps()
-        store[course] = built
-        save_syllabus_maps(store)
-        # Invalidate topic embedding cache for this course.
-        for key in list(_SYLLABUS_TOPIC_EMBED_CACHE.keys()):
-            if key.startswith(course + "::"):
-                _SYLLABUS_TOPIC_EMBED_CACHE.pop(key, None)
-        count = len(_flatten_syllabus_topics(course, built))
-        return {"ok": True, "course": course, "syllabus": built.get("syllabus"), "topics_count": count, "source_filename": filename}
-    except (LLMConfigError, LLMUpstreamError) as e:
-        return JSONResponse({"error": str(e)}, status_code=503)
-    except Exception as e:
-        return JSONResponse({"error": f"Could not build syllabus map: {e}"}, status_code=500)
-
-
-def _topic_cache_key(course, topic):
-    return f"{course}::{topic.get('id','')}::{topic.get('path','')}"
-
-
-async def _embedding_batch(texts):
-    texts = [str(x or "").strip() for x in texts]
-    if not texts:
-        return []
-    if not OPENAI_API_KEY:
-        raise LLMConfigError("The AI features are not configured on this server. Set OPENAI_API_KEY.")
-    import httpx
-    async with httpx.AsyncClient(timeout=httpx.Timeout(90.0, connect=15.0)) as client:
-        resp = await client.post(
-            f"{OPENAI_BASE_URL}/embeddings",
-            headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
-            json={"input": texts, "model": "text-embedding-3-small"},
-        )
-        resp.raise_for_status()
-        data = resp.json().get("data", []) or []
-        data = sorted(data, key=lambda x: x.get("index", 0))
-        return [d.get("embedding", []) for d in data]
-
-
-async def _topic_embedding(course, topic):
-    key = _topic_cache_key(course, topic)
-    if key in _SYLLABUS_TOPIC_EMBED_CACHE:
-        return _SYLLABUS_TOPIC_EMBED_CACHE[key]
-    text = " | ".join([
-        topic.get("path") or topic.get("title") or "",
-        topic.get("description") or "",
-        " ".join(topic.get("keywords") or []),
-    ]).strip()
-    emb = await get_embedding(text)
-    _SYLLABUS_TOPIC_EMBED_CACHE[key] = emb
-    return emb
-
-
-async def _select_syllabus_topic(query, topics, note_evidence):
-    """Select one authoritative syllabus topic with deterministic anchors first.
-
-    The previous implementation relied too heavily on an LLM confidence gate, which could
-    return no topic even for an exact syllabus phrase. This version uses exact/phrase/keyword
-    matches as hard evidence, then uses embeddings + an LLM only to resolve ambiguity.
-    """
-    if not topics:
-        return None, "low", []
-
-    q = (query or "").strip().lower()
-    q_tokens = set(_syllabus_map_tokens(query))
-
-    def norm_phrase(x):
-        return re.sub(r"[^a-z0-9]+", " ", str(x or "").lower()).strip()
-
-    def phrase_hits(qtext, text):
-        qn = norm_phrase(qtext)
-        tn = norm_phrase(text)
-        if not qn or not tn:
-            return 0
-        return 1 if qn in tn else 0
-
-    # Deterministic lexical scoring. Exact title/path hits get a strong bonus.
-    deterministic = []
-    for idx, topic in enumerate(topics):
-        title = str(topic.get("title") or "")
-        path = str(topic.get("path") or title)
-        desc = str(topic.get("description") or "")
-        kws = " ".join(topic.get("keywords") or [])
-        text = " | ".join([path, desc, kws])
-        title_tokens = set(_syllabus_map_tokens(title))
-        path_tokens = set(_syllabus_map_tokens(path))
-        kw_tokens = set(_syllabus_map_tokens(kws))
-        overlap_title = len(q_tokens & title_tokens)
-        overlap_path = len(q_tokens & path_tokens)
-        overlap_kw = len(q_tokens & kw_tokens)
-        exact_title = phrase_hits(query, title)
-        exact_path = phrase_hits(query, path)
-        lexical = _syllabus_map_lexical_score(query, text)
-        depth = int(topic.get("level") or path.count("→") + 1)
-        # Favor the most specific matching child topic over a generic parent.
-        depth_bonus = min(depth, 6) * 0.025
-        score = (
-            exact_title * 3.0 +
-            exact_path * 2.5 +
-            min(overlap_title, 5) * 0.45 +
-            min(overlap_path, 7) * 0.22 +
-            min(overlap_kw, 7) * 0.14 +
-            min(lexical, 8) * 0.06 +
-            depth_bonus
-        )
-        deterministic.append((score, idx, topic, exact_title, exact_path, overlap_title, overlap_path, overlap_kw))
-
-    deterministic.sort(key=lambda x: x[0], reverse=True)
-
-    # Strong exact syllabus match: do not ask an LLM to veto a literal official title.
-    top_d = deterministic[0]
-    if top_d[3] or top_d[4] or top_d[5] >= 2:
-        # If two different topics share the exact same term, use notes to disambiguate.
-        tied = [x for x in deterministic[:8] if abs(x[0] - top_d[0]) < 0.35]
-        if len(tied) == 1:
-            t = top_d[2]
-            return t, "high", [{"index": i, "path": x[2].get("path"), "title": x[2].get("title"), "semantic_score": 0.0} for i, x in enumerate(deterministic[:10])]
-
-    # Embedding ranking is secondary evidence.
-    q_emb = None
-    try:
-        q_emb = (await _embedding_batch([query]))[0]
-    except Exception as exc:
-        print(f"[syllabus-map] topic embedding failed: {exc}")
-
-    topic_texts = []
-    for topic in topics:
-        topic_texts.append(" | ".join([
-            topic.get("path") or topic.get("title") or "",
-            topic.get("description") or "",
-            " ".join(topic.get("keywords") or []),
-        ]).strip())
-
-    # Only embed the strongest lexical candidates to reduce cost and keep matching focused.
-    candidate_indices = [x[1] for x in deterministic[:40]]
-    topic_embs = {}
-    if q_emb is not None and candidate_indices:
-        try:
-            embs = await _embedding_batch([topic_texts[i] for i in candidate_indices])
-            for i, emb in zip(candidate_indices, embs):
-                topic_embs[i] = emb
-        except Exception as exc:
-            print(f"[syllabus-map] topic batch embedding failed: {exc}")
-
-    ranked = []
-    for base_score, idx, topic, *rest in deterministic[:40]:
-        sem = cosine_similarity(q_emb, topic_embs[idx]) if q_emb is not None and topic_embs.get(idx) else 0.0
-        note_bonus = 0.0
-        topic_tokens = set(_syllabus_map_tokens(topic_texts[idx]))
-        for n in note_evidence[:12]:
-            nt = set(_syllabus_map_tokens(n.get("text") or ""))
-            overlap = len(topic_tokens & nt)
-            if overlap:
-                note_bonus = max(note_bonus, min(overlap, 5) * 0.04)
-        total = base_score + sem * 0.55 + note_bonus
-        ranked.append((total, sem, topic, idx))
-    ranked.sort(key=lambda x: x[0], reverse=True)
-    if not ranked:
-        return None, "low", []
-
-    # Prepare candidates for the LLM only when ambiguity remains.
-    top = ranked[:12]
-    cand_payload = []
-    for i, row in enumerate(top):
-        cand_payload.append({
-            "index": i,
-            "course": row[2].get("course"),
-            "id": row[2].get("id"),
-            "path": row[2].get("path"),
-            "title": row[2].get("title"),
-            "description": row[2].get("description"),
-            "keywords": row[2].get("keywords"),
-            "semantic_score": round(row[1], 4),
-            "deterministic_score": round(row[0], 4),
-        })
-
-    # If the top topic is clearly ahead and has meaningful evidence, return it directly.
-    margin = top[0][0] - (top[1][0] if len(top) > 1 else 0.0)
-    if (top[0][0] >= 1.15 and margin >= 0.22) or top[0][1] >= 0.67:
-        return top[0][2], "high", cand_payload
-
-    notes = [
-        {"course": n.get("course"), "recording": n.get("title"), "note": n.get("note_title"), "text": str(n.get("text") or "")[:800]}
-        for n in note_evidence[:10]
-    ]
-    system = (
-        "Choose exactly one official syllabus topic for the student's meaning. "
-        "Use the hierarchy, not a shared keyword alone. Prefer a specific child topic over a generic parent. "
-        "If the student's wording exactly names a syllabus concept, select that topic. "
-        "Return STRICT JSON: {\"topic_index\":integer,\"confidence\":\"high|medium|low\"}."
-    )
-    user = json.dumps({"query": query, "candidates": cand_payload, "teacher_note_context": notes}, ensure_ascii=False)
-    parsed = {}
-    try:
-        raw = await llm(
-            [{"role": "system", "content": system}, {"role": "user", "content": user}],
-            max_tokens=400,
-            temperature=0.0,
-        )
-        txt = (raw or "").strip(); a, b = txt.find("{"), txt.rfind("}")
-        parsed = json.loads(txt[a:b + 1]) if a != -1 and b != -1 else {}
-    except Exception as exc:
-        print(f"[syllabus-map] topic judge failed: {exc}")
-
-    idx = int(parsed.get("topic_index", -1)) if str(parsed.get("topic_index", "-1")).lstrip("-").isdigit() else -1
-    conf = str(parsed.get("confidence") or "low").lower()
-    if 0 <= idx < len(top):
-        return top[idx][2], conf if conf in {"high", "medium", "low"} else "medium", cand_payload
-
-    # Final deterministic fallback: if there is enough lexical/semantic evidence, keep it.
-    if top[0][0] >= 0.85 or top[0][1] >= 0.58:
-        return top[0][2], "medium", cand_payload
-    return None, "low", cand_payload
-
-
-async def _syllabus_map_note_context_for_topic(query, topic, recordings, allowed_courses, max_items=10):
-    rows = []
-    topic_terms = _syllabus_map_tokens(" ".join([
-        query, topic.get("path") or "", topic.get("description") or "", " ".join(topic.get("keywords") or [])
-    ]))
+def _teacher_note_candidates(recordings, allowed_courses):
+    """Flatten teacher note chunks with the recording that owns each note."""
     notes_lib = load_notes_library()
     notes_by_id = {str(n.get("id")): n for n in notes_lib if isinstance(n, dict)}
+    rows = []
     for rec in recordings:
         unit = (rec.get("unit") or "Unassigned").strip()
         if allowed_courses and unit not in allowed_courses:
@@ -3386,121 +3060,64 @@ async def _syllabus_map_note_context_for_topic(query, topic, recordings, allowed
             note = notes_by_id.get(str(nid))
             if not note:
                 continue
-            for chunk in note.get("chunks") or []:
+            for idx, chunk in enumerate(note.get("chunks") or []):
                 text = str(chunk or "").strip()
                 if not text:
                     continue
-                score = _syllabus_map_lexical_score(topic_terms, text)
-                if score <= 0:
-                    continue
-                rows.append({"recording_id": rec.get("id"), "title": rec.get("display_title") or rec.get("topic"), "course": unit, "note_title": note.get("filename") or "Teacher notes", "text": text, "score": score})
-    rows.sort(key=lambda x: x["score"], reverse=True)
-    return rows[:max_items]
-
-
-async def _syllabus_map_recording_evidence(query, topic, recordings, allowed_courses, note_evidence, max_recordings=20):
-    context = " | ".join([
-        query,
-        topic.get("path") or "",
-        topic.get("description") or "",
-        " ".join(topic.get("keywords") or []),
-    ]).strip()
-    topic_query = " ".join([
-        topic.get("title") or "",
-        topic.get("path") or "",
-        " ".join(topic.get("keywords") or []),
-    ]).strip()
-    try:
-        q_emb = await get_embedding(context) if OPENAI_API_KEY else None
-    except Exception:
-        q_emb = None
-
-    ranked = []
-    for rec in recordings:
-        unit = (rec.get("unit") or "Unassigned").strip()
-        if allowed_courses and unit not in allowed_courses:
-            continue
-        if not rec.get("visible", True):
-            continue
-        segs = rec.get("segments") or []
-        if not segs:
-            continue
-
-        # Score all segments locally, then embed only the strongest few. This avoids
-        # loading embeddings for an entire course/recording into RAM.
-        candidate_indices = lexical_retrieve_indices(rec, topic_query or context, k=40, window=0)
-        if not candidate_indices:
-            continue
-
-        semantic_by_index = {}
-        if q_emb is not None:
-            try:
-                pairs = await build_index_async(rec, candidate_indices)
-                for idx, emb in pairs:
-                    if emb:
-                        semantic_by_index[idx] = cosine_similarity(q_emb, emb)
-            except Exception as exc:
-                print(f"[syllabus-map] recording embedding failed: {exc}")
-
-        for i in candidate_indices:
-            text = str(segs[i].get("text") or "").strip()
-            if not text:
-                continue
-            lex = _syllabus_map_lexical_score(topic_query or context, text)
-            sem = float(semantic_by_index.get(i, 0.0))
-            title_bonus = _syllabus_map_lexical_score(
-                topic.get("path") or topic.get("title") or "",
-                (rec.get("display_title") or rec.get("topic") or "")
-            ) * 0.08
-            if sem < 0.42 and lex < 2 and title_bonus <= 0.08:
-                continue
-            if lex < 1 and sem < 0.52 and title_bonus <= 0.16:
-                continue
-            score = sem * 0.78 + min(lex, 5) * 0.10 + title_bonus
-            ranked.append((score, sem, rec, i, text))
-
-    ranked.sort(key=lambda x: x[0], reverse=True)
-    out = []
-    seen = set()
-    for score, sem, rec, i, text in ranked:
-        rid = rec.get("id")
-        key = (rid, i)
-        if key in seen:
-            continue
-        seen.add(key)
-        out.append({
-            "recording_id": rid,
-            "title": rec.get("display_title") or rec.get("topic") or "Class recording",
-            "course": rec.get("unit") or "Unassigned",
-            "date": rec.get("date") or "",
-            "segment_index": i,
-            "timestamp": fmt_ts((rec.get("segments") or [])[i].get("start")),
-            "text": text,
-            "semantic_score": float(sem),
-        })
-        if len(out) >= max_recordings * 3:
+                rows.append({
+                    "recording_id": rec.get("id"),
+                    "title": rec.get("display_title") or rec.get("topic") or "Class recording",
+                    "course": unit,
+                    "date": rec.get("date") or "",
+                    "note_title": note.get("filename") or "Teacher notes",
+                    "note_index": idx,
+                    "text": text[:1400],
+                })
+    # Bound candidate volume before any embedding work while keeping representation
+    # spread across the available recordings instead of favoring one huge note file.
+    if len(rows) <= SYLLABUS_MAP_MAX_NOTE_CHUNKS:
+        return rows
+    grouped = {}
+    for r in rows:
+        grouped.setdefault(r["recording_id"], []).append(r)
+    selected = []
+    while len(selected) < SYLLABUS_MAP_MAX_NOTE_CHUNKS and grouped:
+        progressed = False
+        for rid in list(grouped.keys()):
+            arr = grouped.get(rid) or []
+            if arr:
+                selected.append(arr.pop(0))
+                progressed = True
+                if len(selected) >= SYLLABUS_MAP_MAX_NOTE_CHUNKS:
+                    break
+            if not arr:
+                grouped.pop(rid, None)
+        if not progressed:
             break
-    return out
+    return selected
 
 
-async def _syllabus_map_pastpaper_candidates(query, topic, sols, allowed_courses, max_items=30):
+async def _student_syllabus_map_notes(query, recordings, allowed_courses):
+    """Return the strongest teacher-note evidence using semantic similarity only."""
+    items = _teacher_note_candidates(recordings, allowed_courses)
+    if not items:
+        return []
+
+    semantic = await _semantic_rank_texts(
+        query,
+        items,
+        max_items=12,
+        text_key="text",
+    )
+    # A semantic threshold keeps loosely-related shared vocabulary out. The final
+    # AI judge below performs the stronger contextual check.
+    return [r for r in semantic if float(r.get("semantic_score") or 0) >= 0.30]
+
+
+async def _student_syllabus_map_papers(context_query, sols, allowed_courses):
     if not isinstance(sols, dict):
         return []
-    context = " | ".join([
-        query,
-        topic.get("path") or "",
-        topic.get("description") or "",
-        " ".join(topic.get("keywords") or []),
-    ]).strip()
-    try:
-        q_emb = (await _embedding_batch([context]))[0]
-    except Exception:
-        q_emb = None
-
-    candidates = []
-    topic_tokens = _syllabus_map_tokens(" ".join([
-        topic.get("path") or "", topic.get("description") or "", " ".join(topic.get("keywords") or [])
-    ]))
+    rows = []
     for key, item in sols.items():
         if not isinstance(item, dict):
             continue
@@ -3509,36 +3126,25 @@ async def _syllabus_map_pastpaper_candidates(query, topic, sols, allowed_courses
             continue
         q = str(item.get("question") or "").strip()
         qp = str(item.get("qp_text") or "").strip()
-        searchable = f"{q} {qp}".strip()
+        searchable = f"{q}\n{qp}".strip()
         if not searchable:
             continue
-        lex = _syllabus_map_lexical_score(topic_tokens, searchable)
-        candidates.append({
-            "key": str(key), "course": course, "year": str(item.get("year") or ""), "series": str(item.get("series") or ""),
-            "paper": str(item.get("paper") or ""), "question": q or str(item.get("question_number") or ""),
-            "question_type": str(item.get("question_type") or ""), "text": searchable[:1400], "lex": lex,
+        rows.append({
+            "key": str(key),
+            "course": course,
+            "year": str(item.get("year") or ""),
+            "series": str(item.get("series") or ""),
+            "paper": str(item.get("paper") or ""),
+            "question": q or str(item.get("question_number") or ""),
+            "question_type": str(item.get("question_type") or ""),
+            "text": searchable[:1800],
         })
-    # First reduce the candidate pool using the topic vocabulary; then use embeddings.
-    candidates.sort(key=lambda x: x["lex"], reverse=True)
-    candidates = candidates[:120]
-    if not candidates:
+    if not rows:
         return []
-    try:
-        embs = await _embedding_batch([c["text"][:5000] for c in candidates]) if q_emb is not None else []
-    except Exception:
-        embs = []
-    rows=[]
-    for i,c in enumerate(candidates):
-        sem = cosine_similarity(q_emb, embs[i]) if q_emb is not None and i < len(embs) and embs[i] else 0.0
-        if sem < 0.46 and c["lex"] < 1.5:
-            continue
-        c2=dict(c)
-        c2["score"] = sem * 0.84 + min(c["lex"],5) * 0.05
-        rows.append(c2)
-    rows.sort(key=lambda x:x["score"], reverse=True)
-    for row in rows:
-        row.pop("lex", None)
-    return rows[:max_items]
+    if len(rows) > SYLLABUS_MAP_MAX_PAPER_CANDIDATES:
+        rows = rows[:SYLLABUS_MAP_MAX_PAPER_CANDIDATES]
+    semantic = await _semantic_rank_texts(context_query, rows, max_items=20, text_key="text")
+    return [r for r in semantic if float(r.get("semantic_score") or 0) >= 0.30]
 
 
 @app.post("/api/student/syllabus-map")
@@ -3551,7 +3157,7 @@ async def student_syllabus_map(body: dict):
     if not sess:
         return JSONResponse({"error": "Your session has expired. Please log in again."}, status_code=401)
     if len(query) < 2:
-        return JSONResponse({"error": "Please enter a specific concept or question to search."}, status_code=400)
+        return JSONResponse({"error": "Please describe what you are trying to understand or find."}, status_code=400)
 
     student_courses = [str(c).strip() for c in (sess.get("courses") or []) if str(c).strip()]
     allowed_courses = set(student_courses)
@@ -3562,147 +3168,173 @@ async def student_syllabus_map(body: dict):
 
     eligible_recordings = [
         r for r in RECORDINGS
-        if r.get("visible", True) and ((not allowed_courses) or ((r.get("unit") or "Unassigned").strip() in allowed_courses))
+        if r.get("visible", True)
+        and ((not allowed_courses) or ((r.get("unit") or "Unassigned").strip() in allowed_courses))
     ]
     if not eligible_recordings:
         return JSONResponse({"error": "No class recordings are available for the selected course."}, status_code=404)
 
-    maps = load_syllabus_maps()
-    topics = []
-    syllabus_refs = []
-    courses_with_maps = []
-    for course in sorted({(r.get("unit") or "Unassigned").strip() for r in eligible_recordings}):
-        m = maps.get(course)
-        if isinstance(m, dict) and (m.get("topics") or m.get("outline")):
-            flat = _flatten_syllabus_topics(course, m)
-            topics.extend(flat)
-            courses_with_maps.append(course)
-            syllabus_refs.append({"course": course, "syllabus": m.get("syllabus") or course, "source_filename": m.get("source_filename") or ""})
-
-    if not topics:
+    note_hits = await _student_syllabus_map_notes(query, eligible_recordings, allowed_courses)
+    _memory_log(f"syllabus-map after teacher-note retrieval; notes={len(note_hits)}")
+    if not note_hits:
         return {
             "query": query,
-            "syllabus_topic": None,
-            "syllabus_subtopic": "",
-            "syllabus_course": "",
-            "topic_explanation": "An official structured syllabus map has not been uploaded for this course yet.",
-            "syllabus_reference": [],
-            "classes": [], "past_papers": [],
-            "message": "The teacher needs to upload the official syllabus for this course before Syllabus Map can make an accurate mapping."
+            "context_summary": "I could not make a confident context match from the teacher's uploaded notes.",
+            "note_sources": [],
+            "classes": [],
+            "past_papers": [],
+            "message": "Try describing the process, structure, condition, or example you mean rather than using only one keyword.",
         }
 
-    # Notes help distinguish meanings, but they do not replace the official syllabus.
-    raw_note_context = await _syllabus_map_note_context_for_topic(query, {"title": query, "keywords": _syllabus_map_tokens(query), "path": query}, eligible_recordings, allowed_courses, max_items=12)
-    topic, confidence, topic_candidates = await _select_syllabus_topic(query, topics, raw_note_context)
-    if not topic or confidence == "low":
-        return {
-            "query": query,
-            "syllabus_topic": None,
-            "syllabus_subtopic": "",
-            "syllabus_course": "",
-            "topic_explanation": "The query is not specific enough to map confidently to one official syllabus topic.",
-            "syllabus_reference": syllabus_refs,
-            "classes": [], "past_papers": [],
-            "message": "Please add a little context so the concept can be mapped to the correct syllabus topic."
-        }
+    # Build a compact context from the teacher notes. This is the semantic anchor for
+    # both class-linking and exam retrieval; transcripts are used only to locate the
+    # timestamp inside already-selected classes.
+    note_context = "\n".join(
+        f"[{i}] {n['note_title']} | class={n['title']} | {n['text']}"
+        for i, n in enumerate(note_hits[:10])
+    )
+    context_query = f"Student question: {query}\nTeacher-note context:\n{note_context}"
 
-    note_evidence = await _syllabus_map_note_context_for_topic(query, topic, eligible_recordings, allowed_courses, max_items=12)
-    _memory_log("syllabus-map after topic selection")
-    class_evidence = await _syllabus_map_recording_evidence(query, topic, eligible_recordings, allowed_courses, note_evidence, max_recordings=14)
-    _memory_log(f"syllabus-map after recording evidence; classes={len(class_evidence)}")
-    class_evidence.sort(key=lambda x: x.get("semantic_score", 0), reverse=True)
-    pp_candidates = await _syllabus_map_pastpaper_candidates(query, topic, load_pp_json(PAST_PAPER_SOLUTIONS_PATH), allowed_courses, max_items=24)
+    pp_candidates = await _student_syllabus_map_papers(context_query, load_pp_json(PAST_PAPER_SOLUTIONS_PATH), allowed_courses)
 
-    # Final judge is only allowed to reject candidates or keep them; it cannot invent a new topic.
+    # Candidate classes come ONLY from recordings whose teacher notes were semantically
+    # relevant. This is the key safeguard against matching an unrelated recording merely
+    # because it contains the same word.
+    recording_ids = []
+    for n in note_hits:
+        rid = n.get("recording_id")
+        if rid and rid not in recording_ids:
+            recording_ids.append(rid)
+
+    class_candidates = []
+    for rid in recording_ids[:8]:
+        rec = next((r for r in eligible_recordings if r.get("id") == rid), None)
+        if not rec:
+            continue
+        timestamps = []
+        if rec.get("segments"):
+            try:
+                idxs = await retrieve(rec, context_query, k=5, window=0)
+                for idx in idxs[:5]:
+                    segs = rec.get("segments") or []
+                    if 0 <= idx < len(segs):
+                        ts = fmt_ts(segs[idx].get("start"))
+                        if ts and ts not in timestamps:
+                            timestamps.append(ts)
+            except Exception as exc:
+                print(f"[syllabus-map] timestamp retrieval failed: {exc}")
+        class_candidates.append({
+            "recording_id": rec.get("id"),
+            "title": rec.get("display_title") or rec.get("topic") or "Class recording",
+            "course": rec.get("unit") or "Unassigned",
+            "date": rec.get("date") or "",
+            "timestamps": timestamps,
+            "note_titles": sorted({n.get("note_title") for n in note_hits if n.get("recording_id") == rid and n.get("note_title")}),
+        })
+
+    _memory_log(f"syllabus-map after class linking; classes={len(class_candidates)}")
+
     class_text = "\n".join(
-        f"[{i}] course={c['course']} | recording={c['title']} | date={c['date']} | timestamp={c['timestamp']} | evidence={c['text']}"
-        for i, c in enumerate(class_evidence[:30])
+        f"[{i}] {c['title']} | course={c['course']} | notes={', '.join(c.get('note_titles') or [])} | timestamps={', '.join(c.get('timestamps') or []) or 'none'}"
+        for i, c in enumerate(class_candidates)
     )
-    pp_text = "\n".join(
-        f"[{i}] course={p['course']} | year={p['year']} | series={p['series']} | paper={p['paper']} | question={p['question']} | evidence={p['text']}"
-        for i, p in enumerate(pp_candidates)
+    paper_text = "\n".join(
+        f"[{i}] {p['year']} {p['series']} Paper {p['paper']} | Q={p['question']} | course={p['course']} | question={p['text'][:900]}"
+        for i, p in enumerate(pp_candidates[:20])
     )
-    system = (
-        "You are the final strict relevance filter for an academic syllabus map. "
-        "The official syllabus topic has ALREADY been selected. Do not change it. "
-        "Keep a class only if the evidence is genuinely about that exact syllabus topic, not merely a shared word. "
-        "Keep a past-paper question only if the question itself tests that exact topic. Generic biological references are insufficient. "
-        "Return STRICT JSON: {\"class_indices\":integer[],\"past_paper_indices\":integer[]}. "
-        "It is valid and preferred to return empty arrays when evidence is weak."
+
+    judge_system = (
+        "You are an academic relevance judge for a student study-navigation tool. "
+        "The student's question may be vague, conversational, or use a word with multiple biological meanings. "
+        "Use the surrounding teacher-note context to determine what the student actually means. "
+        "Do NOT match an item just because it shares a word with the question. "
+        "A class is relevant only when its attached teacher note context teaches the same idea. "
+        "A past-paper question is relevant only when it tests that same idea. "
+        "Prefer fewer confident matches over broad or speculative matches. "
+        "Do not invent topics, classes, timestamps, or exams. "
+        "Return STRICT JSON: {\"summary\":string,\"class_indices\":integer[],\"past_paper_indices\":integer[]}"
     )
-    user = json.dumps({
-        "student_query": query,
-        "official_syllabus_topic": topic.get("path"),
-        "topic_description": topic.get("description"),
-        "topic_keywords": topic.get("keywords"),
-        "teacher_note_context": [n.get("text") for n in note_evidence[:8]],
+    judge_user = json.dumps({
+        "student_question": query,
+        "teacher_notes": [
+            {"index": i, "note": n.get("note_title"), "class": n.get("title"), "context": n.get("text")} 
+            for i, n in enumerate(note_hits[:10])
+        ],
         "class_candidates": class_text,
-        "past_paper_candidates": pp_text,
+        "past_paper_candidates": paper_text,
     }, ensure_ascii=False)
+
+    parsed = {}
     try:
         raw = await llm(
-            [{"role": "system", "content": system}, {"role": "user", "content": user}],
-            max_tokens=700,
+            [{"role": "system", "content": judge_system}, {"role": "user", "content": judge_user}],
+            max_tokens=650,
             temperature=0.0,
         )
-        txt=(raw or "").strip(); a,b=txt.find("{"),txt.rfind("}")
-        parsed=json.loads(txt[a:b+1]) if a!=-1 and b!=-1 else {}
-    except Exception:
-        parsed={}
+        txt = (raw or "").strip()
+        a, b = txt.find("{"), txt.rfind("}")
+        if a != -1 and b != -1:
+            parsed = json.loads(txt[a:b + 1])
+    except Exception as exc:
+        print(f"[syllabus-map] final context judge failed: {exc}")
 
     def valid(vals, size, limit):
-        out=[]
+        out = []
         for v in vals if isinstance(vals, list) else []:
-            try: i=int(v)
-            except Exception: continue
-            if 0<=i<size and i not in out: out.append(i)
-            if len(out)>=limit: break
+            try:
+                i = int(v)
+            except Exception:
+                continue
+            if 0 <= i < size and i not in out:
+                out.append(i)
+            if len(out) >= limit:
+                break
         return out
 
-    class_indices=valid(parsed.get("class_indices"), len(class_evidence), 8)
-    pp_indices=valid(parsed.get("past_paper_indices"), len(pp_candidates), 8)
+    class_indices = valid(parsed.get("class_indices"), len(class_candidates), 6)
+    paper_indices = valid(parsed.get("past_paper_indices"), len(pp_candidates), 8)
 
-    # If the final LLM filter is overly conservative or unavailable, retain only
-    # high-confidence deterministic candidates rather than returning nothing.
-    if not class_indices and class_evidence:
-        strong = [
-            i for i, c in enumerate(class_evidence[:16])
-            if float(c.get("semantic_score") or 0) >= 0.55
-        ]
-        class_indices = strong[:8]
-    if not pp_indices and pp_candidates:
-        strong_pp = [
-            i for i, p in enumerate(pp_candidates[:16])
-            if float(p.get("score") or 0) >= 0.50
-        ]
-        pp_indices = strong_pp[:8]
+    # Safe deterministic fallback if the LLM judge is unavailable: note-derived classes
+    # remain valid because they were already selected semantically from teacher notes.
+    if not class_indices:
+        class_indices = list(range(min(6, len(class_candidates))))
+    if not paper_indices:
+        paper_indices = [
+            i for i, p in enumerate(pp_candidates[:8])
+            if float(p.get("semantic_score") or 0) >= 0.42
+        ][:8]
 
-    grouped={}; order=[]
-    for i in class_indices:
-        c=class_evidence[i]; rid=c["recording_id"]
-        if rid not in grouped:
-            grouped[rid]={"recording_id":rid,"title":c["title"],"course":c["course"],"date":c["date"],"timestamps":[]}; order.append(rid)
-        if c.get("timestamp") and c["timestamp"] not in grouped[rid]["timestamps"]:
-            grouped[rid]["timestamps"].append(c["timestamp"])
-    for rid in order:
-        grouped[rid]["timestamps"].sort(key=lambda x: [int(y) if y.isdigit() else 0 for y in re.split(r"[:.]", x)])
+    classes = [class_candidates[i] for i in class_indices]
+    papers = []
+    for i in paper_indices:
+        p = pp_candidates[i]
+        papers.append({
+            "course": p.get("course"),
+            "year": p.get("year"),
+            "series": p.get("series"),
+            "paper": p.get("paper"),
+            "question": p.get("question"),
+            "question_type": p.get("question_type"),
+        })
 
-    classes=[grouped[rid] for rid in order]
-    papers=[]
-    for i in pp_indices:
-        p=pp_candidates[i]
-        papers.append({"course":p["course"],"year":p["year"],"series":p["series"],"paper":p["paper"],"question":p["question"],"question_type":p["question_type"]})
+    note_sources = []
+    for n in note_hits[:8]:
+        key = (n.get("recording_id"), n.get("note_title"))
+        if key not in note_sources:
+            note_sources.append(key)
+    note_sources = [{"recording_id": rid, "note_title": title} for rid, title in note_sources]
+
+    summary = str(parsed.get("summary") or "").strip()
+    if not summary:
+        summary = "Matched from the teacher's notes using the meaning of your question, then linked to the most relevant class and exam material."
 
     return {
         "query": query,
-        "syllabus_topic": topic.get("title") or topic.get("path") or "",
-        "syllabus_subtopic": topic.get("path") or topic.get("title") or "",
-        "syllabus_course": topic.get("course") or "",
-        "topic_explanation": topic.get("description") or "Mapped using the uploaded official syllabus structure.",
-        "syllabus_reference": syllabus_refs,
+        "context_summary": summary[:600],
+        "note_sources": note_sources,
         "classes": classes,
         "past_papers": papers,
-        "message": "" if classes or papers else "No sufficiently relevant class or past-paper match was found for this syllabus topic."
+        "message": "" if classes or papers else "The teacher notes point to this area, but no sufficiently relevant past-paper question was found.",
     }
 
 
@@ -3901,21 +3533,9 @@ def teacher_pp_config(body: TeacherAuth):
             "answered_doc_id": v.get("answered_doc_id", "")
         })
 
-    structured_maps = load_syllabus_maps()
-    structured_summary = {}
-    for c, m in structured_maps.items():
-        if isinstance(m, dict):
-            structured_summary[c] = {
-                "source_filename": m.get("source_filename", ""),
-                "syllabus": m.get("syllabus", ""),
-                "uploaded_at": m.get("uploaded_at", ""),
-                "topics_count": len(_flatten_syllabus_topics(c, m)),
-            }
-
     return {
         "courses": sorted(list(courses)),
         "syllabi": load_pp_json(PAST_PAPER_CONFIG_PATH),
-        "structured_syllabi": structured_summary,
         "pp_library": [
             {
                 "id": d.get("id", ""),

@@ -29,74 +29,214 @@ BUNDLED_DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
 DATA_DIR = os.environ.get("DATA_DIR", "").strip() or BUNDLED_DATA_DIR
 
 
-def _clean_recordings_disk_file(file_path):
-    """Streams through recordings.json line-by-line to strip out heavy float
-    arrays directly on disk without consuming RAM, preventing 2GB+ boot crashes."""
+def _safe_transcript_filename(recording_id: str) -> str:
+    digest = hashlib.sha256(str(recording_id).encode("utf-8")).hexdigest()
+    return f"{digest}.json"
+
+
+def _transcript_path(recording_id: str) -> str:
+    return os.path.join(TRANSCRIPTS_DIR, _safe_transcript_filename(recording_id))
+
+
+def _iter_json_array_objects(file_path, chunk_size=128 * 1024):
+    """Stream an array of JSON objects without loading the complete file into RAM."""
+    decoder = json.JSONDecoder()
+    with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+        buf = f.read(chunk_size)
+        pos = 0
+        first = True
+        while True:
+            while True:
+                while pos < len(buf) and buf[pos].isspace():
+                    pos += 1
+                if pos < len(buf):
+                    break
+                more = f.read(chunk_size)
+                if not more:
+                    return
+                buf = more
+                pos = 0
+            if first:
+                if buf[pos] != "[":
+                    raise ValueError("recordings.json is not a JSON array")
+                pos += 1
+                first = False
+            while True:
+                while True:
+                    while pos < len(buf) and buf[pos].isspace():
+                        pos += 1
+                    if pos < len(buf):
+                        break
+                    more = f.read(chunk_size)
+                    if not more:
+                        return
+                    buf = more
+                    pos = 0
+                if pos < len(buf) and buf[pos] == ",":
+                    pos += 1
+                    continue
+                break
+            while True:
+                while pos < len(buf) and buf[pos].isspace():
+                    pos += 1
+                if pos < len(buf):
+                    break
+                more = f.read(chunk_size)
+                if not more:
+                    return
+                buf = more
+                pos = 0
+            if pos < len(buf) and buf[pos] == "]":
+                return
+            try:
+                obj, new_pos = decoder.raw_decode(buf, pos)
+            except json.JSONDecodeError:
+                more = f.read(chunk_size)
+                if not more:
+                    raise
+                buf = buf[pos:] + more
+                pos = 0
+                continue
+            pos = new_pos
+            if isinstance(obj, dict):
+                yield obj
+            if pos > chunk_size:
+                buf = buf[pos:]
+                pos = 0
+
+
+def _write_transcript_file(recording_id: str, segments):
+    os.makedirs(TRANSCRIPTS_DIR, exist_ok=True)
+    path = _transcript_path(recording_id)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(segments or [], f, ensure_ascii=False, separators=(",", ":"))
+    os.replace(tmp, path)
+
+
+def _load_transcript(recording_id: str):
+    path = _transcript_path(recording_id)
+    if not os.path.exists(path):
+        return []
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, list) else []
+    except Exception as e:
+        print(f"[transcript] load failed for {recording_id}: {e}")
+        return []
+
+
+def _delete_transcript(recording_id: str):
+    try:
+        os.remove(_transcript_path(recording_id))
+    except FileNotFoundError:
+        pass
+    except OSError as e:
+        print(f"[transcript] delete failed for {recording_id}: {e}")
+
+
+def _transcript_count(rec) -> int:
+    try:
+        count = int(rec.get("transcript_count") or 0)
+    except Exception:
+        count = 0
+    if count > 0:
+        return count
+    return 1 if os.path.exists(_transcript_path(rec.get("id", ""))) else 0
+
+
+def _has_transcript(rec) -> bool:
+    return _transcript_count(rec) > 0
+
+
+def _get_segments(rec):
+    """Load one transcript only for the duration of the operation."""
+    if rec is None:
+        return []
+    # Backward compatibility: if a transient caller still has embedded segments,
+    # use them; otherwise lazy-load the transcript file for this operation only.
+    if rec.get("segments"):
+        return rec.get("segments") or []
+    return _load_transcript(rec.get("id", ""))
+
+
+def _set_transcript(rec, segments):
+    segments = segments or []
+    rid = str(rec.get("id") or "")
+    if not rid:
+        return
+    if segments:
+        _write_transcript_file(rid, segments)
+        rec["transcript_count"] = len(segments)
+        rec["transcript_status"] = "ready"
+    else:
+        _delete_transcript(rid)
+        rec["transcript_count"] = 0
+        rec["transcript_status"] = "missing"
+    # Never retain the transcript on the global metadata object.
+    rec.pop("segments", None)
+    rec.pop("embeddings", None)
+
+
+def _migrate_recordings_to_lightweight_storage(file_path):
+    """One-time streaming migration: move segments out of recordings.json.
+
+    This avoids loading the old giant JSON array into memory during the migration.
+    """
     if not os.path.exists(file_path):
         return
-    if os.path.getsize(file_path) < 500 * 1024:
-        return
-
-    tmp_path = file_path + ".clean.tmp"
+    tmp_path = file_path + ".lightweight.tmp"
     try:
-        has_embeddings = False
+        # Detect legacy heavy fields by scanning bounded chunks. This never stores the
+        # complete recordings.json contents in a Python string.
+        needs_migration = False
         with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
-            for line in f:
-                if '"embeddings"' in line:
-                    has_embeddings = True
+            tail = ""
+            while True:
+                chunk = f.read(256 * 1024)
+                if not chunk:
                     break
-        if not has_embeddings:
+                probe = tail + chunk
+                if '"segments"' in probe or '"embeddings"' in probe:
+                    needs_migration = True
+                    break
+                tail = probe[-64:]
+        if not needs_migration:
             return
-
-        print(f"[startup] Sanitizing {file_path} to prevent memory exhaustion...")
-        with open(file_path, "r", encoding="utf-8", errors="ignore") as fin, \
-             open(tmp_path, "w", encoding="utf-8") as fout:
-            
-            skipping_embeddings = False
-            bracket_depth = 0
-            prev_line = None
-
-            for line in fin:
-                if not skipping_embeddings:
-                    if '"embeddings"' in line:
-                        if '[' in line:
-                            bracket_depth = line.count('[') - line.count(']')
-                            if bracket_depth > 0:
-                                skipping_embeddings = True
-                                continue
-                            else:
-                                continue
-                        else:
-                            skipping_embeddings = True
-                            bracket_depth = 0
-                            continue
-                    
-                    if prev_line is not None:
-                        stripped = line.strip()
-                        if (stripped.startswith("}") or stripped.startswith("]")) and prev_line.rstrip().endswith(","):
-                            prev_clean = prev_line.rstrip()[:-1] + "\n"
-                            fout.write(prev_clean)
-                        else:
-                            fout.write(prev_line)
-                    prev_line = line
+        print(f"[startup] Migrating recordings to lightweight metadata + transcript files: {file_path}")
+        os.makedirs(TRANSCRIPTS_DIR, exist_ok=True)
+        tmp_path = file_path + ".lightweight.tmp"
+        count = 0
+        with open(tmp_path, "w", encoding="utf-8") as fout:
+            fout.write("[")
+            first = True
+            for rec in _iter_json_array_objects(file_path):
+                segs = rec.pop("segments", None)
+                rec.pop("embeddings", None)
+                if segs:
+                    _write_transcript_file(rec.get("id", ""), segs)
+                    rec["transcript_count"] = len(segs)
+                    rec["transcript_status"] = "ready"
                 else:
-                    bracket_depth += line.count('[') - line.count(']')
-                    if bracket_depth <= 0:
-                        skipping_embeddings = False
-                        continue
-
-            if prev_line is not None:
-                fout.write(prev_line)
-
+                    rec.setdefault("transcript_count", 0)
+                    if rec.get("transcript_status") == "ready" and rec.get("transcript_count", 0) <= 0:
+                        rec["transcript_status"] = "pending"
+                if not first:
+                    fout.write(",")
+                json.dump(rec, fout, ensure_ascii=False, separators=(",", ":"))
+                first = False
+                count += 1
+            fout.write("]")
         os.replace(tmp_path, file_path)
-        print(f"[startup] Cleaned {file_path}. Memory usage stabilized.")
+        print(f"[startup] Lightweight recording migration complete: {count} recordings")
     except Exception as e:
-        print(f"[startup cleaner error]: {e}")
-        if os.path.exists(tmp_path):
-            try:
+        print(f"[startup migration error]: {e}")
+        try:
+            if os.path.exists(tmp_path):
                 os.remove(tmp_path)
-            except Exception:
-                pass
+        except Exception:
+            pass
 
 
 def _seed_data_dir():
@@ -135,6 +275,8 @@ FRONTEND_DIR = next(
     os.path.join(_BASE_DIR, "..", "frontend"),
 )
 DATA_PATH = os.path.join(DATA_DIR, "recordings.json")
+TRANSCRIPTS_DIR = os.path.join(DATA_DIR, "transcripts")
+os.makedirs(TRANSCRIPTS_DIR, exist_ok=True)
 CONFIG_PATH = os.path.join(DATA_DIR, "config.json")
 QLOG_PATH = os.path.join(DATA_DIR, "question_log.json")
 ROSTER_PATH = os.path.join(DATA_DIR, "roster.json")
@@ -142,8 +284,8 @@ NOTES_LIB_PATH = os.path.join(DATA_DIR, "notes_library.json")
 # in-memory active student sessions: token -> {student_id, name, courses}
 SESSIONS = {}
 
-# Clean heavy embeddings from persistent disk before loading into memory
-_clean_recordings_disk_file(DATA_PATH)
+# Migrate legacy recordings.json once, streaming transcript data to separate files.
+_migrate_recordings_to_lightweight_storage(DATA_PATH)
 
 
 # ---------- shared notes library ----------
@@ -233,10 +375,21 @@ def save_recordings(recs):
     clean_recs = []
     for r in recs:
         r_copy = dict(r)
+        segs = r_copy.pop("segments", None)
         r_copy.pop("embeddings", None)
+        if segs:
+            _write_transcript_file(r_copy.get("id", ""), segs)
+            r_copy["transcript_count"] = len(segs)
+            r_copy["transcript_status"] = "ready"
+        else:
+            r_copy["transcript_count"] = _transcript_count(r)
+            if r_copy.get("transcript_count", 0) > 0:
+                r_copy["transcript_status"] = "ready"
         clean_recs.append(r_copy)
-    with open(DATA_PATH, "w", encoding="utf-8") as f:
-        json.dump(clean_recs, f, ensure_ascii=False, indent=2)
+    tmp = DATA_PATH + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(clean_recs, f, ensure_ascii=False, separators=(",", ":"))
+    os.replace(tmp, DATA_PATH)
 
 
 def load_recordings():
@@ -246,6 +399,10 @@ def load_recordings():
                 recs = json.load(f)
                 for r in recs:
                     r.pop("embeddings", None)
+                    # Defensive migration for any single legacy record.
+                    if r.get("segments"):
+                        _set_transcript(r, r.get("segments"))
+                    r.pop("segments", None)
                 return recs
         except Exception as e:
             print(f"[recordings] primary load error: {e}")
@@ -282,6 +439,14 @@ def _memory_log(label):
         pass
 
 _memory_log("startup after recordings load")
+
+# Keep heavy AI work bounded on small Render instances. The limit applies to
+# embeddings/chat/transcription requests, preventing concurrent peaks from
+# pushing the service over its RAM ceiling.
+AI_CONCURRENCY = max(1, min(int(os.environ.get("AI_CONCURRENCY", "2")), 3))
+AI_WORK_SEM = asyncio.Semaphore(AI_CONCURRENCY)
+EMBED_WORK_SEM = asyncio.Semaphore(1)
+TRANSCRIBE_SEM = asyncio.Semaphore(1)
 
 
 app = FastAPI(title="ClassMate API")
@@ -432,16 +597,18 @@ def tokenize(text):
 
 # ---------- semantic retrieval (OpenAI Embeddings) ----------
 async def get_embedding(text: str) -> list[float]:
-    """Fetch a single embedding vector for the student's query."""
+    """Fetch a single embedding vector for a query, without retaining it globally."""
     import httpx
-    async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.post(
-            f"{OPENAI_BASE_URL}/embeddings",
-            headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
-            json={"input": text, "model": "text-embedding-3-small"}
-        )
-        resp.raise_for_status()
-        return resp.json()["data"][0]["embedding"]
+    timeout = httpx.Timeout(35.0, connect=8.0)
+    async with EMBED_WORK_SEM:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            resp = await client.post(
+                f"{OPENAI_BASE_URL}/embeddings",
+                headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
+                json={"input": text, "model": "text-embedding-3-small"},
+            )
+            resp.raise_for_status()
+            return resp.json()["data"][0]["embedding"]
 
 
 def cosine_similarity(v1, v2):
@@ -452,116 +619,169 @@ def cosine_similarity(v1, v2):
 
 
 async def build_index_async(rec, candidate_indices=None):
-    """Return embeddings only for a bounded set of transcript segments.
+    """Return embeddings for a bounded set of transcript segments only.
 
-    IMPORTANT: embeddings are intentionally NOT stored on the recording object.
-    Caching an entire transcript's embeddings in RECORDINGS caused multi-GB RAM
-    growth on Render for long/multiple recordings.
+    Transcript text is loaded temporarily and never stored on RECORDINGS.
     """
-    segs = rec.get("segments", []) or []
+    segs = _get_segments(rec)
     if not segs:
         return []
-
-    if candidate_indices is None:
-        candidate_indices = list(range(min(len(segs), 120)))
-    candidate_indices = [int(i) for i in candidate_indices if 0 <= int(i) < len(segs)]
-    if not candidate_indices:
-        return []
-
-    texts = [str(segs[i].get("text", "") or "") for i in candidate_indices]
-    if not any(texts):
-        return []
-
-    import httpx
-    embeddings = [None] * len(candidate_indices)
-    timeout = httpx.Timeout(60.0, connect=10.0)
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        batch_size = 80
-        for pos in range(0, len(texts), batch_size):
-            batch = texts[pos:pos + batch_size]
-            resp = await client.post(
-                f"{OPENAI_BASE_URL}/embeddings",
-                headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
-                json={"input": batch, "model": "text-embedding-3-small"}
-            )
-            resp.raise_for_status()
-            data = sorted(resp.json().get("data", []) or [], key=lambda x: x.get("index", 0))
-            for j, item in enumerate(data):
-                if pos + j < len(embeddings):
-                    embeddings[pos + j] = item.get("embedding") or []
-
-    return list(zip(candidate_indices, embeddings))
+    try:
+        if candidate_indices is None:
+            candidate_indices = list(range(min(len(segs), 80)))
+        candidate_indices = [int(i) for i in candidate_indices if 0 <= int(i) < len(segs)]
+        candidate_indices = candidate_indices[:100]
+        if not candidate_indices:
+            return []
+        texts = [str(segs[i].get("text", "") or "") for i in candidate_indices]
+        if not any(texts):
+            return []
+        import httpx
+        embeddings = [None] * len(candidate_indices)
+        timeout = httpx.Timeout(45.0, connect=10.0)
+        async with EMBED_WORK_SEM:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                for pos in range(0, len(texts), 50):
+                    batch = texts[pos:pos + 50]
+                    resp = await client.post(
+                        f"{OPENAI_BASE_URL}/embeddings",
+                        headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
+                        json={"input": batch, "model": "text-embedding-3-small"},
+                    )
+                    resp.raise_for_status()
+                    data = sorted(resp.json().get("data", []) or [], key=lambda x: x.get("index", 0))
+                    for j, item in enumerate(data):
+                        if pos + j < len(embeddings):
+                            embeddings[pos + j] = item.get("embedding") or []
+        return list(zip(candidate_indices, embeddings))
+    finally:
+        # Release potentially large local transcript/embedding objects promptly.
+        try:
+            del segs
+        except Exception:
+            pass
+        gc.collect()
 
 
 def lexical_retrieve_indices(rec, query, k=15, window=1):
-    """Fast local fallback when embedding search is unavailable or fails."""
-    segs = rec.get("segments", []) or []
+    """Fast local ranking using a transient transcript loaded from disk."""
+    segs = _get_segments(rec)
     if not segs:
         return []
-    q_tokens = [w for w in tokenize(query) if len(w) > 2]
-    if not q_tokens:
-        return list(range(min(k, len(segs))))
-    q = Counter(q_tokens)
-    scored = []
-    for i, seg in enumerate(segs):
-        text = tokenize(seg.get("text", ""))
-        if not text:
-            continue
-        tf = Counter(text)
-        overlap = sum(min(q[w], tf.get(w, 0)) for w in q)
-        if overlap:
-            # Reward multi-word coverage and exact phrase occurrence.
-            phrase_bonus = 0.0
-            raw = str(seg.get("text", "")).lower()
-            q_raw = str(query or "").strip().lower()
-            if q_raw and len(q_raw) > 4 and q_raw in raw:
-                phrase_bonus = 3.0
-            scored.append((overlap + phrase_bonus, i))
-    scored.sort(key=lambda x: (-x[0], x[1]))
-    top = [i for _, i in scored[:k]]
-    if not top:
-        return []
-    chosen = set()
-    for i in top:
-        for j in range(max(0, i - window), min(len(segs), i + window + 1)):
-            chosen.add(j)
-    return sorted(chosen)
-
-
-async def retrieve(rec, query, k=15, window=1):
-    """Robust, memory-bounded transcript retrieval for AI Tutor.
-
-    Local lexical ranking is used first. Semantic embeddings are calculated only for
-    a small candidate set and are never retained on the recording object.
-    """
-    segs = rec.get("segments", []) or []
-    if not segs:
-        return []
-
-    lexical = lexical_retrieve_indices(rec, query, k=k, window=window)
-    candidate_rank = lexical_retrieve_indices(rec, query, k=min(max(k * 8, 60), 160), window=0)
-    if not candidate_rank or not OPENAI_API_KEY:
-        return lexical
-
     try:
-        q_embedding = await asyncio.wait_for(get_embedding(query), timeout=8.0)
-        pairs = await asyncio.wait_for(build_index_async(rec, candidate_rank), timeout=8.0)
+        q_tokens = [w for w in tokenize(query) if len(w) > 2]
+        if not q_tokens:
+            return list(range(min(k, len(segs))))
+        q = Counter(q_tokens)
         scored = []
-        for idx, emb in pairs:
-            if emb:
-                scored.append((cosine_similarity(q_embedding, emb), idx))
-        scored.sort(key=lambda x: x[0], reverse=True)
-        top = [i for score, i in scored if score > 0.30][:k]
+        for i, seg in enumerate(segs):
+            text = tokenize(seg.get("text", ""))
+            if not text:
+                continue
+            tf = Counter(text)
+            overlap = sum(min(q[w], tf.get(w, 0)) for w in q)
+            if overlap:
+                raw = str(seg.get("text", "")).lower()
+                q_raw = str(query or "").strip().lower()
+                phrase_bonus = 3.0 if q_raw and len(q_raw) > 4 and q_raw in raw else 0.0
+                scored.append((overlap + phrase_bonus, i))
+        scored.sort(key=lambda x: (-x[0], x[1]))
+        top = [i for _, i in scored[:k]]
         if not top:
-            return lexical
+            return []
         chosen = set()
         for i in top:
             for j in range(max(0, i - window), min(len(segs), i + window + 1)):
                 chosen.add(j)
         return sorted(chosen)
-    except Exception as e:
-        print(f"[retrieve] semantic search unavailable/slow; using local retrieval: {e}")
-        return lexical
+    finally:
+        try:
+            del segs
+        except Exception:
+            pass
+        gc.collect()
+
+
+async def retrieve(rec, query, k=15, window=1):
+    """Contextual transcript retrieval with bounded transient memory."""
+    segs = _get_segments(rec)
+    if not segs:
+        return []
+    try:
+        q_tokens = [w for w in tokenize(query) if len(w) > 2]
+        lexical = []
+        if q_tokens:
+            q = Counter(q_tokens)
+            scored = []
+            for i, seg in enumerate(segs):
+                words = tokenize(seg.get("text", ""))
+                if not words:
+                    continue
+                tf = Counter(words)
+                overlap = sum(min(q[w], tf.get(w, 0)) for w in q)
+                if overlap:
+                    raw = str(seg.get("text", "")).lower()
+                    q_raw = str(query or "").strip().lower()
+                    phrase_bonus = 3.0 if q_raw and len(q_raw) > 4 and q_raw in raw else 0.0
+                    scored.append((overlap + phrase_bonus, i))
+            scored.sort(key=lambda x: (-x[0], x[1]))
+            lexical_top = [i for _, i in scored[:k]]
+        else:
+            lexical_top = list(range(min(k, len(segs))))
+        chosen = set()
+        for i in lexical_top:
+            for j in range(max(0, i - window), min(len(segs), i + window + 1)):
+                chosen.add(j)
+        lexical = sorted(chosen)
+        candidate_rank = [i for _, i in scored[:min(max(k * 8, 50), 100)]] if q_tokens and 'scored' in locals() else lexical[:100]
+        if not candidate_rank or not OPENAI_API_KEY:
+            return lexical
+        try:
+            import httpx
+            timeout = httpx.Timeout(35.0, connect=8.0)
+            async with EMBED_WORK_SEM:
+                async with httpx.AsyncClient(timeout=timeout) as client:
+                    qresp = await client.post(
+                        f"{OPENAI_BASE_URL}/embeddings",
+                        headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
+                        json={"input": query, "model": "text-embedding-3-small"},
+                    )
+                    qresp.raise_for_status()
+                    q_embedding = qresp.json()["data"][0]["embedding"]
+                    pairs = []
+                    for pos in range(0, len(candidate_rank), 50):
+                        batch_indices = candidate_rank[pos:pos + 50]
+                        batch = [str(segs[i].get("text", "") or "") for i in batch_indices]
+                        resp = await client.post(
+                            f"{OPENAI_BASE_URL}/embeddings",
+                            headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
+                            json={"input": batch, "model": "text-embedding-3-small"},
+                        )
+                        resp.raise_for_status()
+                        data = sorted(resp.json().get("data", []) or [], key=lambda x: x.get("index", 0))
+                        for j, item in enumerate(data):
+                            if j < len(batch_indices):
+                                emb = item.get("embedding") or []
+                                if emb:
+                                    pairs.append((cosine_similarity(q_embedding, emb), batch_indices[j]))
+            pairs.sort(key=lambda x: x[0], reverse=True)
+            top = [i for score, i in pairs if score > 0.30][:k]
+            if not top:
+                return lexical
+            chosen = set()
+            for i in top:
+                for j in range(max(0, i - window), min(len(segs), i + window + 1)):
+                    chosen.add(j)
+            return sorted(chosen)
+        except Exception as e:
+            print(f"[retrieve] semantic search unavailable/slow; using local retrieval: {e}")
+            return lexical
+    finally:
+        try:
+            del segs
+        except Exception:
+            pass
+        gc.collect()
 
 # ---------- teacher notes: extraction + retrieval ----------
 def extract_text_from_upload(data: bytes, filename: str) -> str:
@@ -657,22 +877,31 @@ def notes_context(rec, query, max_chars=8000):
     return "\n\n".join(out)
 
 
-def context_from_indices(rec, indices, max_chars=18000):
-    """Optimized context length (18k chars) to prevent 429 Token-Per-Minute rate limits."""
-    segs = rec.get("segments", [])
+def context_from_indices(rec, indices, max_chars=12000):
+    """Build a small transcript context from a transient transcript load."""
+    segs = _get_segments(rec)
     lines = []
-    total = 0
-    for i in indices:
-        s = segs[i]
-        ts = fmt_ts(s.get("start"))
-        spk = s.get("speaker") or ""
-        prefix = f"[{ts}]" + (f" {spk}:" if spk else "")
-        line = f"{prefix} {s.get('text','').strip()}"
-        if total + len(line) > max_chars:
-            break
-        lines.append(line)
-        total += len(line)
-    return "\n".join(lines)
+    try:
+        total = 0
+        for i in indices:
+            if not (0 <= int(i) < len(segs)):
+                continue
+            ss = segs[int(i)]
+            ts = fmt_ts(ss.get("start"))
+            spk = ss.get("speaker") or ""
+            prefix = f"[{ts}]" + (f" {spk}:" if spk else "")
+            line = f"{prefix} {ss.get('text','').strip()}"
+            if total + len(line) > max_chars:
+                break
+            lines.append(line)
+            total += len(line)
+        return "\n".join(lines)
+    finally:
+        try:
+            del segs
+        except Exception:
+            pass
+        gc.collect()
 
 
 # ---------- LLM helper with Exponential Backoff Retries on 429 ----------
@@ -696,17 +925,18 @@ async def llm(messages, max_tokens=1200, temperature=0.1, max_retries=4):
         
         for attempt in range(max_retries):
             try:
-                async with httpx.AsyncClient(timeout=timeout) as client:
-                    resp = await client.post(
-                        f"{OPENAI_BASE_URL}/chat/completions",
-                        headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
-                        json={
-                            "model": OPENAI_MODEL,
-                            "messages": messages,
-                            "temperature": temperature,
-                            "max_tokens": max_tokens,
-                        },
-                    )
+                async with AI_WORK_SEM:
+                    async with httpx.AsyncClient(timeout=timeout) as client:
+                        resp = await client.post(
+                            f"{OPENAI_BASE_URL}/chat/completions",
+                            headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
+                            json={
+                                "model": OPENAI_MODEL,
+                                "messages": messages,
+                                "temperature": temperature,
+                                "max_tokens": max_tokens,
+                            },
+                        )
                 
                 # If rate limited (429), automatically wait and retry
                 if resp.status_code == 429 and attempt < max_retries - 1:
@@ -907,13 +1137,21 @@ async def _transcribe_large_audio(src_path):
     if size <= _CHUNK_SAFETY_BYTES:
         with open(full_mp3, "rb") as f:
             data = f.read()
-        return await transcribe_audio_bytes(data, filename="full.mp3")
+        try:
+            return await transcribe_audio_bytes(data, filename="full.mp3")
+        finally:
+            del data
+            gc.collect()
 
     duration = _ffprobe_duration(full_mp3)
     if duration <= 0:
         with open(full_mp3, "rb") as f:
             data = f.read()
-        return await transcribe_audio_bytes(data, filename="full.mp3")
+        try:
+            return await transcribe_audio_bytes(data, filename="full.mp3")
+        finally:
+            del data
+            gc.collect()
 
     bytes_per_sec = size / duration
     chunk_secs = max(60.0, (_CHUNK_SAFETY_BYTES / bytes_per_sec) * 0.9)
@@ -952,30 +1190,31 @@ async def transcribe_recording_by_id(meeting_id):
     token = await zoom_token()
     url = audio.get("download_url")
     ext = (audio.get("file_extension") or audio.get("file_type") or "m4a").lower()
-    async with httpx.AsyncClient(timeout=httpx.Timeout(600.0, connect=15.0), follow_redirects=True) as client:
-        r = await client.get(url, headers={"Authorization": f"Bearer {token}"})
-        if r.status_code != 200:
-            raise LLMUpstreamError(f"Could not download audio from Zoom ({r.status_code}).")
-        audio_bytes = r.content
-
-    if len(audio_bytes) <= _CHUNK_SAFETY_BYTES:
-        segments = await transcribe_audio_bytes(audio_bytes, filename=f"{meeting_id}.{ext}")
-    elif _have_ffmpeg():
+    async with TRANSCRIBE_SEM:
         with tempfile.TemporaryDirectory() as tmp:
             src_path = _os.path.join(tmp, f"src.{ext}")
-            with open(src_path, "wb") as f:
-                f.write(audio_bytes)
-            segments = await _transcribe_large_audio(src_path)
-    else:
-        raise LLMUpstreamError("Audio file exceeds 25 MB and ffmpeg is unavailable.")
+            size = 0
+            import httpx
+            async with httpx.AsyncClient(timeout=httpx.Timeout(600.0, connect=15.0), follow_redirects=True) as client:
+                async with client.stream("GET", url, headers={"Authorization": f"Bearer {token}"}) as r:
+                    if r.status_code != 200:
+                        raise LLMUpstreamError(f"Could not download audio from Zoom ({r.status_code}).")
+                    with open(src_path, "wb") as out:
+                        async for chunk in r.aiter_bytes(1024 * 1024):
+                            size += len(chunk)
+                            out.write(chunk)
+            if size <= _CHUNK_SAFETY_BYTES:
+                with open(src_path, "rb") as f:
+                    data = f.read()
+                segments = await transcribe_audio_bytes(data, filename=f"{meeting_id}.{ext}")
+                del data
+            elif _have_ffmpeg():
+                segments = await _transcribe_large_audio(src_path)
+            else:
+                raise LLMUpstreamError("Audio file exceeds 25 MB and ffmpeg is unavailable.")
 
-    rec["segments"] = segments
+    _set_transcript(rec, segments)
     save_recordings(RECORDINGS)
-    try:
-        audio_bytes = None
-    except Exception:
-        pass
-    rec.pop("embeddings", None)
     gc.collect()
     return len(segments)
 
@@ -1058,7 +1297,7 @@ def _detect_source(obj):
     return "meeting"
 
 
-async def ingest_zoom_meeting(obj, allow_whisper_fallback=True):
+async def ingest_zoom_meeting(obj, allow_whisper_fallback=False):
     uuid = obj.get("uuid")
     mid = obj.get("id")
     meeting_id = str(uuid or mid or secrets.token_hex(6))
@@ -1066,7 +1305,7 @@ async def ingest_zoom_meeting(obj, allow_whisper_fallback=True):
     
     existing = REC_BY_ID.get(meeting_id) or (REC_BY_ID.get(numeric_id) if numeric_id else None)
     
-    if existing and len(existing.get("segments", [])) > 0:
+    if existing and _has_transcript(existing):
         return False
 
     topic = obj.get("topic", "Untitled class")
@@ -1099,27 +1338,22 @@ async def ingest_zoom_meeting(obj, allow_whisper_fallback=True):
 
     if existing:
         if segments:
-            existing["segments"] = segments
+            _set_transcript(existing, segments)
+            existing["zoom_next_check_at"] = 0
+            existing["zoom_check_count"] = 0
+            if uuid:
+                existing["zoom_uuid"] = str(uuid)
+            if mid:
+                existing["zoom_meeting_id"] = str(mid)
             save_recordings(RECORDINGS)
             print(f"[zoom] Attached {len(segments)} transcript lines to: '{existing.get('display_title')}'")
             return True
+        existing["transcript_status"] = existing.get("transcript_status") or "pending"
         return False
 
-    if allow_whisper_fallback and not segments and OPENAI_API_KEY:
-        audio = _pick_audio_file(files)
-        if audio and audio.get("download_url"):
-            try:
-                token = await zoom_token()
-                import httpx
-                sep = "&" if "?" in audio["download_url"] else "?"
-                audio_url = f"{audio['download_url']}{sep}access_token={token}"
-                async with httpx.AsyncClient(timeout=httpx.Timeout(600.0, connect=15.0), follow_redirects=True) as client:
-                    ar = await client.get(audio_url, headers={"Authorization": f"Bearer {token}"})
-                if ar.status_code == 200:
-                    ext = (audio.get("file_extension") or audio.get("file_type") or "m4a").lower()
-                    segments = await transcribe_audio_bytes(ar.content, filename=f"{meeting_id}.{ext}")
-            except Exception as e:
-                print(f"[ingest] whisper fallback failed for {meeting_id}: {e}")
+    # Automatic ingestion intentionally waits for Zoom's own transcript.
+    # Full audio transcription remains available only through the explicit teacher
+    # "Generate transcript" action, which is streamed to disk by transcribe_recording_by_id.
     new_rec = {
         "id": meeting_id,
         "topic": topic,
@@ -1129,9 +1363,16 @@ async def ingest_zoom_meeting(obj, allow_whisper_fallback=True):
         "source": source,
         "unit": "",
         "visible": False,
-        "segments": segments,
-        "note_ids": []
+        "transcript_count": len(segments),
+        "note_ids": [],
+        "zoom_uuid": str(uuid) if uuid else "",
+        "zoom_meeting_id": str(mid) if mid else "",
+        "transcript_status": "ready" if segments else "pending",
+        "zoom_check_count": 0,
+        "zoom_next_check_at": time.time() if not segments else 0,
     }
+    if segments:
+        _set_transcript(new_rec, segments)
     RECORDINGS.append(new_rec)
     REC_BY_ID[meeting_id] = new_rec
     if numeric_id:
@@ -1140,6 +1381,132 @@ async def ingest_zoom_meeting(obj, allow_whisper_fallback=True):
     print(f"[zoom] Successfully imported '{topic}' with {len(segments)} lines.")
     return True
 
+
+# ---------- Automatic Zoom transcript synchronization ----------
+_ZOOM_TRANSCRIPT_CHECK_DELAYS = [30, 60, 120, 300, 600, 1200, 1800, 3600, 7200]
+_zoom_pending_task = None
+
+def _recording_zoom_ref(rec):
+    return (rec.get("zoom_uuid") or rec.get("zoom_meeting_id") or rec.get("id") or "").strip()
+
+def _find_zoom_transcript_file(files):
+    for f in files or []:
+        file_type = (f.get("file_type") or "").upper()
+        ext = (f.get("file_extension") or "").upper()
+        rtype = (f.get("recording_type") or "").lower()
+        if file_type == "TRANSCRIPT" or ext == "VTT" or rtype in ("audio_transcript", "original_transcript"):
+            if f.get("download_url"):
+                return f
+    return None
+
+async def _try_attach_zoom_transcript(rec):
+    ref = _recording_zoom_ref(rec)
+    if not ref:
+        return False
+    try:
+        files = await fetch_zoom_recording_files(ref)
+        print(f"[zoom transcript] check '{rec.get('display_title')}' -> {len(files)} files")
+        transcript = _find_zoom_transcript_file(files)
+        if not transcript:
+            rec["transcript_status"] = "pending"
+            return False
+        token = await zoom_token()
+        vtt_text = await _download_zoom_text(transcript.get("download_url"), token)
+        if not vtt_text:
+            rec["transcript_status"] = "pending"
+            print(f"[zoom transcript] transcript file exists but is not downloadable yet: '{rec.get('display_title')}'")
+            return False
+        segments = parse_vtt(vtt_text)
+        if not segments:
+            rec["transcript_status"] = "pending"
+            print(f"[zoom transcript] VTT downloaded but parsed 0 lines: '{rec.get('display_title')}'")
+            return False
+        _set_transcript(rec, segments)
+        rec["zoom_check_count"] = 0
+        rec["zoom_next_check_at"] = 0
+        save_recordings(RECORDINGS)
+        print(f"[zoom transcript] READY: '{rec.get('display_title')}' -> {len(segments)} lines")
+        return True
+    except Exception as e:
+        print(f"[zoom transcript] check failed for '{rec.get('display_title')}': {e}")
+        return False
+
+async def _zoom_transcript_loop():
+    print("[zoom transcript] automatic transcript watcher started")
+    _memory_log("zoom transcript watcher start")
+    while True:
+        try:
+            now = time.time()
+            pending = [
+                r for r in RECORDINGS
+                if r.get("transcript_status") == "pending"
+                and _recording_zoom_ref(r)
+                and float(r.get("zoom_next_check_at") or 0) <= now
+            ]
+            for rec in pending[:8]:
+                if _has_transcript(rec):
+                    rec["transcript_status"] = "ready"
+                    rec["zoom_next_check_at"] = 0
+                    continue
+                ok = await _try_attach_zoom_transcript(rec)
+                if not ok:
+                    count = int(rec.get("zoom_check_count") or 0)
+                    delay = _ZOOM_TRANSCRIPT_CHECK_DELAYS[min(count, len(_ZOOM_TRANSCRIPT_CHECK_DELAYS) - 1)]
+                    rec["zoom_check_count"] = count + 1
+                    rec["zoom_next_check_at"] = time.time() + delay
+                    save_recordings(RECORDINGS)
+        except Exception as e:
+            print(f"[zoom transcript watcher] error: {e}")
+        await asyncio.sleep(30)
+
+@app.on_event("startup")
+async def _start_zoom_transcript_watcher():
+    global _zoom_pending_task
+    if _zoom_pending_task is None or _zoom_pending_task.done():
+        _zoom_pending_task = asyncio.create_task(_zoom_transcript_loop())
+
+async def _auto_process_zoom_recording(obj, event_name="recording.completed"):
+    try:
+        await ingest_zoom_meeting(obj, allow_whisper_fallback=False)
+        mid = str(obj.get("id") or "")
+        uid = str(obj.get("uuid") or "")
+        rec = REC_BY_ID.get(uid) or REC_BY_ID.get(mid)
+        if not rec:
+            return
+        if obj.get("uuid"):
+            rec["zoom_uuid"] = uid
+        if obj.get("id"):
+            rec["zoom_meeting_id"] = mid
+        if _has_transcript(rec):
+            rec["transcript_status"] = "ready"
+            rec["zoom_next_check_at"] = 0
+        else:
+            rec["transcript_status"] = "pending"
+            rec["zoom_check_count"] = 0
+            rec["zoom_next_check_at"] = time.time() + 20
+        save_recordings(RECORDINGS)
+        if event_name.endswith("transcript_completed"):
+            await _try_attach_zoom_transcript(rec)
+    except Exception as e:
+        print(f"[zoom auto] processing failed for event {event_name}: {e}")
+
+
+
+
+async def read_upload_limited(upload: UploadFile, max_bytes: int) -> bytes:
+    """Read an uploaded file in bounded chunks and reject oversized content early."""
+    total = 0
+    chunks = []
+    while True:
+        chunk = await upload.read(1024 * 1024)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > max_bytes:
+            raise ValueError(f"File is too large (maximum {max_bytes // (1024 * 1024)} MB).")
+        chunks.append(chunk)
+    data = b"".join(chunks)
+    return data
 
 # ---------- API Endpoints ----------
 def _card(r, include_hidden=False):
@@ -1151,7 +1518,8 @@ def _card(r, include_hidden=False):
         "source": r.get("source") or "meeting",
         "unit": r.get("unit") or "Unassigned",
         "visible": r.get("visible", True),
-        "segments": len(r.get("segments", [])),
+        "segments": _transcript_count(r),
+        "transcript_status": r.get("transcript_status") or ("ready" if _has_transcript(r) else "missing"),
         "has_summary": bool(r.get("summary")),
         "summary": r.get("summary") or "",
         "topics": r.get("topics") or [],
@@ -1597,7 +1965,7 @@ async def import_students(passcode: str = Form(...), file: UploadFile = File(...
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     try:
         import openpyxl
-        content = await file.read()
+        content = await read_upload_limited(file, 10 * 1024 * 1024)
         wb = openpyxl.load_workbook(io.BytesIO(content))
         ws = wb.active
         rows = list(ws.iter_rows(values_only=True))
@@ -1736,7 +2104,7 @@ async def upload_logo(passcode: str = Form(...), file: UploadFile = File(...)):
     ext = (file.filename or "").rsplit(".", 1)[-1].lower() if "." in (file.filename or "") else ""
     if ext not in ALLOWED_LOGO_EXT:
         return JSONResponse({"error": "Please upload a PNG, JPG, WEBP, GIF or SVG image."}, status_code=400)
-    data = await file.read()
+    data = await read_upload_limited(file, LOGO_MAX_BYTES)
     if len(data) > LOGO_MAX_BYTES:
         return JSONResponse({"error": "Image is too large (max 2 MB)."}, status_code=400)
     save_ext = ALLOWED_LOGO_EXT[ext]
@@ -1763,6 +2131,28 @@ def get_logo():
     if not path:
         return JSONResponse({"error": "no logo"}, status_code=404)
     return FileResponse(path, media_type=LOGO_MIME.get(e, "application/octet-stream"))
+
+
+@app.get("/api/diag/memory")
+def diag_memory():
+    rss_mb = None
+    try:
+        with open("/proc/self/status", "r", encoding="utf-8") as f:
+            for line in f:
+                if line.startswith("VmRSS:"):
+                    rss_mb = round(float(line.split()[1]) / 1024.0, 1)
+                    break
+    except Exception:
+        pass
+    _memory_log("diagnostic endpoint")
+    return {
+        "rss_mb": rss_mb,
+        "recordings_metadata": len(RECORDINGS),
+        "transcripts_files": len(os.listdir(TRANSCRIPTS_DIR)) if os.path.isdir(TRANSCRIPTS_DIR) else 0,
+        "transcripts_ready": sum(1 for r in RECORDINGS if _has_transcript(r)),
+        "embedded_transcript_fields_in_memory": sum(1 for r in RECORDINGS if r.get("segments") or r.get("embeddings")),
+        "ai_concurrency": AI_CONCURRENCY,
+    }
 
 
 @app.get("/api/branding")
@@ -1810,7 +2200,7 @@ async def ask(body: AskBody):
     
     idx = await retrieve(rec, body.question)
     _memory_log(f"ask after retrieval; segments={len(idx)}")
-    ctx = context_from_indices(rec, idx, max_chars=18000)
+    ctx = context_from_indices(rec, idx, max_chars=12000)
     notes_ctx = notes_context(rec, body.question)
     
     lang_line = "\nAlways respond in English, even if the student's question is written in another language."
@@ -1898,10 +2288,14 @@ async def quiz(body: QuizBody):
     rec = REC_BY_ID.get(body.recording_id)
     if not rec:
         return JSONResponse({"error": "Recording not found"}, status_code=404)
-    segs = rec.get("segments", [])
-    step = max(1, len(segs) // 60)
-    idx = list(range(0, len(segs), step))
-    ctx = context_from_indices(rec, idx, max_chars=20000)
+    segs = _get_segments(rec)
+    if not segs:
+        return JSONResponse({"error": "This recording has no transcript yet."}, status_code=422)
+    step = max(1, len(segs) // 45)
+    idx = list(range(0, len(segs), step))[:45]
+    del segs
+    gc.collect()
+    ctx = context_from_indices(rec, idx, max_chars=12000)
     lang_line = "Write the quiz in English."
     n = max(1, min(10, body.num_questions))
     system = (
@@ -1956,7 +2350,12 @@ async def generate_flashcards(body: FlashcardBody):
     if not rec:
         return JSONResponse({"error": "Recording not found"}, status_code=404)
 
-    transcript_text = "\n".join([f"[{s.get('timestamp','')}] {s.get('text','')}" for s in rec.get("segments", [])])
+    transcript_segments = _get_segments(rec)
+    transcript_text = "\n".join(
+        f"[{fmt_ts(x.get('start'))}] {x.get('text','')}" for x in transcript_segments
+    )
+    del transcript_segments
+    gc.collect()
     notes_text = notes_context(rec, "flashcards review summary", max_chars=8000)
     
     avoid_block = ""
@@ -2182,6 +2581,8 @@ async def zoom_webhook(request: Request, background_tasks: BackgroundTasks):
         
     event = payload.get("event", "")
     print(f"[zoom webhook] received event: {event}")
+    if "transcript" in event:
+        print(f"[zoom webhook] transcript event received; automatic VTT sync will run")
     
     recording_events = {
         "recording.completed",
@@ -2203,8 +2604,8 @@ async def zoom_webhook(request: Request, background_tasks: BackgroundTasks):
             obj = p_load.get("object", {})
             
         if obj.get("id") or obj.get("uuid"):
-            background_tasks.add_task(ingest_zoom_meeting, obj)
-            print(f"[zoom webhook] queued background ingest for webinar/meeting: '{obj.get('topic')}'")
+            background_tasks.add_task(_auto_process_zoom_recording, obj, event)
+            print(f"[zoom webhook] queued automatic transcript sync for webinar/meeting: '{obj.get('topic')}'")
         else:
             print(f"[zoom webhook warning] could not extract meeting/webinar ID from payload: {payload}")
         
@@ -2333,7 +2734,7 @@ async def teacher_import_one(body: ImportOneBody):
     return {
         "ok": True,
         "recording": _card(rec, include_hidden=True) if rec else None,
-        "has_transcript": bool(rec and rec.get("segments")),
+        "has_transcript": bool(rec and _has_transcript(rec)),
         "total_recordings_now": len(RECORDINGS),
     }
 
@@ -2349,7 +2750,7 @@ async def upload_note(passcode: str = Form(...), id: str = Form(...), file: Uplo
     rec = REC_BY_ID.get(id)
     if not rec:
         return JSONResponse({"error": "not found"}, status_code=404)
-    data = await file.read()
+    data = await read_upload_limited(file, NOTE_MAX_UPLOAD_BYTES)
     if len(data) > NOTE_MAX_UPLOAD_BYTES:
         return JSONResponse({"error": "File is unusually large."}, status_code=400)
     try:
@@ -2544,6 +2945,7 @@ def _remove_recording(rid: str) -> bool:
         return False
     RECORDINGS = [r for r in RECORDINGS if r.get("id") != rid]
     REC_BY_ID.pop(rid, None)
+    _delete_transcript(rid)
     return True
 
 
@@ -2579,8 +2981,7 @@ def teacher_delete_unassigned(body: DeleteUnassignedBody):
 
 
 async def generate_summary_and_topics(rec):
-    segs = rec.get("segments") or []
-    if not segs:
+    if not _has_transcript(rec):
         return None
     idx = await retrieve(rec, rec.get("display_title") or rec.get("topic") or "lecture", k=30, window=1)
     context = context_from_indices(rec, idx, max_chars=20000)
@@ -2621,7 +3022,7 @@ async def teacher_summary(body: SummaryBody):
     rec = REC_BY_ID.get(body.id)
     if not rec:
         return JSONResponse({"error": "not found"}, status_code=404)
-    if not rec.get("segments"):
+    if not _has_transcript(rec):
         return JSONResponse({"error": "This recording has no transcript yet."}, status_code=422)
     try:
         await generate_summary_and_topics(rec)
@@ -2641,7 +3042,7 @@ def teacher_stats(body: TeacherAuth):
     roster = load_roster()
     log = load_qlog()
     total = len(RECORDINGS)
-    transcribed = sum(1 for r in RECORDINGS if r.get("segments"))
+    transcribed = sum(1 for r in RECORDINGS if _has_transcript(r))
     visible = sum(1 for r in RECORDINGS if r.get("visible", True))
     unassigned = sum(1 for r in RECORDINGS if (r.get("unit") or "Unassigned") == "Unassigned")
     week_ago = datetime.utcnow() - timedelta(days=7)
@@ -3004,8 +3405,26 @@ def student_pp_meta(body: RecListBody):
 # notes to connect the student to the relevant class recording(s) and past-paper
 # questions. Ambiguous shared words are rejected by the final context judge.
 
-SYLLABUS_MAP_MAX_NOTE_CHUNKS = 260
-SYLLABUS_MAP_MAX_PAPER_CANDIDATES = 180
+SYLLABUS_MAP_MAX_NOTE_CHUNKS = 120
+SYLLABUS_MAP_MAX_PAPER_CANDIDATES = 80
+
+
+async def _embedding_batch(texts):
+    """Embed a bounded batch and release all response objects immediately."""
+    if not texts or not OPENAI_API_KEY:
+        return []
+    import httpx
+    timeout = httpx.Timeout(45.0, connect=8.0)
+    async with EMBED_WORK_SEM:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            resp = await client.post(
+                f"{OPENAI_BASE_URL}/embeddings",
+                headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
+                json={"input": list(texts)[:50], "model": "text-embedding-3-small"},
+            )
+            resp.raise_for_status()
+            data = sorted(resp.json().get("data", []) or [], key=lambda x: x.get("index", 0))
+            return [item.get("embedding") or [] for item in data]
 
 
 async def _semantic_rank_texts(query, items, max_items, text_key="text"):
@@ -3022,8 +3441,8 @@ async def _semantic_rank_texts(query, items, max_items, text_key="text"):
         return []
 
     scored = []
-    batch_size = 48
-    texts = [str(item.get(text_key) or "")[:5000] for item in items]
+    batch_size = 32
+    texts = [str(item.get(text_key) or "")[:3500] for item in items]
     for pos in range(0, len(texts), batch_size):
         batch_items = items[pos:pos + batch_size]
         batch_texts = texts[pos:pos + batch_size]
@@ -3037,6 +3456,8 @@ async def _semantic_rank_texts(query, items, max_items, text_key="text"):
                 continue
             score = cosine_similarity(q_emb, emb)
             scored.append((float(score), pos + j))
+        del embs
+        gc.collect()
 
     scored.sort(key=lambda x: x[0], reverse=True)
     out = []
@@ -3106,7 +3527,7 @@ async def _student_syllabus_map_notes(query, recordings, allowed_courses):
     semantic = await _semantic_rank_texts(
         query,
         items,
-        max_items=12,
+        max_items=8,
         text_key="text",
     )
     # A semantic threshold keeps loosely-related shared vocabulary out. The final
@@ -3141,9 +3562,9 @@ async def _student_syllabus_map_papers(context_query, sols, allowed_courses):
         })
     if not rows:
         return []
-    if len(rows) > SYLLABUS_MAP_MAX_PAPER_CANDIDATES:
-        rows = rows[:SYLLABUS_MAP_MAX_PAPER_CANDIDATES]
-    semantic = await _semantic_rank_texts(context_query, rows, max_items=20, text_key="text")
+    if len(rows) > min(SYLLABUS_MAP_MAX_PAPER_CANDIDATES, 80):
+        rows = rows[:min(SYLLABUS_MAP_MAX_PAPER_CANDIDATES, 80)]
+    semantic = await _semantic_rank_texts(context_query, rows, max_items=10, text_key="text")
     return [r for r in semantic if float(r.get("semantic_score") or 0) >= 0.30]
 
 
@@ -3195,7 +3616,10 @@ async def student_syllabus_map(body: dict):
     )
     context_query = f"Student question: {query}\nTeacher-note context:\n{note_context}"
 
-    pp_candidates = await _student_syllabus_map_papers(context_query, load_pp_json(PAST_PAPER_SOLUTIONS_PATH), allowed_courses)
+    pp_data = load_pp_json(PAST_PAPER_SOLUTIONS_PATH)
+    pp_candidates = await _student_syllabus_map_papers(context_query, pp_data, allowed_courses)
+    del pp_data
+    gc.collect()
 
     # Candidate classes come ONLY from recordings whose teacher notes were semantically
     # relevant. This is the key safeguard against matching an unrelated recording merely
@@ -3212,15 +3636,17 @@ async def student_syllabus_map(body: dict):
         if not rec:
             continue
         timestamps = []
-        if rec.get("segments"):
+        if _has_transcript(rec):
             try:
-                idxs = await retrieve(rec, context_query, k=5, window=0)
-                for idx in idxs[:5]:
-                    segs = rec.get("segments") or []
+                idxs = await retrieve(rec, context_query, k=3, window=0)
+                segs = _get_segments(rec)
+                for idx in idxs[:3]:
                     if 0 <= idx < len(segs):
                         ts = fmt_ts(segs[idx].get("start"))
                         if ts and ts not in timestamps:
                             timestamps.append(ts)
+                del segs
+                gc.collect()
             except Exception as exc:
                 print(f"[syllabus-map] timestamp retrieval failed: {exc}")
         class_candidates.append({
@@ -3777,13 +4203,15 @@ async def teacher_pp_bulk_upload(
         return JSONResponse({"error": "Unauthorized passcode."}, status_code=401)
 
     try:
-        qp_bytes = await qp_file.read()
-        ms_bytes = await ms_file.read()
+        qp_bytes = await read_upload_limited(qp_file, 40 * 1024 * 1024)
+        ms_bytes = await read_upload_limited(ms_file, 40 * 1024 * 1024)
         qp_text = extract_text_from_upload(qp_bytes, qp_file.filename or "qp.pdf")
+        del qp_bytes
         ms_text = extract_text_from_upload(ms_bytes, ms_file.filename or "ms.pdf")
+        del ms_bytes
         er_text = ""
         if er_file and er_file.filename:
-            er_bytes = await er_file.read()
+            er_bytes = await read_upload_limited(er_file, 40 * 1024 * 1024)
             er_text = extract_text_from_upload(er_bytes, er_file.filename or "er.pdf")
     except Exception as e:
         return JSONResponse({"error": f"PDF reading error: {str(e)}"}, status_code=400)

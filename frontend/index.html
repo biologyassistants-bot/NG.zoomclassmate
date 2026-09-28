@@ -305,7 +305,7 @@
       <div style="max-width: 1180px; margin: 0 auto;">
         <div class="pane-head" style="margin-bottom: 20px;">
           <h2 style="font-size: 26px; margin-bottom: 7px;">🧭 Syllabus Map</h2>
-          <p class="meta">Ask about a specific concept. ClassMate will map it to the relevant syllabus topic, show the classes where it appears, and list related past-paper questions.</p>
+          <p class="meta">Ask in your own words. ClassMate reads the teacher's uploaded notes, understands the context, then links you to the relevant class part and past-paper questions.</p>
         </div>
 
         <div class="setting-card syllabus-search-card" style="background: var(--panel); border: 1.5px solid var(--line); border-radius: 14px; padding: 18px; box-shadow: var(--shadow-sm); margin-bottom: 18px; width:100%; max-width:none; box-sizing:border-box;">
@@ -318,16 +318,16 @@
             </label>
             <label class="fld" style="display:block;">
               <span style="font-size: 12px; font-weight: 800; margin-bottom: 5px; display:block;">What do you want to find?</span>
-              <input id="smQueryInput" type="text" placeholder="e.g. competitive inhibition, osmosis, factors affecting enzyme activity…" autocomplete="off" style="width:100%; padding:11px 13px; border-radius:9px; border:1.5px solid var(--line); background:var(--bg); color:var(--text);" />
+              <input id="smQueryInput" type="text" placeholder="e.g. I do not understand why translocation happens in this situation…" autocomplete="off" style="width:100%; padding:11px 13px; border-radius:9px; border:1.5px solid var(--line); background:var(--bg); color:var(--text);" />
             </label>
-            <button id="smSearchBtn" class="primary" style="min-width:145px;">Find in Syllabus</button>
+            <button id="smSearchBtn" class="primary" style="min-width:145px;">Find from Teacher Notes</button>
           </div>
-          <p class="meta" style="font-size:11.5px; margin-top:9px;">The search uses your available class recordings and the past-paper library for your enrolled course(s).</p>
+          <p class="meta" style="font-size:11.5px; margin-top:9px;">The AI does not depend on exact word matching or an official syllabus file. It uses the context of the teacher's uploaded notes.</p>
         </div>
 
         <div id="smEmptyState" class="empty" style="padding: 70px 20px; background:var(--panel); border:1.5px dashed var(--line); border-radius:14px;">
           <div class="empty-emoji">🧭</div>
-          <p>Enter a specific concept above to see its syllabus topic, related classes, and related past-paper questions.</p>
+          <p>Ask what you are trying to understand. You will get the relevant class part and matching past-paper questions from your teacher's material.</p>
         </div>
 
         <div id="smResults" class="hidden"></div>
@@ -430,49 +430,15 @@
     <!-- 3. Past Paper Hub Pane -->
     <div id="teacherPastPapers" class="teacher-pane hidden" style="width:100% !important; max-width:none !important; margin:0 !important; box-sizing:border-box;">
       <div class="pane-head">
-        <h2>Past Paper Hub: Syllabus &amp; Dedicated Exam Bank</h2>
-        <p class="meta">Manage official syllabus specifications, upload model answer documents, auto-extract whole exam packs, and organize past paper questions.</p>
+        <h2>Past Paper Hub: Dedicated Exam Bank</h2>
+        <p class="meta">Upload course reference notes, extract complete exams, and organize the dedicated past-paper question bank.</p>
       </div>
 
-      <!-- Card A: Syllabus Mapping -->
-      <div class="setting-card" style="margin-bottom:20px; width:100%; max-width:none; box-sizing:border-box;">
-        <h3>1. Course Syllabus Mapping</h3>
-        <p class="meta" style="margin-bottom: 12px;">Ensure the AI solver grades against exact exam board standards.</p>
-        <div style="display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-end;">
-          <label class="fld" style="flex: 1; min-width: 200px;">
-            <span>Course / Unit</span>
-            <select id="tppCourseSelect" style="width: 100%; padding: 10px; border-radius: 8px; border: 1.5px solid var(--line);"></select>
-          </label>
-          <label class="fld" style="flex: 1; min-width: 200px;">
-            <span>Official Syllabus Code</span>
-            <select id="tppSyllabusCode" style="width: 100%; padding: 10px; border-radius: 8px; border: 1.5px solid var(--line);">
-              <option value="Cambridge 9700 (A/AS Level Biology)">Cambridge 9700 (A/AS Level Biology)</option>
-              <option value="Cambridge 0610 (IGCSE Biology)">Cambridge 0610 (IGCSE Biology)</option>
-              <option value="Edexcel IAL WBI11/WBI12 (Biology)">Edexcel IAL WBI11/WBI12 (Biology)</option>
-              <option value="Edexcel IAL WBI13 (Unit 3 Biology)">Edexcel IAL WBI13 (Unit 3 Biology)</option>
-              <option value="Edexcel IGCSE 4BI1 (Biology)">Edexcel IGCSE 4BI1 (Biology)</option>
-              <option value="Oxford AQA 9610 (Biology)">Oxford AQA 9610 (Biology)</option>
-            </select>
-          </label>
-          <button id="saveSyllabusBtn" class="primary" style="height: 42px;">Save Mapping</button>
-        </div>
-        <div style="margin-top:14px; padding-top:14px; border-top:1px solid var(--line);">
-          <div style="font-weight:800; font-size:13px; margin-bottom:5px;">Build the Syllabus Map data</div>
-          <p class="meta" style="margin:0 0 10px;">Upload the official syllabus PDF/Word file once. ClassMate will extract the exact topic hierarchy and use it as the authoritative source for student Syllabus Map searches.</p>
-          <div style="display:grid; grid-template-columns:minmax(220px,1fr) auto; gap:10px; align-items:end;">
-            <label class="fld">
-              <span>Official syllabus file</span>
-              <input id="tppSyllabusFile" type="file" accept=".pdf,.docx,.txt,.md" style="width:100%; font-size:12px; padding:7px;" />
-            </label>
-            <button id="buildSyllabusMapBtn" class="ghost" type="button" style="height:42px;">Build / Update Syllabus Map</button>
-          </div>
-          <div id="syllabusMapBuildStatus" class="meta" style="margin-top:8px;"></div>
-        </div>
-      </div>
+      <p class="meta" style="margin-bottom:18px;">The student Syllabus Map now uses teacher-uploaded notes as its only learning source. There is no official syllabus file to upload for this feature.</p>
 
-      <!-- Card B: Upload Model Answer / Reference Document -->
+      <!-- Card A: Upload Model Answer / Reference Document -->
       <div class="setting-card" style="margin-bottom:20px; width:100%; max-width:none; box-sizing:border-box;">
-        <h3>2. Upload Course Reference / Answer Document</h3>
+        <h3>1. Upload Course Reference / Answer Document</h3>
         <p class="meta" style="margin-bottom: 12px;">Upload full solved exam documents or notes and tag them to a course so they link during bulk extraction.</p>
         
         <div style="display: grid; grid-template-columns: 1fr 2fr auto; gap: 10px; align-items: end; margin-bottom: 16px;">
@@ -497,9 +463,9 @@
         </details>
       </div>
 
-      <!-- Card C: Bulk Upload Complete Exam (QP + MS + ER) -->
+      <!-- Card B: Bulk Upload Complete Exam (QP + MS + ER) -->
       <div class="setting-card" style="margin-bottom:20px; width:100%; max-width:none; box-sizing:border-box;">
-        <h3>3. Bulk Upload &amp; Auto-Extract Exam Questions</h3>
+        <h3>2. Bulk Upload &amp; Auto-Extract Exam Questions</h3>
         <p class="meta" style="margin-bottom: 14px;">Upload Question Paper, Mark Scheme, and optional Examiner Report. AI will segment all questions automatically.</p>
 
         <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 10px; margin-bottom: 12px;">
@@ -541,7 +507,7 @@
 
       <!-- Card D: Individual Question Entry -->
       <div class="setting-card" style="margin-bottom: 20px;">
-        <h3>4. Add Single Question Directly</h3>
+        <h3>3. Add Single Question Directly</h3>
         <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 10px; margin-bottom: 12px;">
           <label class="fld"><span>Course</span><select id="tqCourseSelect" style="width: 100%; padding: 8px; border-radius: 8px; border: 1.5px solid var(--line);"></select></label>
           <label class="fld"><span>Year</span><input id="tqYearInput" type="number" placeholder="2023" value="2023" style="width: 100%; padding: 8px; border-radius: 8px; border: 1.5px solid var(--line);" /></label>

@@ -5,64 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>NG-ClassMate · Classes made easier</title>
 <link rel="stylesheet" href="./style.css?v=3" />
-<style>
-  /* Syllabus Map search layout: keep the search card full-width and prevent
-     the concept input from collapsing because of the global setting-card width. */
-  #studentSyllabusMapPane .syllabus-search-card {
-    width: 100%;
-    max-width: none;
-    box-sizing: border-box;
-  }
-  #studentSyllabusMapPane .syllabus-search-grid {
-    display: grid;
-    grid-template-columns: 275px minmax(0, 1fr) 200px;
-    gap: 16px;
-    align-items: start;
-  }
-  #studentSyllabusMapPane .syllabus-search-grid .fld {
-    min-width: 0;
-  }
-  #studentSyllabusMapPane .syllabus-search-grid .fld > span {
-    display: block;
-    height: 18px;
-    line-height: 18px;
-    margin-bottom: 6px;
-    white-space: nowrap;
-  }
-  #studentSyllabusMapPane #smCourseSelect,
-  #studentSyllabusMapPane #smQueryInput {
-    width: 100%;
-    min-width: 0;
-    height: 46px;
-    box-sizing: border-box;
-  }
-  #studentSyllabusMapPane #smSearchBtn {
-    width: 100%;
-    height: 46px;
-    box-sizing: border-box;
-    margin-top: 24px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    white-space: nowrap;
-  }
-  @media (max-width: 900px) {
-    #studentSyllabusMapPane .syllabus-search-grid {
-      grid-template-columns: 1fr 1fr;
-    }
-    #studentSyllabusMapPane .syllabus-search-grid #smSearchBtn {
-      grid-column: 1 / -1;
-    }
-  }
-  @media (max-width: 620px) {
-    #studentSyllabusMapPane .syllabus-search-grid {
-      grid-template-columns: 1fr;
-    }
-    #studentSyllabusMapPane .syllabus-search-grid #smSearchBtn {
-      grid-column: auto;
-    }
-  }
-</style>
+
 </head>
 <body>
 <div id="app">
@@ -125,7 +68,6 @@
         <button id="tabStudentTutor" class="tab">AI Tutor</button>
         <button id="tabStudentPlanner" class="tab">Study Planner</button>
         <button id="tabStudentPastPapers" class="tab">📝 Past Papers</button>
-        <button id="tabStudentSyllabusMap" class="tab">🧭 Syllabus Map</button>
         <button id="tabStudentAlerts" class="tab">🔔 Alerts <span id="navAlertBadge" class="badge-count hidden" style="background: #e03131; color: #fff; font-size: 10px; padding: 2px 7px; border-radius: 10px; margin-left: 4px; font-weight: 800;">0</span></button>
         <button class="link" id="studentSignOut" style="margin-left: 12px;">Sign out</button>
       </div>
@@ -300,41 +242,6 @@
     </div>
     
     <!-- Pane 5: Alerts & Reminders -->
-    <!-- Pane 5: Syllabus Map -->
-    <div id="studentSyllabusMapPane" class="student-pane hidden" style="padding: 26px 30px; overflow-y: auto;">
-      <div style="max-width: 1180px; margin: 0 auto;">
-        <div class="pane-head" style="margin-bottom: 20px;">
-          <h2 style="font-size: 26px; margin-bottom: 7px;">🧭 Syllabus Map</h2>
-          <p class="meta">Ask in your own words. ClassMate reads the teacher's uploaded notes, understands the context, then links you to the relevant class part and past-paper questions.</p>
-        </div>
-
-        <div class="setting-card syllabus-search-card" style="background: var(--panel); border: 1.5px solid var(--line); border-radius: 14px; padding: 18px; box-shadow: var(--shadow-sm); margin-bottom: 18px; width:100%; max-width:none; box-sizing:border-box;">
-          <div class="syllabus-search-grid">
-            <label class="fld" style="display:block;">
-              <span style="font-size: 12px; font-weight: 800; margin-bottom: 5px; display:block;">Course</span>
-              <select id="smCourseSelect" style="width:100%; padding:10px 12px; border-radius:9px; border:1.5px solid var(--line); background:var(--bg); color:var(--text);">
-                <option value="">All courses</option>
-              </select>
-            </label>
-            <label class="fld" style="display:block;">
-              <span style="font-size: 12px; font-weight: 800; margin-bottom: 5px; display:block;">What do you want to find?</span>
-              <input id="smQueryInput" type="text" placeholder="e.g. I do not understand why translocation happens in this situation…" autocomplete="off" style="width:100%; padding:11px 13px; border-radius:9px; border:1.5px solid var(--line); background:var(--bg); color:var(--text);" />
-            </label>
-            <button id="smSearchBtn" class="primary" style="min-width:145px;">Find from Teacher Notes</button>
-          </div>
-          <p class="meta" style="font-size:11.5px; margin-top:9px;">The AI does not depend on exact word matching or an official syllabus file. It uses the context of the teacher's uploaded notes.</p>
-        </div>
-
-        <div id="smEmptyState" class="empty" style="padding: 70px 20px; background:var(--panel); border:1.5px dashed var(--line); border-radius:14px;">
-          <div class="empty-emoji">🧭</div>
-          <p>Ask what you are trying to understand. You will get the relevant class part and matching past-paper questions from your teacher's material.</p>
-        </div>
-
-        <div id="smResults" class="hidden"></div>
-      </div>
-    </div>
-
-
     <div id="studentAlertsPane" class="student-pane hidden" style="padding: 26px 30px; overflow-y: auto;">
       <div class="pane-head" style="margin-bottom: 20px;">
         <h2>🔔 Alerts & Study Reminders</h2>
@@ -433,8 +340,6 @@
         <h2>Past Paper Hub: Dedicated Exam Bank</h2>
         <p class="meta">Upload course reference notes, extract complete exams, and organize the dedicated past-paper question bank.</p>
       </div>
-
-      <p class="meta" style="margin-bottom:18px;">The student Syllabus Map now uses teacher-uploaded notes as its only learning source. There is no official syllabus file to upload for this feature.</p>
 
       <!-- Card A: Upload Model Answer / Reference Document -->
       <div class="setting-card" style="margin-bottom:20px; width:100%; max-width:none; box-sizing:border-box;">
@@ -765,7 +670,7 @@
   }, 2500);
 })();
 </script>
-<script src="./app.js?v=302" onerror="(function(){var e=document.getElementById('toastMsg');var t=document.getElementById('toast');if(e&&t){e.textContent='Application script failed to load. Please deploy app.js beside index.html.';t.classList.remove('hidden');}})();"></script>
+<script src="./app.js?v=303" onerror="(function(){var e=document.getElementById('toastMsg');var t=document.getElementById('toast');if(e&&t){e.textContent='Application script failed to load. Please deploy app.js beside index.html.';t.classList.remove('hidden');}})();"></script>
 <script>
 (function(){
   function bind(){

@@ -386,7 +386,7 @@ if(el("passBtn")) el("passBtn").addEventListener("click", () => teacherLogin());
 if(el("passInput")) el("passInput").addEventListener("keydown", e => { if (e.key === "Enter") teacherLogin(); });
 
 // ================= STUDENT TABS & DASHBOARD =================
-const studentTabs = ["Dash", "Tutor", "Planner", "PastPapers", "SyllabusMap", "Alerts"];
+const studentTabs = ["Dash", "Tutor", "Planner", "PastPapers", "Alerts"];
 
 studentTabs.forEach(t => {
   const btn = el(`tabStudent${t}`);
@@ -411,9 +411,6 @@ function switchStudentTab(name) {
   }
   if (name === "PastPapers" && typeof initStudentPastPapers === "function") {
     initStudentPastPapers();
-  }
-  if (name === "SyllabusMap" && typeof initSyllabusMap === "function") {
-    initSyllabusMap();
   }
   if (name === "Alerts") {
     renderAlerts();
@@ -2621,168 +2618,6 @@ async function loadBranding() {
     const data = await res.json();
     if (data.logo) applyLogo(data.logo + "?t=" + Date.now());
   } catch (e) {}
-}
-
-// ============================================================================
-// STUDENT SYLLABUS MAP
-// ============================================================================
-let syllabusMapReady = false;
-
-function initSyllabusMap() {
-  const courseSel = el("smCourseSelect");
-  const input = el("smQueryInput");
-  const btn = el("smSearchBtn");
-  if (!courseSel || !input || !btn) return;
-
-  if (!syllabusMapReady) {
-    const courses = [...new Set((state.recordings || [])
-      .map(r => (r.unit || "").trim())
-      .filter(u => u && u.toLowerCase() !== "unassigned"))].sort();
-    courseSel.innerHTML = '<option value="">All courses</option>' + courses
-      .map(c => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join("");
-
-    btn.addEventListener("click", runSyllabusMapSearch);
-    input.addEventListener("keydown", e => {
-      if (e.key === "Enter") {
-        e.preventDefault();
-        runSyllabusMapSearch();
-      }
-    });
-    syllabusMapReady = true;
-  }
-}
-
-async function runSyllabusMapSearch() {
-  const input = el("smQueryInput");
-  const course = el("smCourseSelect") ? el("smCourseSelect").value : "";
-  const btn = el("smSearchBtn");
-  const empty = el("smEmptyState");
-  const results = el("smResults");
-  if (!input || !results || !state.token) return;
-
-  const query = input.value.trim();
-  if (query.length < 2) {
-    toast("Describe what you are trying to understand or find.", "info");
-    input.focus();
-    return;
-  }
-
-  const oldText = btn ? btn.innerText : "Find from Teacher Notes";
-  if (btn) {
-    btn.disabled = true;
-    btn.innerText = "⏳ Mapping…";
-  }
-  if (empty) empty.classList.add("hidden");
-  results.classList.remove("hidden");
-  results.innerHTML = '<div class="typing" style="padding: 30px; text-align:center;">Reading teacher notes and finding the most relevant class parts and past-paper questions <span class="dot">●</span><span class="dot">●</span><span class="dot">●</span></div>';
-
-  try {
-    const res = await fetch(`${API}/api/student/syllabus-map`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ token: state.token, course, query })
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || "Syllabus search failed.");
-    renderSyllabusMapResults(data);
-  } catch (err) {
-    results.innerHTML = `<div class="setting-card" style="padding:20px; border:1.5px solid var(--line); border-radius:14px; background:var(--panel);"><strong>Could not search the syllabus.</strong><div class="meta" style="margin-top:6px;">${escapeHtml(err.message || "Please try again.")}</div></div>`;
-  } finally {
-    if (btn) {
-      btn.disabled = false;
-      btn.innerText = oldText;
-    }
-  }
-}
-
-function renderSyllabusMapResults(data) {
-  const results = el("smResults");
-  if (!results) return;
-  const classes = Array.isArray(data.classes) ? data.classes : [];
-  const papers = Array.isArray(data.past_papers) ? data.past_papers : [];
-  const noteSources = Array.isArray(data.note_sources) ? data.note_sources : [];
-
-  if (!classes.length && !papers.length) {
-    results.innerHTML = `
-      <div class="setting-card" style="background:var(--panel); border:1.5px solid var(--line); border-radius:14px; padding:24px; text-align:center;">
-        <div style="font-size:28px; margin-bottom:8px;">🔎</div>
-        <h3 style="margin-bottom:6px;">No confident context match</h3>
-        <p class="meta" style="margin:0;">${escapeHtml(data.message || "I could not find a confident match in the teacher's notes. Try describing the idea in a full sentence.")}</p>
-      </div>`;
-    return;
-  }
-
-  const summary = escapeHtml(data.context_summary || "The teacher notes were used to understand the context of your question.");
-  const noteHtml = noteSources.length
-    ? `<div style="margin-top:11px; display:flex; flex-wrap:wrap; gap:7px; align-items:center;"><span class="meta" style="font-weight:800;">Teacher notes used:</span>${noteSources.slice(0,6).map(n => `<span class="course-chip" style="font-size:11px;">${escapeHtml(n.note_title || "Teacher notes")}</span>`).join("")}</div>`
-    : "";
-
-  let html = `
-    <div style="background:linear-gradient(135deg, rgba(11,191,191,.08), rgba(12,166,120,.08)); border:1.5px solid var(--brand); border-radius:14px; padding:18px; margin-bottom:16px;">
-      <div style="font-size:12px; font-weight:800; color:var(--brand-d); text-transform:uppercase; letter-spacing:.04em;">🎯 AI context match</div>
-      <div style="font-size:18px; font-weight:900; margin-top:6px; line-height:1.35;">${summary}</div>
-      ${noteHtml}
-    </div>`;
-
-  html += `<div style="display:grid; grid-template-columns: minmax(0,1.05fr) minmax(0,.95fr); gap:16px; align-items:start;">`;
-
-  html += `<section style="background:var(--panel); border:1.5px solid var(--line); border-radius:14px; padding:16px;">`;
-  html += `<div style="font-size:15px; font-weight:900; margin-bottom:10px;">🎥 Relevant Class Parts <span class="meta">(${classes.length})</span></div>`;
-  if (!classes.length) {
-    html += `<p class="meta">No class part could be linked confidently from the teacher notes.</p>`;
-  } else {
-    classes.forEach(c => {
-      const timestamps = Array.isArray(c.timestamps) ? [...new Set(c.timestamps.filter(Boolean))] : [];
-      const tsHtml = timestamps.length
-        ? `<div style="display:flex; flex-direction:column; align-items:flex-end; gap:5px; flex:0 0 auto;">${timestamps.map(ts => `<span class="ts-chip" style="white-space:nowrap;">⏱ ${escapeHtml(ts)}</span>`).join("")}</div>`
-        : `<span class="meta" style="white-space:nowrap;">Open class</span>`;
-      const notes = Array.isArray(c.note_titles) ? c.note_titles : [];
-      html += `
-        <div style="padding:12px; border:1px solid var(--line); background:var(--panel2); border-radius:11px; margin-top:9px;">
-          <div style="display:flex; justify-content:space-between; gap:14px; align-items:flex-start;">
-            <div style="min-width:0;">
-              <div style="font-weight:850;">${escapeHtml(c.title || "Class recording")}</div>
-              <div class="meta" style="margin-top:3px;">${escapeHtml(c.course || "")} ${c.date ? `· ${escapeHtml(c.date)}` : ""}</div>
-              ${notes.length ? `<div class="meta" style="margin-top:5px;">Notes: ${escapeHtml(notes.join(", "))}</div>` : ""}
-            </div>
-            ${tsHtml}
-          </div>
-          <button type="button" class="ghost-sm sm-open-class" data-recording-id="${escapeHtml(c.recording_id || "")}" style="margin-top:9px;">Open class →</button>
-        </div>`;
-    });
-  }
-  html += `</section>`;
-
-  html += `<section style="background:var(--panel); border:1.5px solid var(--line); border-radius:14px; padding:16px;">`;
-  html += `<div style="font-size:15px; font-weight:900; margin-bottom:10px;">📝 Related Past-Paper Questions <span class="meta">(${papers.length})</span></div>`;
-  if (!papers.length) {
-    html += `<p class="meta">No sufficiently relevant past-paper question was found in the current library.</p>`;
-  } else {
-    papers.forEach(p => {
-      const exam = [p.year, p.series, p.paper ? `Paper ${p.paper}` : ""].filter(Boolean).join(" · ");
-      html += `
-        <div style="padding:12px; border:1px solid var(--line); background:var(--panel2); border-radius:11px; margin-top:9px;">
-          <div style="font-weight:850;">${escapeHtml(exam || "Past paper")}</div>
-          <div style="margin-top:4px; font-size:13px; color:var(--brand-d); font-weight:800;">Question ${escapeHtml(p.question || "—")}</div>
-          <div class="meta" style="margin-top:3px;">${escapeHtml(p.course || "")}${p.question_type ? ` · ${escapeHtml(p.question_type)}` : ""}</div>
-        </div>`;
-    });
-  }
-  html += `</section></div>`;
-
-  results.innerHTML = html;
-  results.querySelectorAll(".sm-open-class").forEach(btn => {
-    btn.addEventListener("click", () => {
-      const rid = btn.dataset.recordingId;
-      const rec = (state.recordings || []).find(r => r.id === rid);
-      if (rec) {
-        switchStudentTab("Tutor");
-        selectRecording(rec);
-      } else {
-        toast("That class is no longer available.", "info");
-      }
-    });
-  });
 }
 
 // ==============================================================================

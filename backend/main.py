@@ -2273,6 +2273,177 @@ async def ask(body: AskBody):
     return {"answer": answer, "cited_segments": len(idx)}
 
 
+def _quiz_notes_context(rec, max_chars=10000):
+    """Return teacher notes explicitly attached to this recording, in upload order."""
+    try:
+        lib = load_notes_library()
+    except Exception as e:
+        print(f"[quiz] teacher notes unavailable: {e}")
+        return ""
+    notes_by_id = {str(n.get("id")): n for n in lib if isinstance(n, dict) and n.get("id")}
+    blocks = []
+    total = 0
+    for note_id in (rec.get("note_ids") or []):
+        note = notes_by_id.get(str(note_id))
+        if not note:
+            continue
+        title = str(note.get("filename") or note.get("title") or "Teacher notes")
+        chunks = note.get("chunks") or []
+        for chunk in chunks:
+            text = str(chunk or "").strip()
+            if not text:
+                continue
+            block = f"[TEACHER NOTE: {title}]\n{text}"
+            room = max_chars - total
+            if room <= 0:
+                return "\n\n".join(blocks)
+            if len(block) > room:
+                # Keep a whole-text boundary rather than cutting in the middle of a word.
+                clipped = block[:room]
+                if " " in clipped:
+                    clipped = clipped.rsplit(" ", 1)[0]
+                if clipped.strip():
+                    blocks.append(clipped)
+                return "\n\n".join(blocks)
+            blocks.append(block)
+            total += len(block) + 2
+    return "\n\n".join(blocks)
+
+
+_QUIZ_STOP_WORDS = {
+    "what", "which", "when", "where", "why", "how", "does", "did", "are", "was", "were",
+    "the", "and", "for", "with", "from", "that", "this", "these", "those", "into", "onto",
+    "about", "during", "their", "there", "then", "than", "have", "has", "had", "can", "could",
+    "should", "would", "will", "been", "being", "also", "only", "most", "more", "less", "not",
+    "true", "false", "according", "class", "lecture", "topic", "teacher", "explain", "explained",
+    "recording", "concept", "process", "main", "important", "following", "best", "correct", "option",
+}
+
+
+def _quiz_terms(text):
+    return {w for w in tokenize(text) if len(w) > 2 and w not in _QUIZ_STOP_WORDS}
+
+
+def _quiz_transcript_context(segments, max_chars=10000):
+    """Create a bounded context made of contiguous windows, not isolated transcript lines."""
+    if not segments:
+        return ""
+    n = len(segments)
+    # Sample up to eight contiguous windows distributed across the lecture. Neighbouring
+    # lines preserve the explanation around a mention instead of presenting stray words.
+    window_size = max(4, min(9, math.ceil(n / 8)))
+    centers = [round(i * (n - 1) / 7) for i in range(8)] if n > 8 else list(range(n))
+    indices = set()
+    for center in centers:
+        lo = max(0, center - window_size // 2)
+        hi = min(n, lo + window_size)
+        lo = max(0, hi - window_size)
+        indices.update(range(lo, hi))
+    lines = []
+    used = 0
+    for i in sorted(indices):
+        seg = segments[i] or {}
+        body = re.sub(r"\s+", " ", str(seg.get("text") or "")).strip()
+        if not body:
+            continue
+        stamp = fmt_ts(seg.get("start"))
+        line = f"[{stamp}] {body}"
+        if used + len(line) + 1 > max_chars:
+            room = max_chars - used - len(stamp) - 4
+            if room > 80:
+                lines.append(f"[{stamp}] {body[:room].rsplit(' ', 1)[0]}…")
+            break
+        lines.append(line)
+        used += len(line) + 1
+    return "\n".join(lines)
+
+
+def _quiz_normalize_source(text):
+    return "".join(ch.casefold() for ch in str(text or "") if ch.isalnum())
+
+
+def _quiz_timestamp_for_question(question, topic, transcript_context):
+    """Find a timestamp only when the transcript has a meaningful lexical anchor."""
+    terms = _quiz_terms(f"{topic or ''} {question or ''}")
+    if not terms or not transcript_context:
+        return ""
+    best_stamp = ""
+    best_score = 0
+    for line in transcript_context.splitlines():
+        m = re.match(r"^\[([^\]]+)\]\s*(.*)$", line)
+        if not m:
+            continue
+        stamp, text = m.group(1), m.group(2)
+        words = _quiz_terms(text)
+        overlap = terms & words
+        score = len(overlap)
+        # Prefer segments containing more than one concept word; an isolated single-word
+        # mention should not create a potentially misleading jump link.
+        if score > best_score:
+            best_score = score
+            best_stamp = stamp
+    minimum = 1 if any(len(t) >= 9 for t in terms) else 2
+    return best_stamp if best_score >= minimum else ""
+
+
+def _validate_quiz_questions(items, source_text, wanted, transcript_context="", notes_primary=False):
+    """Reject unsupported, malformed, duplicated questions instead of showing guesswork."""
+    if not isinstance(items, list):
+        return []
+    normalized_source = _quiz_normalize_source(source_text)
+    accepted = []
+    seen = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        question = str(item.get("question") or "").strip()
+        explanation = str(item.get("explanation") or "").strip()
+        topic = str(item.get("topic") or "").strip()
+        support_quote = str(item.get("support_quote") or item.get("evidence_quote") or "").strip().strip('"“”')
+        options = item.get("options")
+        answer_index = item.get("answer_index")
+        if len(question) < 12 or len(explanation) < 12:
+            continue
+        if not isinstance(options, list) or len(options) != 4:
+            continue
+        options = [str(x).strip() for x in options]
+        if any(not x for x in options) or len({_quiz_normalize_source(x) for x in options}) != 4:
+            continue
+        if isinstance(answer_index, bool) or not isinstance(answer_index, int) or not 0 <= answer_index < 4:
+            continue
+        normalized_quote = _quiz_normalize_source(support_quote)
+        # A supporting quote must be a verifiable passage from the permitted source.
+        if len(normalized_quote) < 22 or normalized_quote not in normalized_source:
+            continue
+        q_terms = _quiz_terms(question)
+        duplicate = False
+        for old_terms in seen:
+            if q_terms and old_terms and len(q_terms & old_terms) / max(1, len(q_terms | old_terms)) >= 0.78:
+                duplicate = True
+                break
+        if duplicate:
+            continue
+        seen.append(q_terms)
+        timestamp = _quiz_timestamp_for_question(question, topic, transcript_context)
+        if not timestamp and not notes_primary:
+            # Transcript-only quizzes should not show a model-invented timestamp.
+            possible = str(item.get("timestamp") or "").strip()
+            allowed_stamps = set(re.findall(r"^\[([^\]]+)\]", transcript_context, re.M))
+            if possible in allowed_stamps:
+                timestamp = possible
+        accepted.append({
+            "question": question,
+            "options": options,
+            "answer_index": answer_index,
+            "explanation": explanation,
+            "timestamp": timestamp,
+            "topic": topic,
+        })
+        if len(accepted) >= wanted:
+            break
+    return accepted
+
+
 class QuizBody(BaseModel):
     recording_id: str
     num_questions: int = 5
@@ -2288,49 +2459,135 @@ async def quiz(body: QuizBody):
     rec = REC_BY_ID.get(body.recording_id)
     if not rec:
         return JSONResponse({"error": "Recording not found"}, status_code=404)
-    segs = _get_segments(rec)
-    if not segs:
-        return JSONResponse({"error": "This recording has no transcript yet."}, status_code=422)
-    step = max(1, len(segs) // 45)
-    idx = list(range(0, len(segs), step))[:45]
-    del segs
-    gc.collect()
-    ctx = context_from_indices(rec, idx, max_chars=12000)
-    lang_line = "Write the quiz in English."
+
     n = max(1, min(10, body.num_questions))
+    title = str(rec.get("display_title") or rec.get("topic") or "Class recording")
+    unit = str(rec.get("unit") or "Unassigned")
+    notes_text = _quiz_notes_context(rec, max_chars=10000)
+    notes_primary = bool(notes_text.strip())
+    transcript_context = ""
+
+    # Teacher notes attached to this specific class define what is examinable.
+    # Transcript is used for timestamp linking only when notes exist. This prevents
+    # side remarks in a recording from becoming quiz topics merely because they were said.
+    if notes_primary:
+        source_text = notes_text
+        source_label = "teacher_notes"
+    else:
+        # Where no teacher notes are attached, make bounded, context-preserving transcript
+        # excerpts available. We no longer sample every Nth isolated segment.
+        segments = _get_segments(rec)
+        if not segments:
+            return JSONResponse({
+                "error": "This recording has no transcript or teacher notes yet. Upload teacher notes or generate the transcript first."
+            }, status_code=422)
+        try:
+            transcript_context = _quiz_transcript_context(segments, max_chars=10000)
+        finally:
+            del segments
+            gc.collect()
+        source_text = transcript_context
+        source_label = "transcript"
+
+    language = (body.language or "English").strip() or "English"
+    candidate_count = min(10, n + 3)
+    if notes_primary:
+        source_rules = (
+            "SOURCE OF TRUTH: the attached TEACHER NOTES are the authority for quiz content. "
+            "Create questions only about concepts, mechanisms, definitions, processes, comparisons, or applications "
+            "that the notes actually teach. Keep the questions within the class title and course context. "
+            "Do NOT create questions from transcript side remarks, introductions, attendance/logistics, jokes, "
+            "unrelated examples, one-off word mentions, or general knowledge not stated in the notes. "
+            "Do not use official-syllabus assumptions or outside knowledge to fill gaps."
+        )
+        source_block = f"TEACHER NOTES (the only permitted source for quiz facts):\n{notes_text}"
+        quote_rule = "support_quote must be an exact, contiguous quotation copied from the TEACHER NOTES."
+    else:
+        source_rules = (
+            "No teacher notes are attached, so use the transcript excerpts but be conservative. "
+            "Ask only about a concept that the teacher actually explains in a coherent instructional passage. "
+            "A passing mention does NOT make a topic examinable. Ignore greetings, admin/logistics, jokes, "
+            "unrelated anecdotes, housekeeping, technical issues, and tangents. Do not add general knowledge. "
+            "Prefer core explanations connected to the class title/course and supported by surrounding lines."
+        )
+        source_block = f"TRANSCRIPT EXCERPTS (only permitted source):\n{transcript_context}"
+        quote_rule = "support_quote must be an exact, contiguous quotation copied from the TRANSCRIPT EXCERPTS."
+
     system = (
-        "You are ClassMate, creating a quiz to help students review a class recording. "
-        "Use ONLY the transcript content provided. Return STRICT JSON only, no markdown, no prose. "
-        "Schema: {\"questions\":[{\"question\":str,\"options\":[str,str,str,str],"
-        "\"answer_index\":int,\"explanation\":str,\"timestamp\":str}]}. "
-        "The 'timestamp' is the transcript timestamp (like '12:34') where the topic is discussed. "
-        "The 'explanation' must reference what was said in the recording. "
-        f"Create exactly {n} multiple-choice questions ({body.difficulty} difficulty). {lang_line}"
+        "You are ClassMate, writing a short formative revision quiz for a student. "
+        f"Generate {candidate_count} candidate multiple-choice questions, so unsupported candidates can be discarded. "
+        f"Difficulty: {body.difficulty or 'mixed'}. Language: {language}. "
+        f"{source_rules} "
+        "Assess understanding, not incidental recall. Each question must test one clear, teachable idea; avoid trivia, "
+        "unsupported details, ambiguous wording, trick questions, overlapping options, and duplicate concepts. "
+        "Do not ask about something solely because it appears in the transcript. Each correct answer and explanation "
+        "must be directly supported by the permitted source. Distractors may be plausible but the source must clearly "
+        "establish one correct answer. " + quote_rule + " "
+        "Return STRICT JSON only, no markdown. Schema: "
+        '{"questions":[{"question":str,"options":[str,str,str,str],"answer_index":int,'
+        '"explanation":str,"topic":str,"support_quote":str,"timestamp":str}]}. '
+        "answer_index is zero-based. topic is the central concept tested. timestamp can be blank; never invent one. "
     )
     user = (
-        f"Class recording: {rec.get('display_title') or rec.get('topic')}\n\n"
-        f"Transcript excerpts:\n{ctx}"
+        f"Course/unit: {unit}\nClass title: {title}\n\n"
+        f"{source_block}\n\n"
+        "Check before writing each question: Is the concept actually taught in the permitted source? Is this a core "
+        "learning point rather than a side comment? Can I quote the precise passage supporting the correct answer? "
+        "If any answer is no, do not create that question."
     )
     try:
         raw = await llm(
             [{"role": "system", "content": system}, {"role": "user", "content": user}],
-            max_tokens=2500,
+            max_tokens=3000,
+            temperature=0.15,
         )
     except (LLMConfigError, LLMUpstreamError) as e:
         return JSONResponse({"error": str(e)}, status_code=503)
+
     data = None
+    txt = (raw or "").strip()
+    if txt.startswith("```"):
+        txt = re.sub(r"^```(?:json)?\s*", "", txt, flags=re.I)
+        txt = re.sub(r"\s*```$", "", txt)
     try:
-        data = json.loads(raw)
+        data = json.loads(txt)
     except Exception:
-        m = re.search(r"\{.*\}", raw, re.DOTALL)
+        m = re.search(r"\{.*\}", txt, re.DOTALL)
         if m:
             try:
                 data = json.loads(m.group(0))
             except Exception:
                 data = None
-    if not data or "questions" not in data:
-        return JSONResponse({"error": "Could not generate quiz", "raw": raw[:500]}, status_code=500)
-    return data
+    if not isinstance(data, dict) or not isinstance(data.get("questions"), list):
+        print(f"[quiz] invalid JSON recording={body.recording_id} source={source_label}")
+        return JSONResponse({"error": "Could not generate a reliable quiz. Please try again."}, status_code=502)
+
+    # If teacher notes are the source, load the transcript only after question generation
+    # to map accepted concepts to a relevant timestamp. It is not sent to the generator.
+    if notes_primary:
+        segments = _get_segments(rec)
+        try:
+            transcript_context = _quiz_transcript_context(segments, max_chars=14000)
+        finally:
+            del segments
+            gc.collect()
+
+    validated = _validate_quiz_questions(
+        data.get("questions"),
+        source_text=source_text,
+        wanted=n,
+        transcript_context=transcript_context,
+        notes_primary=notes_primary,
+    )
+    print(
+        f"[quiz] source={source_label} recording={body.recording_id} "
+        f"candidates={len(data.get('questions') or [])} accepted={len(validated)}"
+    )
+    if not validated:
+        return JSONResponse({
+            "error": "I couldn't find enough clearly supported questions for this class. Check that the teacher notes cover the topic or that the transcript contains a clear explanation, then try again."
+        }, status_code=422)
+    return {"questions": validated, "source": source_label}
 
 
 # ---------- automated flashcards generation (Fresh & Unique Cards) ----------

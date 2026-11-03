@@ -1740,8 +1740,10 @@ async function loadStudents() {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ passcode: state.passcode })
     });
     const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Could not load students.");
     teacherStudentsCache = data.students || [];
     renderStudents(teacherStudentsCache);
+    renderBulkRemoveCourseOptions();
 
     const studentSearchInput = el("studentSearchInput");
     if (studentSearchInput && !studentSearchInput.dataset.bound) {
@@ -1763,6 +1765,113 @@ async function loadStudents() {
     const box = el("studentList");
     if(box) box.innerHTML = '<div class="roster-empty">Could not load students.</div>';
   }
+}
+
+function renderBulkRemoveCourseOptions() {
+  const select = el("bulkRemoveCourse");
+  const button = el("bulkRemoveCourseBtn");
+  if (!select) return;
+  const previous = select.value;
+  const counts = new Map();
+  teacherStudentsCache.forEach(student => {
+    (Array.isArray(student.courses) ? student.courses : []).forEach(course => {
+      const label = String(course || "").trim();
+      if (!label) return;
+      const key = label.toLocaleLowerCase();
+      const existing = counts.get(key);
+      if (existing) existing.count += 1;
+      else counts.set(key, { label, count: 1 });
+    });
+  });
+  select.innerHTML = '<option value="">Select course…</option>';
+  [...counts.values()].sort((a, b) => a.label.localeCompare(b.label)).forEach(item => {
+    const option = document.createElement("option");
+    option.value = item.label;
+    option.textContent = `${item.label} (${item.count} student${item.count === 1 ? "" : "s"})`;
+    select.appendChild(option);
+  });
+  if (previous && [...select.options].some(option => option.value.toLocaleLowerCase() === previous.toLocaleLowerCase())) {
+    select.value = [...select.options].find(option => option.value.toLocaleLowerCase() === previous.toLocaleLowerCase()).value;
+  }
+  if (button) button.disabled = !select.value;
+  const status = el("bulkRemoveCourseStatus");
+  if (status && !counts.size) status.textContent = "No course memberships are available to remove.";
+  else if (status && status.textContent === "No course memberships are available to remove.") status.textContent = "";
+}
+
+if (el("bulkRemoveCourse")) {
+  el("bulkRemoveCourse").addEventListener("change", () => {
+    const button = el("bulkRemoveCourseBtn");
+    if (button) button.disabled = !el("bulkRemoveCourse").value;
+    const status = el("bulkRemoveCourseStatus");
+    if (status) status.textContent = "";
+  });
+}
+
+if (el("bulkRemoveCourseBtn")) {
+  el("bulkRemoveCourseBtn").addEventListener("click", async () => {
+    const select = el("bulkRemoveCourse");
+    const button = el("bulkRemoveCourseBtn");
+    const status = el("bulkRemoveCourseStatus");
+    const course = select ? select.value.trim() : "";
+    if (!course || !button || button.disabled) return;
+
+    const originalText = button.textContent;
+    button.disabled = true;
+    button.textContent = "Checking…";
+    if (status) status.textContent = "Preparing a course-specific removal preview…";
+
+    try {
+      const previewRes = await fetch(`${API}/api/teacher/students/remove-course`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ passcode: state.passcode, course, confirm: false })
+      });
+      const previewData = await previewRes.json().catch(() => ({}));
+      if (!previewRes.ok || !previewData.ok || !previewData.preview) {
+        throw new Error(previewData.error || "Could not prepare the course-removal preview.");
+      }
+
+      const preview = previewData.preview;
+      const message = `Remove all ${preview.students_affected} student memberships from “${preview.course}”?\n\n` +
+        `• ${preview.accounts_to_keep} account(s) will be kept because those students are enrolled in other courses.\n` +
+        `• ${preview.accounts_to_delete} account(s) will be permanently deleted because this is their only course.\n\n` +
+        `This action cannot be undone. Continue?`;
+      if (!window.confirm(message)) {
+        if (status) status.textContent = "No changes were made.";
+        return;
+      }
+
+      button.textContent = "Removing…";
+      const applyRes = await fetch(`${API}/api/teacher/students/remove-course`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          passcode: state.passcode,
+          course,
+          confirm: true,
+          expected_students_affected: preview.students_affected,
+          expected_accounts_to_delete: preview.accounts_to_delete,
+          expected_accounts_to_keep: preview.accounts_to_keep
+        })
+      });
+      const applyData = await applyRes.json().catch(() => ({}));
+      if (!applyRes.ok || !applyData.ok) throw new Error(applyData.error || "Course cleanup failed.");
+
+      const resultMessage = `Removed ${applyData.students_affected} student(s) from ${applyData.course}. ` +
+        `${applyData.accounts_deleted} account(s) deleted; ${applyData.accounts_kept} account(s) retained for other courses.`;
+      if (status) status.textContent = resultMessage;
+      toast(resultMessage, "success", 6500);
+      await loadStudents();
+      await loadStats();
+    } catch (error) {
+      if (status) status.textContent = error.message || "Could not remove students from this course.";
+      toast(error.message || "Could not remove students from this course.", "error", 6000);
+    } finally {
+      button.textContent = originalText;
+      button.disabled = !(select && select.value);
+    }
+  });
 }
 
 function renderStudents(list) {

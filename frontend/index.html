@@ -321,6 +321,17 @@
         <button id="exportRosterCsv" type="button" class="ghost">⬇️ Export roster (CSV)</button>
         <button id="dedupeBtn" type="button" class="ghost">🔎 Merge duplicate accounts</button>
       </div>
+      <div class="setting-card" style="margin-top:14px;padding:14px;border:1px solid #e2b8b8;border-radius:10px;">
+        <strong>Remove all students from a course</strong>
+        <p class="meta" style="margin:6px 0 10px;">Select a course to remove every student's access to it. Students enrolled in other courses keep their accounts and remaining course access. Accounts with no other courses are permanently deleted.</p>
+        <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;">
+          <select id="bulkRemoveCourse" class="filter-select" style="min-width:220px;max-width:100%;">
+            <option value="">Select course…</option>
+          </select>
+          <button id="bulkRemoveCourseBtn" type="button" class="ghost danger-btn" disabled>Remove all from course</button>
+        </div>
+        <p id="bulkRemoveCourseStatus" class="meta" style="margin:8px 0 0;" aria-live="polite"></p>
+      </div>
       <div class="import-box" style="margin-top:14px;padding:12px;border:1px dashed #bbb;border-radius:10px;">
         <strong>📥 Import students from Excel</strong>
         <input type="file" id="excelFile" accept=".xlsx" />
@@ -670,7 +681,7 @@
   }, 2500);
 })();
 </script>
-<script src="./app.js?v=303" onerror="(function(){var e=document.getElementById('toastMsg');var t=document.getElementById('toast');if(e&&t){e.textContent='Application script failed to load. Please deploy app.js beside index.html.';t.classList.remove('hidden');}})();"></script>
+<script src="./app.js?v=304" onerror="(function(){var e=document.getElementById('toastMsg');var t=document.getElementById('toast');if(e&&t){e.textContent='Application script failed to load. Please deploy app.js beside index.html.';t.classList.remove('hidden');}})();"></script>
 <script>
 (function(){
   function bind(){

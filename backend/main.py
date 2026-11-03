@@ -1795,6 +1795,135 @@ def remove_student(body: RemoveStudentBody):
     return {"ok": True}
 
 
+class RemoveCourseStudentsBody(BaseModel):
+    passcode: str
+    course: str
+    confirm: bool = False
+    expected_students_affected: int | None = None
+    expected_accounts_to_delete: int | None = None
+    expected_accounts_to_keep: int | None = None
+
+
+@app.post("/api/teacher/students/remove-course")
+def remove_all_students_from_course(body: RemoveCourseStudentsBody):
+    """Remove one course from every enrolled student, deleting only accounts
+    that have no other course memberships. Requires a preview/confirm roundtrip.
+    """
+    if not check_passcode(body.passcode):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+
+    requested_course = (body.course or "").strip()
+    if not requested_course:
+        return JSONResponse({"error": "Select a course first."}, status_code=400)
+
+    roster = load_roster()
+    affected = []
+    canonical_course = requested_course
+    for student in roster:
+        courses = normalize_courses(student.get("courses"))
+        match = next((c for c in courses if _norm(c) == _norm(requested_course)), None)
+        if match:
+            canonical_course = match
+            remaining = [c for c in courses if _norm(c) != _norm(requested_course)]
+            affected.append((student, remaining))
+
+    if not affected:
+        return JSONResponse({"error": "No student accounts are currently assigned to that course."}, status_code=404)
+
+    accounts_to_delete = sum(1 for _student, remaining in affected if not remaining)
+    accounts_to_keep = len(affected) - accounts_to_delete
+    preview = {
+        "course": canonical_course,
+        "students_affected": len(affected),
+        "accounts_to_delete": accounts_to_delete,
+        "accounts_to_keep": accounts_to_keep,
+    }
+
+    if not body.confirm:
+        return {"ok": True, "preview": preview}
+
+    expected = (
+        body.expected_students_affected,
+        body.expected_accounts_to_delete,
+        body.expected_accounts_to_keep,
+    )
+    current = (
+        preview["students_affected"],
+        preview["accounts_to_delete"],
+        preview["accounts_to_keep"],
+    )
+    if any(value is None for value in expected):
+        return JSONResponse({"error": "A fresh removal preview is required before confirming."}, status_code=400)
+    if expected != current:
+        return JSONResponse(
+            {"error": "The course roster changed after the preview. Please review a new preview before deleting."},
+            status_code=409,
+        )
+
+    # Apply against the fresh roster read above. Keep students who still belong
+    # to another course; permanently remove only accounts left with no courses.
+    affected_ids = set()
+    deleted_ids = set()
+    new_roster = []
+    for student in roster:
+        courses = normalize_courses(student.get("courses"))
+        if not any(_norm(c) == _norm(requested_course) for c in courses):
+            new_roster.append(student)
+            continue
+
+        student_id = str(student.get("id") or "")
+        affected_ids.add(student_id)
+        remaining = [c for c in courses if _norm(c) != _norm(requested_course)]
+        if remaining:
+            student["courses"] = remaining
+            new_roster.append(student)
+        else:
+            deleted_ids.add(student_id)
+
+    # Atomic replacement avoids leaving a partially-written roster if the
+    # process is interrupted during this bulk operation.
+    tmp_path = ROSTER_PATH + ".course-cleanup.tmp"
+    try:
+        os.makedirs(os.path.dirname(ROSTER_PATH) or ".", exist_ok=True)
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(new_roster, f, ensure_ascii=False, indent=2)
+        os.replace(tmp_path, ROSTER_PATH)
+    except Exception as e:
+        try:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+        except Exception:
+            pass
+        print(f"[roster] course cleanup save failed: {e}")
+        return JSONResponse({"error": "Could not save the roster. No course memberships were removed."}, status_code=500)
+
+    # Update in-memory sessions immediately. Retained students can continue in
+    # their other courses; deleted accounts lose access immediately.
+    for token, session in list(SESSIONS.items()):
+        student_id = str(session.get("student_id") or "")
+        if student_id in deleted_ids:
+            SESSIONS.pop(token, None)
+        elif student_id in affected_ids:
+            student = next((s for s in new_roster if str(s.get("id") or "") == student_id), None)
+            if student:
+                session["courses"] = normalize_courses(student.get("courses"))
+
+    result = {
+        "ok": True,
+        "course": canonical_course,
+        "students_affected": len(affected_ids),
+        "accounts_deleted": len(deleted_ids),
+        "accounts_kept": len(affected_ids) - len(deleted_ids),
+        "students_remaining_in_course": 0,
+    }
+    print(
+        f"[roster] course cleanup completed: course={canonical_course!r}, "
+        f"affected={result['students_affected']}, deleted={result['accounts_deleted']}, "
+        f"kept={result['accounts_kept']}"
+    )
+    return result
+
+
 class ResetPasswordBody(BaseModel):
     passcode: str
     id: str

@@ -297,8 +297,17 @@ async function enter() {
     const res = await fetch(`${API}/api/student/login`, {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email, password })
     });
-    const data = await res.json();
-    if (!res.ok || !data.ok) { if(errEl) { errEl.textContent = data.error || "Login failed."; errEl.classList.remove("hidden"); } return; }
+    let data = {};
+    try { data = await res.json(); } catch (_) {}
+    if (!res.ok || !data.ok) {
+      if(errEl) {
+        errEl.textContent = res.status >= 500
+          ? `Server error (${res.status}). This is not an incorrect password; please retry after the server recovers.`
+          : (data.error || "Login failed.");
+        errEl.classList.remove("hidden");
+      }
+      return;
+    }
     
     state.name = data.name;
     state.token = data.token;
@@ -366,7 +375,11 @@ async function teacherLogin(passcodeOverride = null) {
       if (passcodeOverride) localStorage.removeItem("ng_teacherPasscode");
       
       if(errEl) {
-        errEl.textContent = res.status === 401 ? "Wrong passcode. The default is teach123." : `Login failed (${res.status}).`;
+        errEl.textContent = res.status === 401
+          ? "Wrong passcode. The default is teach123."
+          : res.status >= 500
+            ? `Server error (${res.status}). This is a backend/proxy problem, not an incorrect passcode.`
+            : `Login failed (${res.status}).`;
         errEl.classList.remove("hidden");
       }
     }

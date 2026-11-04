@@ -308,16 +308,76 @@ def note_by_id(note_id, lib=None):
     return next((n for n in lib if n["id"] == note_id), None)
 
 
+def _atomic_write_json_file(path, payload, *, indent=2):
+    """Write JSON beside the target and atomically replace it after a full flush."""
+    directory = os.path.dirname(path) or "."
+    os.makedirs(directory, exist_ok=True)
+    tmp_path = f"{path}.{uuid.uuid4().hex}.tmp"
+    try:
+        with open(tmp_path, "w", encoding="utf-8", newline="\n") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=indent)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, path)
+    finally:
+        try:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+        except Exception:
+            pass
+
+
 def load_roster():
-    if os.path.exists(ROSTER_PATH):
-        with open(ROSTER_PATH) as f:
-            return json.load(f)
-    return []
+    """Load the roster and repair raw control characters inside JSON strings.
+
+    Older writes/imports can leave literal tabs/newlines/control characters inside
+    a quoted JSON value. Python's strict JSON parser rejects those even though the
+    underlying student records are still recoverable. Retry with strict=False,
+    preserve every parsed field/value, back up the original once, then normalize
+    the file back to standards-compliant JSON atomically.
+    """
+    if not os.path.exists(ROSTER_PATH):
+        return []
+
+    with open(ROSTER_PATH, "r", encoding="utf-8-sig") as f:
+        raw = f.read()
+
+    repaired = False
+    try:
+        roster = json.loads(raw)
+    except json.JSONDecodeError as strict_error:
+        try:
+            roster = json.loads(raw, strict=False)
+            repaired = True
+            print(
+                "[roster] recovered JSON containing unescaped control characters "
+                f"at line {strict_error.lineno}, column {strict_error.colno}; "
+                "preserving parsed records and normalizing the file"
+            )
+        except json.JSONDecodeError:
+            # Keep the original file untouched when the structure itself is not
+            # parseable; this is different from the recoverable control-char case.
+            raise strict_error
+
+    if not isinstance(roster, list):
+        raise ValueError("roster.json must contain a JSON array of student records")
+
+    if repaired:
+        backup_path = ROSTER_PATH + ".pre-control-char-repair.bak"
+        if not os.path.exists(backup_path):
+            import shutil
+            shutil.copy2(ROSTER_PATH, backup_path)
+            print(f"[roster] original file preserved at {backup_path}")
+        _atomic_write_json_file(ROSTER_PATH, roster, indent=2)
+        print(f"[roster] repaired and safely rewrote {len(roster)} student records")
+
+    return roster
 
 
 def save_roster(roster):
-    with open(ROSTER_PATH, "w") as f:
-        json.dump(roster, f, ensure_ascii=False, indent=2)
+    # Atomic replacement prevents a Render restart during a write from leaving
+    # a partially-written roster that would break every student's login.
+    _atomic_write_json_file(ROSTER_PATH, roster, indent=2)
 
 
 def gen_pin():
@@ -1882,18 +1942,9 @@ def remove_all_students_from_course(body: RemoveCourseStudentsBody):
 
     # Atomic replacement avoids leaving a partially-written roster if the
     # process is interrupted during this bulk operation.
-    tmp_path = ROSTER_PATH + ".course-cleanup.tmp"
     try:
-        os.makedirs(os.path.dirname(ROSTER_PATH) or ".", exist_ok=True)
-        with open(tmp_path, "w", encoding="utf-8") as f:
-            json.dump(new_roster, f, ensure_ascii=False, indent=2)
-        os.replace(tmp_path, ROSTER_PATH)
+        save_roster(new_roster)
     except Exception as e:
-        try:
-            if os.path.exists(tmp_path):
-                os.remove(tmp_path)
-        except Exception:
-            pass
         print(f"[roster] course cleanup save failed: {e}")
         return JSONResponse({"error": "Could not save the roster. No course memberships were removed."}, status_code=500)
 

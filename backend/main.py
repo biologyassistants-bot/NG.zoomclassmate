@@ -18,6 +18,7 @@ from pydantic import BaseModel
 import secrets
 import bcrypt
 import uuid
+import copy
 from datetime import date
 
 # Data location.
@@ -327,56 +328,272 @@ def _atomic_write_json_file(path, payload, *, indent=2):
             pass
 
 
-def load_roster():
-    """Load the roster and repair raw control characters inside JSON strings.
+_ROSTER_RECOVERY_INCOMPLETE = False
+_ROSTER_RECOVERY_CACHE = None
 
-    Older writes/imports can leave literal tabs/newlines/control characters inside
-    a quoted JSON value. Python's strict JSON parser rejects those even though the
-    underlying student records are still recoverable. Retry with strict=False,
-    preserve every parsed field/value, back up the original once, then normalize
-    the file back to standards-compliant JSON atomically.
+
+def _escape_invalid_json_string_chars(raw: str) -> str:
+    """Escape literal JSON control chars and invalid backslash escapes inside strings.
+
+    This is intentionally lexical: characters outside quoted strings are left
+    alone, and already-valid JSON escapes are preserved byte-for-byte.
     """
+    out = []
+    i = 0
+    in_string = False
+    while i < len(raw):
+        ch = raw[i]
+        if not in_string:
+            out.append(ch)
+            if ch == '"':
+                in_string = True
+            i += 1
+            continue
+
+        if ch == '"':
+            out.append(ch)
+            in_string = False
+            i += 1
+            continue
+
+        if ch == "\\":
+            # Preserve valid JSON escapes. If the backslash begins an invalid
+            # escape, encode the backslash literally and continue with next char.
+            if i + 1 < len(raw):
+                nxt = raw[i + 1]
+                if nxt in '"\\/bfnrt':
+                    out.append(ch + nxt)
+                    i += 2
+                    continue
+                if nxt == 'u' and i + 5 < len(raw) and re.fullmatch(r'[0-9a-fA-F]{4}', raw[i + 2:i + 6]):
+                    out.append(raw[i:i + 6])
+                    i += 6
+                    continue
+            out.append('\\\\')
+            i += 1
+            continue
+
+        code = ord(ch)
+        if code < 0x20:
+            escapes = {"\b": r"\b", "\f": r"\f", "\n": r"\n", "\r": r"\r", "\t": r"\t"}
+            out.append(escapes.get(ch, f"\\u{code:04x}"))
+        else:
+            out.append(ch)
+        i += 1
+    return ''.join(out)
+
+
+def _remove_json_trailing_commas(raw: str) -> str:
+    """Remove commas immediately before } or ] while outside JSON strings."""
+    out = []
+    i = 0
+    in_string = False
+    escaped = False
+    while i < len(raw):
+        ch = raw[i]
+        if in_string:
+            out.append(ch)
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+            i += 1
+            continue
+        if ch == '"':
+            in_string = True
+            out.append(ch)
+            i += 1
+            continue
+        if ch == ',':
+            j = i + 1
+            while j < len(raw) and raw[j] in ' \t\r\n':
+                j += 1
+            if j < len(raw) and raw[j] in '}]':
+                i += 1
+                continue
+        out.append(ch)
+        i += 1
+    return ''.join(out)
+
+
+def _parse_roster_repair_candidates(raw: str):
+    """Try conservative whole-file repairs without dropping student records."""
+    errors = []
+    candidates = [
+        ("permissive-control-chars", lambda value: json.loads(value, strict=False), raw),
+        ("escaped-string-controls", json.loads, _escape_invalid_json_string_chars(raw)),
+    ]
+    sanitized = _remove_json_trailing_commas(_escape_invalid_json_string_chars(raw))
+    candidates.append(("escaped-controls-and-trailing-commas", json.loads, sanitized))
+
+    seen = set()
+    for label, parser, candidate in candidates:
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        try:
+            result = parser(candidate)
+            if isinstance(result, list) and all(isinstance(item, dict) for item in result):
+                return result, label, errors
+            errors.append(f"{label}: parsed JSON but root was not a list of objects")
+        except Exception as exc:
+            errors.append(f"{label}: {type(exc).__name__}: {exc}")
+    return None, None, errors
+
+
+def _salvage_roster_objects(raw: str):
+    """Last-resort record-level recovery for a pretty-printed roster array.
+
+    V12's whole-file permissive parse may still fail if a second malformed
+    fragment exists. This recovers each top-level two-space-indented object
+    independently, never replacing the original unless every detected record
+    parses successfully. Partial results are returned read-only and written to
+    a separate recovery file so the damaged source is not silently discarded.
+    """
+    starts = [m.start() for m in re.finditer(r'(?m)^  \{', raw)]
+    if not starts:
+        return [], [], 0
+
+    recovered = []
+    rejected = []
+    for index, begin in enumerate(starts):
+        finish = starts[index + 1] if index + 1 < len(starts) else len(raw)
+        chunk = raw[begin:finish].strip()
+        # The preceding array delimiter belongs to the previous item; the
+        # following delimiter belongs to this item. Trim only the final comma.
+        if index + 1 < len(starts) and chunk.endswith(','):
+            chunk = chunk[:-1].rstrip()
+        else:
+            chunk = chunk.rstrip()
+            if chunk.endswith(']'):
+                chunk = chunk[:-1].rstrip()
+            if chunk.endswith(','):
+                chunk = chunk[:-1].rstrip()
+
+        parsed = None
+        parse_errors = []
+        for candidate, mode in ((chunk, 'strict'), (_escape_invalid_json_string_chars(chunk), 'sanitized')):
+            try:
+                parsed = json.loads(candidate, strict=(mode == 'strict'))
+                break
+            except Exception as exc:
+                parse_errors.append(f"{mode}: {type(exc).__name__}: {exc}")
+        if isinstance(parsed, dict) and parsed.get("id") is not None and parsed.get("email") is not None:
+            recovered.append(parsed)
+        else:
+            rejected.append({
+                "record_index": index,
+                "start_offset": begin,
+                "end_offset": finish,
+                "errors": parse_errors,
+            })
+    return recovered, rejected, len(starts)
+
+
+def _backup_roster_before_repair():
+    backup_path = ROSTER_PATH + ".pre-control-char-repair.bak"
+    if not os.path.exists(backup_path):
+        import shutil
+        shutil.copy2(ROSTER_PATH, backup_path)
+        print(f"[roster] original file preserved at {backup_path}")
+    return backup_path
+
+
+def load_roster():
+    """Load student roster; repair common malformed JSON without losing source data."""
+    global _ROSTER_RECOVERY_INCOMPLETE, _ROSTER_RECOVERY_CACHE
+
+    if _ROSTER_RECOVERY_INCOMPLETE and _ROSTER_RECOVERY_CACHE is not None:
+        return copy.deepcopy(_ROSTER_RECOVERY_CACHE)
     if not os.path.exists(ROSTER_PATH):
         return []
 
     with open(ROSTER_PATH, "r", encoding="utf-8-sig") as f:
         raw = f.read()
 
-    repaired = False
     try:
         roster = json.loads(raw)
+        if not isinstance(roster, list) or not all(isinstance(item, dict) for item in roster):
+            raise ValueError("roster.json must contain a JSON array of student objects")
+        return roster
     except json.JSONDecodeError as strict_error:
-        try:
-            roster = json.loads(raw, strict=False)
-            repaired = True
+        backup_path = _backup_roster_before_repair()
+        roster, repair_method, repair_errors = _parse_roster_repair_candidates(raw)
+        if roster is not None:
+            _atomic_write_json_file(ROSTER_PATH, roster, indent=2)
+            _ROSTER_RECOVERY_INCOMPLETE = False
+            _ROSTER_RECOVERY_CACHE = None
             print(
-                "[roster] recovered JSON containing unescaped control characters "
-                f"at line {strict_error.lineno}, column {strict_error.colno}; "
-                "preserving parsed records and normalizing the file"
+                f"[roster] recovered {len(roster)} student records using {repair_method}; "
+                f"original preserved at {backup_path}"
             )
-        except json.JSONDecodeError:
-            # Keep the original file untouched when the structure itself is not
-            # parseable; this is different from the recoverable control-char case.
-            raise strict_error
+            return roster
 
-    if not isinstance(roster, list):
-        raise ValueError("roster.json must contain a JSON array of student records")
+        # Try recovering individual top-level records. The original is kept
+        # untouched if even one record cannot be parsed.
+        recovered, rejected, detected = _salvage_roster_objects(raw)
+        if detected and recovered:
+            if not rejected and len(recovered) == detected:
+                _atomic_write_json_file(ROSTER_PATH, recovered, indent=2)
+                _ROSTER_RECOVERY_INCOMPLETE = False
+                _ROSTER_RECOVERY_CACHE = None
+                print(
+                    f"[roster] recovered all {len(recovered)} student records individually; "
+                    f"original preserved at {backup_path}"
+                )
+                return recovered
 
-    if repaired:
-        backup_path = ROSTER_PATH + ".pre-control-char-repair.bak"
-        if not os.path.exists(backup_path):
-            import shutil
-            shutil.copy2(ROSTER_PATH, backup_path)
-            print(f"[roster] original file preserved at {backup_path}")
-        _atomic_write_json_file(ROSTER_PATH, roster, indent=2)
-        print(f"[roster] repaired and safely rewrote {len(roster)} student records")
+            _ROSTER_RECOVERY_INCOMPLETE = True
+            _ROSTER_RECOVERY_CACHE = copy.deepcopy(recovered)
+            recovered_path = ROSTER_PATH + ".recovered.json"
+            report_path = ROSTER_PATH + ".recovery-report.txt"
+            _atomic_write_json_file(recovered_path, recovered, indent=2)
+            with open(report_path, "w", encoding="utf-8") as report:
+                report.write("Roster recovery was partial. Original roster was NOT overwritten.\n")
+                report.write(f"Detected top-level records: {detected}\n")
+                report.write(f"Recovered records: {len(recovered)}\n")
+                report.write(f"Unparsed records: {len(rejected)}\n")
+                report.write(f"Original backup: {backup_path}\n")
+                report.write(f"Recovered copy: {recovered_path}\n\n")
+                report.write("Whole-file parser diagnostics:\n")
+                report.write("\n".join(repair_errors) + "\n\n")
+                report.write("Unparsed record diagnostics (offsets only; no student data):\n")
+                for item in rejected:
+                    report.write(
+                        f"record {item['record_index']}: offsets {item['start_offset']}-{item['end_offset']}\n"
+                    )
+                    report.write("; ".join(item["errors"]) + "\n")
+            print(
+                f"[roster] WARNING: partial recovery; {len(recovered)}/{detected} records available. "
+                f"Original preserved at {backup_path}; writes disabled until source is repaired. "
+                f"Details: {report_path}"
+            )
+            return copy.deepcopy(recovered)
 
-    return roster
+        # Include the second parser's actual error in logs. V12 hid it by
+        # re-raising only the first strict JSON error.
+        print("[roster] whole-file repair attempts failed:")
+        for diagnostic in repair_errors:
+            print(f"[roster] {diagnostic}")
+        print(
+            f"[roster] no student records were rewritten; original preserved at {backup_path}; "
+            f"first error: {strict_error}"
+        )
+        raise RuntimeError(
+            "Student roster JSON is damaged and could not be safely recovered. "
+            f"Original preserved at {backup_path}. Check Render logs for repair diagnostics."
+        ) from strict_error
 
 
 def save_roster(roster):
-    # Atomic replacement prevents a Render restart during a write from leaving
-    # a partially-written roster that would break every student's login.
+    # Never overwrite a source file if only part of its records could be read.
+    if _ROSTER_RECOVERY_INCOMPLETE:
+        raise RuntimeError(
+            "Roster updates are temporarily disabled because only part of roster.json could be recovered. "
+            "The original file and a recovered copy have been preserved for review."
+        )
     _atomic_write_json_file(ROSTER_PATH, roster, indent=2)
 
 
@@ -406,17 +623,40 @@ DEFAULT_PASSCODE = "teach123"
 
 def load_config():
     if os.path.exists(CONFIG_PATH):
-        with open(CONFIG_PATH) as f:
-            return json.load(f)
+        with open(CONFIG_PATH, "r", encoding="utf-8-sig") as f:
+            raw = f.read()
+        try:
+            cfg = json.loads(raw)
+        except json.JSONDecodeError as strict_error:
+            candidates = [
+                ("permissive", lambda value: json.loads(value, strict=False), raw),
+                ("sanitized", json.loads, _remove_json_trailing_commas(_escape_invalid_json_string_chars(raw))),
+            ]
+            for label, parser, candidate in candidates:
+                try:
+                    cfg = parser(candidate)
+                    if isinstance(cfg, dict):
+                        backup_path = CONFIG_PATH + ".pre-json-repair.bak"
+                        if not os.path.exists(backup_path):
+                            import shutil
+                            shutil.copy2(CONFIG_PATH, backup_path)
+                        _atomic_write_json_file(CONFIG_PATH, cfg, indent=2)
+                        print(f"[config] repaired config.json using {label}; original preserved at {backup_path}")
+                        return cfg
+                except Exception as repair_error:
+                    print(f"[config] {label} repair failed: {repair_error}")
+            print(f"[config] config.json is invalid; teacher login cannot safely verify passcode: {strict_error}")
+            raise RuntimeError("Teacher configuration file is damaged; original file was preserved.") from strict_error
+        if not isinstance(cfg, dict):
+            raise ValueError("config.json must contain an object")
+        return cfg
     cfg = {"passcode": DEFAULT_PASSCODE}
-    with open(CONFIG_PATH, "w") as f:
-        json.dump(cfg, f, ensure_ascii=False, indent=2)
+    _atomic_write_json_file(CONFIG_PATH, cfg, indent=2)
     return cfg
 
 
 def save_config(cfg):
-    with open(CONFIG_PATH, "w") as f:
-        json.dump(cfg, f, ensure_ascii=False, indent=2)
+    _atomic_write_json_file(CONFIG_PATH, cfg, indent=2)
 
 
 def load_qlog():
@@ -1641,7 +1881,15 @@ check_teacher = check_passcode
 
 @app.post("/api/teacher/login")
 def teacher_login(body: LoginBody):
-    if check_passcode(body.passcode):
+    try:
+        valid = check_passcode(body.passcode)
+    except Exception as exc:
+        print(f"[auth] teacher login unavailable because config could not be read: {exc}")
+        return JSONResponse(
+            {"ok": False, "error": "Teacher login is temporarily unavailable because the server configuration needs repair."},
+            status_code=503,
+        )
+    if valid:
         return {"ok": True}
     return JSONResponse({"ok": False, "error": "Wrong passcode"}, status_code=401)
 
@@ -1698,7 +1946,14 @@ class StudentLoginBody(BaseModel):
 
 @app.post("/api/student/login")
 def student_login(body: StudentLoginBody):
-    roster = load_roster()
+    try:
+        roster = load_roster()
+    except Exception as exc:
+        print(f"[auth] student login unavailable because roster could not be safely loaded: {exc}")
+        return JSONResponse(
+            {"ok": False, "error": "Student login is temporarily unavailable while the class roster is being recovered. Your account data has not been intentionally deleted."},
+            status_code=503,
+        )
     for st in roster:
         if _norm(st.get("email")) == _norm(body.email) and verify_pw(body.password, st.get("password_hash")):
             token = secrets.token_urlsafe(24)
